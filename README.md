@@ -7,6 +7,7 @@ An Android Auto navigation app built on the Google Navigation SDK. It's meant to
 ## Status
 **First test build (v0.1.0).** It builds and lint passes, and the `:core` logic has 61 unit tests. It **hasn't been run on a real car or the Desktop Head Unit yet**, so expect rough edges.
 
+- **Resuming work:** [CHECKPOINT.md](CHECKPOINT.md) has the current state, what has been tested, and next steps.
 - **Testing without a car:** [TESTING.md](TESTING.md) is the complete bench guide (Desktop Head Unit, simulated drives, test data, checklist).
 - **Every setting explained:** [docs/SETTINGS.md](docs/SETTINGS.md).
 
