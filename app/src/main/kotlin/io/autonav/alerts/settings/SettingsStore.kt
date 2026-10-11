@@ -82,6 +82,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val pgwPass = stringPreferencesKey("pgw_pass_enc")
         val pgwCookies = stringPreferencesKey("pgw_cookies_enc")
 
+        val termsAcceptedAt = longPreferencesKey("nav_terms_accepted_at")
         val pgwInstalled = stringPreferencesKey("pgw_installed")
         val pgwLatest = stringPreferencesKey("pgw_latest")
         val pgwLatestSummary = stringPreferencesKey("pgw_latest_summary")
@@ -152,6 +153,13 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.pgwLastSync] = s.lastSyncMs
         }
     }
+
+    // --- Navigation SDK terms (accepted once, DESIGN.md §13) --------------------------------
+
+    /** When the user accepted Google's navigation terms in this app, or null if never. */
+    suspend fun navTermsAcceptedAt(): Long? = ds.data.first()[K.termsAcceptedAt]?.takeIf { it > 0 }
+
+    suspend fun setNavTermsAccepted(atMs: Long) { ds.edit { it[K.termsAcceptedAt] = atMs } }
 
     // --- Secrets ---------------------------------------------------------------------------
 

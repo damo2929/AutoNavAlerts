@@ -110,7 +110,25 @@ fun SetupScreen(activity: Activity, deps: PhoneDeps) {
     var keyText by remember { mutableStateOf("") }
     var hasKey by remember { mutableStateOf(false) }
     var termsOk by remember { mutableStateOf(NavigationApi.areTermsAccepted(activity.application)) }
-    LaunchedEffect(refresh) { hasKey = deps.settings.mapsApiKey() != null }
+    var termsAcceptedAt by remember { mutableStateOf<Long?>(null) }
+    var termsMessage by remember { mutableStateOf<String?>(null) }
+    var askedOnce by remember { mutableStateOf(false) }
+    var userKey by remember { mutableStateOf(false) }
+    LaunchedEffect(refresh) {
+        hasKey = deps.settings.mapsApiKey() != null
+        userKey = deps.settings.hasUserMapsKey()
+        // An acceptance the SDK already remembers is copied into our own record, so it sticks.
+        if (NavigationApi.areTermsAccepted(activity.application)) deps.navigator.recordTermsAccepted()
+        termsOk = deps.navigator.termsAccepted()
+        termsAcceptedAt = deps.settings.navTermsAcceptedAt()
+    }
+    // Refresh statuses when returning from the permission dialog or system Settings.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh++ }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
     val bgLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
@@ -120,7 +138,9 @@ fun SetupScreen(activity: Activity, deps: PhoneDeps) {
         Text("Navigation runs on your car screen. Set things up here first.", Modifier.padding(horizontal = 16.dp))
 
         Section("1. Google Maps API key") {
-            Text(if (hasKey) "A key is set." else "No key yet. The key needs the Navigation SDK and Places API (New) enabled.")
+            if (hasKey) Text(if (userKey) "✓ Your key is saved." else "✓ Using the key built into this app.", color = MaterialTheme.colorScheme.primary)
+            else Text("No key yet: the map, search and navigation won't work until you add one. It needs the Navigation SDK and Places API (New) enabled.",
+                color = MaterialTheme.colorScheme.error)
             OutlinedTextField(keyText, { keyText = it }, label = { Text("API key") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -134,36 +154,58 @@ fun SetupScreen(activity: Activity, deps: PhoneDeps) {
         }
 
         Section("2. Permissions") {
-            val fine = granted(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
-            val bg = Build.VERSION.SDK_INT < 29 || granted(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-            val notif = Build.VERSION.SDK_INT < 33 || granted(ctx, Manifest.permission.POST_NOTIFICATIONS)
-            val contacts = granted(ctx, Manifest.permission.READ_CONTACTS)
-            Text("Location: ${if (fine) "allowed" else "needed"} · Background: ${if (bg) "allowed" else "recommended"}")
-            val mic = granted(ctx, Manifest.permission.RECORD_AUDIO)
-            Text("Notifications: ${if (notif) "allowed" else "needed"} · Microphone: ${if (mic) "allowed" else "for spoken report comments"}")
-            Text("Contacts: ${if (contacts) "allowed" else "optional"}")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    val ps = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
-                    if (Build.VERSION.SDK_INT >= 33) ps += Manifest.permission.POST_NOTIFICATIONS
-                    ps += Manifest.permission.RECORD_AUDIO
-                    permLauncher.launch(ps.toTypedArray())
-                }) { Text("Allow") }
-                OutlinedButton(enabled = fine && !bg, onClick = {
-                    if (Build.VERSION.SDK_INT >= 29) bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                }) {
-                    Text("Allow all the time")
+            // Re-read on every result and whenever the app comes back to the front (e.g. from Settings).
+            val st = remember(refresh) { PermState.read(ctx) }
+            PermLine("Location (needed)", st.fine)
+            PermLine("Location all the time (recommended)", st.background)
+            PermLine("Notifications (needed for alerts behind other apps)", st.notifications)
+            PermLine("Microphone (spoken report comments)", st.mic)
+            PermLine("Contacts (optional)", st.contacts)
+            val missing = st.missingForeground()
+            when {
+                missing.isNotEmpty() -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { askedOnce = true; permLauncher.launch(missing.toTypedArray()) }) { Text("Allow") }
+                    if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
                 }
+                !st.background -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        askedOnce = true
+                        if (Build.VERSION.SDK_INT >= 29) bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                    }) { Text("Allow all the time") }
+                    if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
+                }
+                else -> Text("✓ All permissions allowed.", color = MaterialTheme.colorScheme.primary)
+            }
+            if (askedOnce && (missing.isNotEmpty() || !st.background)) {
+                Text("If no prompt appears, Android has stopped asking. Use \"Open app settings\" → Permissions to allow them there.",
+                    style = MaterialTheme.typography.bodySmall)
             }
             Text("\"All the time\" keeps camera alerts working while another app (like music) fills the car screen.",
                 style = MaterialTheme.typography.bodySmall)
         }
 
         Section("3. Navigation terms") {
-            Text(if (termsOk) "Accepted." else "Google's navigation terms must be accepted on the phone before using the car screen.")
-            if (!termsOk) Button(onClick = {
-                NavigationApi.showTermsAndConditionsDialog(activity, "AutoNavAlerts") { accepted -> termsOk = accepted }
-            }) { Text("Review and accept") }
+            if (termsOk) {
+                Text("✓ Accepted" + (termsAcceptedAt?.let { " on " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it)) } ?: "") +
+                    ". You won't be asked again.", color = MaterialTheme.colorScheme.primary)
+            } else {
+                Text("Google's navigation terms must be accepted on the phone before using the car screen.")
+                termsMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Button(onClick = {
+                    termsMessage = null
+                    runCatching {
+                        NavigationApi.showTermsAndConditionsDialog(activity, "AutoNavAlerts") { accepted ->
+                            if (accepted) {
+                                // Record it ourselves too, so it's a one-time step.
+                                scope.launch { deps.navigator.recordTermsAccepted(); refresh++ }
+                                termsOk = true
+                            } else {
+                                termsMessage = "You declined the terms. Navigation can't start until they're accepted."
+                            }
+                        }
+                    }.onFailure { termsMessage = "Couldn't open the terms: ${it.message}" }
+                }) { Text("Review and accept") }
+            }
         }
 
         Section("4. Android Auto") {
@@ -174,6 +216,35 @@ fun SetupScreen(activity: Activity, deps: PhoneDeps) {
             }) { Text("Open Android Auto settings") }
         }
     }
+}
+
+/** Current runtime-permission state for the Setup screen. */
+private data class PermState(val fine: Boolean, val background: Boolean, val notifications: Boolean, val mic: Boolean, val contacts: Boolean) {
+    fun missingForeground(): List<String> = buildList {
+        if (!fine) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
+        if (!notifications && Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+        if (!mic) add(Manifest.permission.RECORD_AUDIO)
+    }
+
+    companion object {
+        fun read(ctx: Context) = PermState(
+            fine = granted(ctx, Manifest.permission.ACCESS_FINE_LOCATION),
+            background = Build.VERSION.SDK_INT < 29 || granted(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION),
+            notifications = Build.VERSION.SDK_INT < 33 || granted(ctx, Manifest.permission.POST_NOTIFICATIONS),
+            mic = granted(ctx, Manifest.permission.RECORD_AUDIO),
+            contacts = granted(ctx, Manifest.permission.READ_CONTACTS),
+        )
+    }
+}
+
+@Composable
+private fun PermLine(label: String, ok: Boolean) {
+    Text((if (ok) "✓ " else "✗ ") + label, color = if (ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
+}
+
+private fun openAppSettings(ctx: Context) {
+    ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", ctx.packageName, null))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 // --- POI sets ----------------------------------------------------------------------------------

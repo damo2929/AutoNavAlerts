@@ -55,7 +55,16 @@ class NavigatorHolder @Inject constructor(
         return true
     }
 
-    fun termsAccepted(): Boolean = NavigationApi.areTermsAccepted(app)
+    /**
+     * True once the user has accepted Google's terms: either the SDK remembers it, or the app recorded
+     * the acceptance itself (so it's only ever asked once, even if the SDK's own flag is lost).
+     */
+    suspend fun termsAccepted(): Boolean = NavigationApi.areTermsAccepted(app) || settings.navTermsAcceptedAt() != null
+
+    /** Records an acceptance from the terms dialog. */
+    suspend fun recordTermsAccepted() {
+        if (settings.navTermsAcceptedAt() == null) settings.setNavTermsAccepted(System.currentTimeMillis())
+    }
 
     /** Gets (or returns the existing) Navigator. Terms must already be accepted on the phone. */
     suspend fun ensureNavigator(): Navigator? {
@@ -65,8 +74,11 @@ class NavigatorHolder @Inject constructor(
             _unavailable.value = NavUnavailable.TERMS_NOT_ACCEPTED
             return null
         }
+        // The SDK remembers the acceptance → normal start. If its flag was lost but we recorded the
+        // user's acceptance, start without showing the terms again.
+        val sdkRemembers = NavigationApi.areTermsAccepted(app)
         return suspendCancellableCoroutine { cont ->
-            NavigationApi.getNavigator(app, object : NavigationApi.NavigatorListener {
+            val listener = object : NavigationApi.NavigatorListener {
                 override fun onNavigatorReady(navigator: Navigator) {
                     _navigator.value = navigator
                     _unavailable.value = null
@@ -84,7 +96,9 @@ class NavigatorHolder @Inject constructor(
                     }
                     if (cont.isActive) cont.resume(null)
                 }
-            })
+            }
+            if (sdkRemembers) NavigationApi.getNavigator(app, listener)
+            else NavigationApi.getNavigatorNoToS(app, listener)
         }
     }
 

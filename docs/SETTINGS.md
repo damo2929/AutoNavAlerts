@@ -92,7 +92,8 @@ Licence (Apache 2.0) and the note that the code is AI-assisted. Nothing to set h
 | **Permissions → Allow** | Asks for precise location and, on Android 13+, notifications | Location is required. Notifications are needed for alerts while another app fills the car screen, and for camera-database update messages. |
 | **Permissions → Allow all the time** | Asks for background location (Android 10+) | Recommended. Keeps camera alerts working while music or another app is on the car screen. |
 | Contacts status | Shows whether contacts permission is granted | Optional. It's for navigating to contacts' addresses, which isn't built yet. |
-| **Navigation terms → Review and accept** | Shows Google's Navigation SDK terms | **Required** before the car screen can navigate. It can only be done on the phone. |
+| **Navigation terms → Review and accept** | Shows Google's Navigation SDK terms | **Required** before the car screen can navigate, and done on the phone. **You only accept once:** the app records the acceptance (shown as "✓ Accepted on <date>") and never asks again, even if the SDK's own flag is lost. Uninstalling the app clears it. |
+| Permission lines (✓ / ✗) | Each permission's current state, refreshed whenever you return to the app | **Allow** only appears if something is missing. If Android stops showing the prompt, **Open app settings** appears instead. When everything is granted: "✓ All permissions allowed." |
 | **Android Auto → Open Android Auto settings** | Opens Android Auto's settings | Used to turn on developer mode and **Unknown sources** (needed because the app is sideloaded), and to choose this as your navigation app |
 
 If something here isn't done, the car screen shows **"Finish setup on your phone"** with the reason: no API key, terms not accepted, location permission missing, key not authorised, or no network.
