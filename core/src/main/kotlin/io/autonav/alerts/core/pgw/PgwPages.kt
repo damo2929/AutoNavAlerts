@@ -23,7 +23,12 @@ object PgwConfig {
     /** iGO, UK, consolidated by type (one file per camera type): the package the app uses. */
     const val PACKAGE_UK_IGO_BY_TYPE = 288
 
-    const val PACKAGE_UK_IGO = PACKAGE_UK_IGO_BY_TYPE
+    /** TomTom OV2, UK, consolidated by type (2) / speed zoned complete (1). No direction data. */
+    const val PACKAGE_UK_OV2_BY_TYPE = 2
+    const val PACKAGE_UK_OV2_SPEED_ZONED = 1
+
+    /** Kept for callers that want the default package id. */
+    const val PACKAGE_UK_IGO = PACKAGE_UK_OV2_SPEED_ZONED
 
     fun loginForm(user: String, password: String) = listOf(
         "username" to user, "user_password" to password, "op" to "login",
@@ -40,6 +45,27 @@ object PgwConfig {
     const val MAIN_FILE = "pocketgps_uk_sc.txt"
     const val PENDING_MOBILE_FILE = "pocketgps_uk_pmobile.txt"
     const val RELEASE_FILE = "Release.txt"
+}
+
+/**
+ * The download the user picks on the Cameras tab (DESIGN.md §5.2 / §5.2a). Both carry direction:
+ * iGO as exact degrees, TomTom OV2 as a compass point in each entry's name, plus the PGW camera id.
+ */
+enum class PgwDownload(val idPackage: Int, val system: String, val label: String, val detail: String) {
+    TOMTOM_OV2(
+        PgwConfig.PACKAGE_UK_OV2_SPEED_ZONED, "TomTom OV2", "TomTom OV2",
+        "UK speed zoned complete. Direction as a compass point, camera make (Gatso, Truvelo, RedSpeed…), " +
+            "temporary roadworks cameras, and PGW camera ids (used when you report a known camera).",
+    ),
+    IGO(
+        PgwConfig.PACKAGE_UK_IGO_BY_TYPE, "iGO", "iGO",
+        "UK consolidated by type. Exact direction in degrees; fewer details about camera make.",
+    );
+
+    companion object {
+        val DEFAULT = TOMTOM_OV2
+        fun fromName(n: String?) = entries.firstOrNull { it.name == n } ?: DEFAULT
+    }
 }
 
 object PgwPages {

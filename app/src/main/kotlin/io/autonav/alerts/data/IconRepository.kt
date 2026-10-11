@@ -121,7 +121,13 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         )
 
         fun pgwIconFor(code: String, source: PoiSourceType): String = when {
-            source == PoiSourceType.PGW_PENDING -> CAMERA_PENDING
+            source == PoiSourceType.PGW_PENDING || code == "pMOBILE" -> CAMERA_PENDING
+            // TomTom OV2 type codes (optional "t" prefix = temporary)
+            code.removePrefix("t") in setOf("GATSO", "MONITRON", "TRUVELO") -> CAMERA_FIXED
+            code.removePrefix("t") == "REDSPEED" -> CAMERA_REDLIGHT_SPEED
+            code.removePrefix("t") == "REDLIGHT" -> CAMERA_REDLIGHT
+            code.removePrefix("t") == "SPECS" -> CAMERA_AVERAGE
+            code.removePrefix("t") == "MOBILE" -> CAMERA_MOBILE
             code == "1" -> CAMERA_FIXED
             code == "3" -> CAMERA_REDLIGHT
             code == "4" -> CAMERA_AVERAGE

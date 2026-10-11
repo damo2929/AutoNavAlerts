@@ -436,6 +436,22 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
 - **pMobile set**: imported as a **separate PoiSet** "PGW pending mobile sites", alerts **off by default** and a lighter icon. PGW says these sites "have not been checked for accuracy", so they could otherwise cause false alerts. They can be turned on in the POI sets screen.
 - **Fixtures**: PGW's licence forbids copying the data. Each download is also **watermarked to the member**. So **no real PGW data goes into the repo or tests**. The fixtures are made-up files that copy the structure exactly: the header, empty fields, Direction=360, the copyright last row, and pMobile.
 
+### 5.2a TomTom OV2 from PGW (default download)
+The user chooses **TomTom OV2** (default) or **iGO** on the Cameras tab (`PgwDownload`). OV2 is TomTom OV2 → "UK – Speed Zoned Complete", **package 1**, `System=TomTom OV2`. The other OV2 package, "consolidated by type", is package 2.
+
+- **Files**: one per type and speed, e.g. `pocketgps_uk_gatso_30.ov2`, `…_gatso_var.ov2`, `…_gatso_tba.ov2`, `…_redlight.ov2`, `…_specs_50.ov2`, `…_pmobile_70.ov2`. There's also a `.bmp` icon per file, which is ignored.
+- They're **merged into one set per family**: gatso → "PGW fixed cameras", mobile, redlight, specs, pmobile.
+- **Plain OV2 has no direction field, but PGW encodes it in each entry's name**: `<compass>-[R-][t]<TYPE>:<pgwId>[@<mph>]`, e.g. `E-R-MONITRON:3209@30`.
+  - **compass** (N, NE, … NW) is the direction of travel. It's within 22.5° of iGO's exact degrees for 98% of cameras. It's missing for 49 entries, mostly pending mobiles, which are treated as ANY.
+  - **`R-`** means reversible (BOTH). It matches iGO DirType 2 for 3,955 of 3,958 cameras.
+  - **`t`** means a temporary (roadworks) camera.
+  - **TYPE** is one of GATSO, MONITRON, TRUVELO, **REDSPEED** (316 entries: this is iGO type 11, so red light + speed), REDLIGHT, SPECS, MOBILE, pMOBILE.
+  - **pgwId** is stored as `poi.sourceId` and sent as `idCam` when reporting a known camera (Action 2/3/4, §8.5).
+  - **@mph**: `@0` means variable; a missing speed means it's still to be confirmed.
+  - The copyright watermark entry in each file is skipped.
+- Verified on v24.101: **19,826 cameras**, identical to iGO.
+- The parser is `PgwOv2.kt` in `:core`, with tests and an optional `PGW_OV2_ZIP` real-file check.
+
 ### 5.3 RadarDroid TXT / Nokia SpeedCam TXT
 - Similar layouts, with the exact columns confirmed from a sample file. Both get their own importer with a column table, sharing code with iGO through `DelimitedCameraImporter(columns: ColumnSpec)`.
 

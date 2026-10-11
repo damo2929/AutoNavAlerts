@@ -108,8 +108,9 @@ class PgwFeedCheckWorker @AssistedInject constructor(
                     it.copy(lastFeedCheckMs = now, feedEtag = r.etag, feedLastModified = r.lastModified,
                         latestVersion = newest?.version, latestSummary = newest?.summary)
                 }
+                val wanted = settings.current().pgwDownload.idPackage
                 if (newest != null && (newest.isNewerThan(state.installedVersion) ||
-                        state.installedPackage != PgwConfig.PACKAGE_UK_IGO || state.installedLayout != PgwSyncWorker.IMPORT_LAYOUT)) {
+                        state.installedPackage != wanted || state.installedLayout != PgwSyncWorker.IMPORT_LAYOUT)) {
                     settings.updatePgw { it.copy(pendingVersion = newest.version) }
                     scheduler.queueSync()
                     return Result.success()
@@ -147,7 +148,7 @@ class PgwSyncWorker @AssistedInject constructor(
                 if (r is FeedResult.Releases) settings.updatePgw { it.copy(latestVersion = r.newest?.version, latestSummary = r.newest?.summary, pendingVersion = r.newest?.version) }
             }
             val st = settings.currentPgw()
-            val samePackage = st.installedPackage == PgwConfig.PACKAGE_UK_IGO && st.installedLayout == IMPORT_LAYOUT
+            val samePackage = st.installedPackage == settings.current().pgwDownload.idPackage && st.installedLayout == IMPORT_LAYOUT
             if (!force && samePackage && st.installedVersion != null && st.latestVersion != null && st.latestVersion == st.installedVersion) {
                 settings.updatePgw { it.copy(lastResult = "Already up to date (${st.installedVersion})", lastSyncMs = now) }
                 return Result.success()
@@ -158,7 +159,8 @@ class PgwSyncWorker @AssistedInject constructor(
 
         val zip = File(client.cacheDir(), "pgw-${now}.zip")
         return try {
-            client.downloadIgo(zip)
+            val pkg = settings.current().pgwDownload
+            client.download(zip, pkg)
             val release = ZipFile(zip).use { z ->
                 z.getEntry(PgwConfig.RELEASE_FILE)?.let { e -> z.getInputStream(e).bufferedReader().readText() }
             }
@@ -170,7 +172,7 @@ class PgwSyncWorker @AssistedInject constructor(
                 return Result.failure()
             }
             val summary = settings.currentPgw().latestSummary
-            settings.updatePgw { it.copy(installedVersion = version, installedPackage = PgwConfig.PACKAGE_UK_IGO, installedLayout = IMPORT_LAYOUT, pendingVersion = null, lastResult = "Updated to $version: ${outcome.message}", lastSyncMs = now) }
+            settings.updatePgw { it.copy(installedVersion = version, installedPackage = pkg.idPackage, installedLayout = IMPORT_LAYOUT, pendingVersion = null, lastResult = "Updated to $version: ${outcome.message}", lastSyncMs = now) }
             notify("Camera database updated to $version", listOfNotNull(summary, outcome.message).joinToString(" "))
             Result.success()
         } catch (e: PgwAuthException) {
@@ -207,7 +209,7 @@ class PgwSyncWorker @AssistedInject constructor(
 
     companion object {
         /** Bump when the way PGW zips are turned into sets changes (2 = one set per type file). */
-        const val IMPORT_LAYOUT = 2
+        const val IMPORT_LAYOUT = 3 // 3 = TomTom OV2 families with PGW camera ids
         const val KEY_FORCE = "force"
         const val KEY_CHECK_FEED = "check_feed"
         const val CHANNEL = "pgw_sync"
@@ -229,7 +231,7 @@ class ReportSubmitWorker @AssistedInject constructor(
         val queued = reports.pending()
         for (r in queued) {
             reports.update(r.copy(status = io.autonav.alerts.data.ReportStatus.SENDING))
-            val res = runCatching { client.submit(reports.toSubmission(r)) }
+            val res = runCatching { client.submit(reports.toSubmissionWithId(r)) }
             // PGW's confirmation wording isn't known yet (DESIGN.md §16 #19): a logged-in 200 response
             // counts as sent, and the user can check it on the PGW site.
             val ok = res.getOrNull()?.let { io.autonav.alerts.core.pgw.PgwPages.loginState(it) == io.autonav.alerts.core.pgw.PgwPages.LoginState.LOGGED_IN } == true

@@ -112,6 +112,10 @@ class PoiRepository @Inject constructor(
         PoiFormat.CSV -> csv?.let { CsvImporter(it).parse(data.inputStream().bufferedReader(Charsets.UTF_8)) }
     }
 
+    private fun mergeResults(list: List<ImportResult>) = ImportResult(
+        rows = list.flatMap { it.rows }, errors = list.flatMap { it.errors }, silentlySkipped = list.sumOf { it.silentlySkipped },
+    )
+
     /** First POI file in a picked zip (read via the central directory; see ZipEntries). */
     private fun firstPoiEntry(zip: ByteArray): Pair<String, ByteArray>? =
         ZipEntries.read(zip).entries.firstOrNull { (name, _) ->
@@ -132,20 +136,26 @@ class PoiRepository @Inject constructor(
     suspend fun importPgwZip(zip: File, version: String): ImportOutcome = withContext(Dispatchers.IO) {
         val entries = ZipEntries.read(zip)
         android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.map { "${it.key} (${it.value.size})" }}")
-        val files = ZipEntries.pgwTypeFiles(entries)
+        // TomTom OV2 (PGW's own naming carries direction, type, id and speed) or iGO TXT, one set per family.
+        val ov2 = io.autonav.alerts.core.poi.importers.PgwOv2.families(entries)
+        val files: Map<String, () -> ImportResult> = if (ov2.isNotEmpty()) {
+            ov2.mapValues { (_, list) -> { mergeResults(list.map { io.autonav.alerts.core.poi.importers.PgwOv2.parse(it) }) } }
+        } else {
+            ZipEntries.pgwTypeFiles(entries).mapValues { (_, bytes) -> { IgoTxtImporter().parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1)) } }
+        }
+        val fileFormat = if (ov2.isNotEmpty()) PoiFormat.OV2.name else PoiFormat.IGO_TXT.name
         if (files.isEmpty()) return@withContext ImportOutcome(null, 0, 0, emptyList(), true,
             "No camera files in the download. The zip contained: " +
                 entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" })
-        val importer = IgoTxtImporter()
         val keptFormats = HashSet<String>()
         var total = 0
         var firstId: Long? = null
         val failures = ArrayList<String>()
-        for ((stem, bytes) in files) {
-            val info = PgwFile.of(stem)
-            val format = "${PoiFormat.IGO_TXT.name}:$stem"
+        for ((stem, load) in files) {
+            val info = PgwFile.of(stem, ov2 = ov2.isNotEmpty())
+            val format = "$fileFormat:$stem"
             keptFormats += format
-            val result = importer.parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1))
+            val result = load()
             val existing = db.poiSets().byFormat(format)
             val out = storeImport(
                 result, info.setName, info.source, format, existing?.id,
@@ -197,7 +207,7 @@ class PoiRepository @Inject constructor(
                 val cat = (prev ?: PoiCategoryEntity(
                     setId = stagingId, sourceCode = code, name = categoryNamer(code),
                     iconId = if (isPgw) IconRepository.pgwIconFor(code, source) else null,
-                    zoneRole = if (isPgw && code in IgoTxtImporter.PGW_AVERAGE_SPEED_CODES) ZoneRole.ZONE_POINT else ZoneRole.NONE,
+                    zoneRole = if (isPgw && (code in IgoTxtImporter.PGW_AVERAGE_SPEED_CODES || io.autonav.alerts.core.poi.importers.PgwOv2.isAverageSpeed(code))) ZoneRole.ZONE_POINT else ZoneRole.NONE,
                 )).copy(id = 0, setId = stagingId)
                 catIds[code] = db.categories().insert(cat)
             }
@@ -220,7 +230,7 @@ class PoiRepository @Inject constructor(
     private fun ImportRow.toEntity(setId: Long, cats: Map<String, Long>) = PoiEntity(
         setId = setId, categoryId = categoryCode?.let { cats[it] }, lat = lat, lon = lon, name = name,
         speedLimit = speed, speedUnit = speedUnit, directionType = dirType, bearing = bearing,
-        gridCell = Grid.cellOf(lat, lon),
+        gridCell = Grid.cellOf(lat, lon), sourceId = extra["pgwId"],
     )
 
     /** What each PGW file becomes (DESIGN.md §5.2). */
@@ -232,6 +242,10 @@ class PoiRepository @Inject constructor(
         val categoryName: (String) -> String,
     ) {
         companion object {
+            fun of(stem: String, ov2: Boolean = false): PgwFile = of(stem).let { f ->
+                if (ov2) f.copy(categoryName = io.autonav.alerts.core.poi.importers.PgwOv2::categoryName) else f
+            }
+
             fun of(stem: String): PgwFile = when (stem) {
                 "gatso" -> PgwFile("PGW fixed cameras", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true) { c ->
                     if (c == "11") "Fixed camera (type 11)" else "Fixed camera"

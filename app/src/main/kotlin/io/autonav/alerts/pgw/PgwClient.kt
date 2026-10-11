@@ -94,11 +94,11 @@ class PgwClient @Inject constructor(
         saveCookies()
     }
 
-    /** Requests the iGO package and downloads the zip (DESIGN.md §6.1). */
-    suspend fun downloadIgo(dest: File): File = withContext(Dispatchers.IO) {
+    /** Requests the chosen package (iGO or TomTom OV2) and downloads the zip (DESIGN.md §6.1). */
+    suspend fun download(dest: File, pkg: io.autonav.alerts.core.pgw.PgwDownload): File = withContext(Dispatchers.IO) {
         ensureLoggedIn()
-        val body = FormBody.Builder().apply { PgwConfig.downloadForm().forEach { (k, v) -> add(k, v) } }
-            .add("System", "iGO").add("voicePack", "noVoice").build()
+        val body = FormBody.Builder().apply { PgwConfig.downloadForm(pkg.idPackage).forEach { (k, v) -> add(k, v) } }
+            .add("System", pkg.system).add("voicePack", "noVoice").build()
         val html = http.newCall(Request.Builder().url(PgwConfig.BASE + PgwConfig.CAMERAS_PATH).post(body).build()).execute().use { it.body.string() }
         android.util.Log.i(TAG, "Download page: ${html.length} chars, zip link: ${PgwPages.findZipLink(html)}")
         val link = PgwPages.findZipLink(html)

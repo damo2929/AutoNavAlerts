@@ -170,17 +170,24 @@ class CameraReportRepository @Inject constructor(
             .setContentIntent(pi).setAutoCancel(true).build())
     }
 
+    /** Like [toSubmission], filling idCam from the related camera's PGW id when known. */
+    suspend fun toSubmissionWithId(r: CameraReportEntity): PgwSubmission {
+        val id = r.relatedPoiId?.let { pois.poi(it) }?.sourceId
+        val base = toSubmission(r, id)
+        return base
+    }
+
     /** Maps a report onto PGW's form fields (DESIGN.md §8.5). */
-    fun toSubmission(r: CameraReportEntity): PgwSubmission {
+    fun toSubmission(r: CameraReportEntity, pgwCameraId: String? = null): PgwSubmission {
         val (action, type) = when (r.kind) {
             ReportKind.UNSPECIFIED -> 1 to 0
-            ReportKind.MOBILE_SEEN -> 1 to 2
+            ReportKind.MOBILE_SEEN -> (if (pgwCameraId != null) 4 else 1) to 2
             ReportKind.NEW_FIXED -> 1 to 0
             ReportKind.NEW_AVERAGE -> 1 to 4
             ReportKind.NEW_RED_LIGHT -> 1 to 5
             ReportKind.NEW_RED_LIGHT_SPEED -> 1 to 10
-            ReportKind.CAMERA_GONE -> 3 to 0
-            ReportKind.WRONG_LIMIT, ReportKind.WRONG_DIRECTION, ReportKind.WRONG_TYPE -> 2 to 0
+            ReportKind.CAMERA_GONE -> (if (pgwCameraId != null) 3 else 1) to 0
+            ReportKind.WRONG_LIMIT, ReportKind.WRONG_DIRECTION, ReportKind.WRONG_TYPE -> (if (pgwCameraId != null) 2 else 1) to 0
         }
         val details = buildString {
             r.comment?.takeIf { it.isNotBlank() }?.let { append(it.trim().trimEnd('.')).append(". ") }
@@ -192,7 +199,7 @@ class CameraReportRepository @Inject constructor(
             r.road?.let { append("; road ").append(it) }
         }
         val country = if (r.lon < -5.3 && r.lat in 51.4..55.5 && !(r.lat > 54.0 && r.lon > -8.2)) 1 else 0
-        return PgwSubmission(action, null, r.lat, r.lon, type, r.speedLimit, r.heading?.roundToInt(), r.directionType, details, country)
+        return PgwSubmission(action, pgwCameraId, r.lat, r.lon, type, r.speedLimit, r.heading?.roundToInt(), r.directionType, details, country)
     }
 
     /** The closest camera behind you within 300 m: the one you've just passed. */

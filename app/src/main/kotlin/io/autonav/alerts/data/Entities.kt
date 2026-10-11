@@ -87,6 +87,8 @@ data class PoiEntity(
     val gridCell: Long,
     val hiddenByReport: Boolean = false,
     @ColumnInfo(defaultValue = "NULL") val expiresAt: Long? = null,
+    /** The source's own id for this POI, e.g. the PGW camera id (sent as idCam in reports). */
+    @ColumnInfo(defaultValue = "NULL") val sourceId: String? = null,
 )
 
 enum class PlaceKind { RECENT, FAVOURITE, HOME, WORK }

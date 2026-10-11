@@ -166,6 +166,7 @@ Your icon, text and switch choices are **kept across updates**.
 |---|---|---|
 | **Username / Password → Save and test** | | Saves **your own** PocketGPSWorld login (encrypted) and tests it straight away. You need an active subscription. Only `www.pocketgpsworld.com` is ever contacted. |
 | **Forget login** | | Deletes the saved login and session, and stops automatic updates |
+| **Download format** | **TomTom OV2** | Which PocketGPSWorld download to use. **TomTom OV2** (UK speed zoned complete) gives direction as a compass point, the camera make (Gatso, Truvelo, Monitron, RedSpeed), temporary roadworks cameras, and PocketGPSWorld camera IDs, which are used when you report a known camera. **iGO** (UK consolidated by type) gives exact direction in degrees but less detail. Both give the same cameras, one set per type. After switching, press **Sync now**: the camera sets are replaced, and icon and alert choices made for the old format's sets are reset. |
 | Installed / Latest in feed / summary | | The camera database version on the phone, the newest version announced on PocketGPSWorld's RSS feed with its release notes, and when the feed was last checked and the last sync ran, with its result |
 | **Sync now** | | Checks the feed, then downloads and imports **only if** there's a newer version than the one installed |
 | **Force re-download** | | Downloads and imports the current database whatever the version |

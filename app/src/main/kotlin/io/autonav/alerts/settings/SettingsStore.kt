@@ -43,6 +43,8 @@ data class AppSettings(
     /** Debug builds: Navigation SDK simulator speed multiplier for bench testing. */
     val simulationSpeed: Float = 1f,
     val speedSource: SpeedSource = SpeedSource.CAR_WHEN_AVAILABLE,
+    /** Which PocketGPSWorld download to use (Cameras tab). */
+    val pgwDownload: io.autonav.alerts.core.pgw.PgwDownload = io.autonav.alerts.core.pgw.PgwDownload.DEFAULT,
 )
 
 data class PgwState(
@@ -79,6 +81,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val speedPanel = booleanPreferencesKey("speed_panel")
         val mutedUntil = longPreferencesKey("muted_until")
         val speedSource = stringPreferencesKey("speed_source")
+        val pgwDownload = stringPreferencesKey("pgw_download")
         val simSpeed = androidx.datastore.preferences.core.floatPreferencesKey("sim_speed")
 
         val mapsKey = stringPreferencesKey("maps_api_key_enc")
@@ -114,6 +117,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             speedPanelOn = p[K.speedPanel] ?: true,
             mutedUntilMs = p[K.mutedUntil] ?: 0,
             simulationSpeed = p[K.simSpeed] ?: 1f,
+            pgwDownload = io.autonav.alerts.core.pgw.PgwDownload.fromName(p[K.pgwDownload]),
             speedSource = p[K.speedSource]?.let { runCatching { SpeedSource.valueOf(it) }.getOrNull() } ?: SpeedSource.CAR_WHEN_AVAILABLE,
         )
     }
@@ -145,6 +149,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.mutedUntil] = s.mutedUntilMs
             p[K.simSpeed] = s.simulationSpeed
             p[K.speedSource] = s.speedSource.name
+            p[K.pgwDownload] = s.pgwDownload.name
         }
     }
 

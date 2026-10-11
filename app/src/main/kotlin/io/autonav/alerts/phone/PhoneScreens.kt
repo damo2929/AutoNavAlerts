@@ -561,6 +561,21 @@ fun CameraDbScreen(deps: PhoneDeps) {
             }
             status?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         }
+        Section("Download format") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                io.autonav.alerts.core.pgw.PgwDownload.entries.forEach { d ->
+                    FilterChip(settings.pgwDownload == d, {
+                        scope.launch { deps.settings.update { it.copy(pgwDownload = d) } }
+                    }, label = { Text(d.label + if (d == io.autonav.alerts.core.pgw.PgwDownload.DEFAULT) " (recommended)" else "") })
+                }
+            }
+            Text(settings.pgwDownload.detail, style = MaterialTheme.typography.bodySmall)
+            if (state.installedPackage != null && state.installedPackage != settings.pgwDownload.idPackage) {
+                Text("Press Sync now to switch to ${settings.pgwDownload.label}. Your camera sets will be replaced; " +
+                    "icon and alert choices made for the old format's sets are reset.", color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
         Section("Database") {
             Text("Installed: ${state.installedVersion ?: "none"}")
             Text("Latest in feed: ${state.latestVersion ?: "not checked yet"}")
