@@ -1,0 +1,51 @@
+# Copyright 2026 Damien Dye
+# SPDX-License-Identifier: Apache-2.0
+#
+# Quarterly check: has Google's Navigation SDK added live incident reporting to the
+# Android Auto map view (NavigationViewForAuto)? See DESIGN.md §16 #21.
+# Opens (or updates) an issue when it has; otherwise does nothing.
+name: Navigation SDK feature watch
+
+on:
+  schedule:
+    - cron: "0 7 1 1,4,7,10 *"   # 07:00 UTC on 1 Jan, 1 Apr, 1 Jul and 1 Oct
+  workflow_dispatch: {}          # run by hand from the Actions tab
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Check the latest Navigation SDK
+        id: check
+        run: |
+          set +e
+          tools/check-nav-sdk-features.sh --latest | tee result.txt
+          code=${PIPESTATUS[0]}
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" != 0 ] && [ "$code" != 10 ]; then exit "$code"; fi
+          exit 0
+
+      - name: Open an issue if Android Auto now supports incident reporting
+        if: steps.check.outputs.code == '10'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Navigation SDK now supports incident reporting on Android Auto"
+          body="$(printf 'The quarterly check found incident reporting APIs on NavigationViewForAuto.\n\n```\n%s\n```\n\nNext steps (DESIGN.md §16 #21):\n1. Update navigationSdk in gradle/libs.versions.toml to this version.\n2. Build and test on the DHU (TESTING.md §6.10): the report button on the car map and More → Report to Google Maps.\n3. Update DESIGN.md §16 #21.\n' "$(cat result.txt)")"
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
