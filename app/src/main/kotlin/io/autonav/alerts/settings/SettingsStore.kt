@@ -26,6 +26,9 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 
 const val DEFAULT_OVERSPEED = -0.001
 
+/** Where speed comes from (DESIGN.md §10.6). */
+enum class SpeedSource { CAR_WHEN_AVAILABLE, PHONE_GPS }
+
 data class AppSettings(
     val units: Units = Units.IMPERIAL,
     val voiceOn: Boolean = true,
@@ -40,6 +43,7 @@ data class AppSettings(
     val mutedUntilMs: Long = 0,
     /** Debug builds: Navigation SDK simulator speed multiplier for bench testing. */
     val simulationSpeed: Float = 1f,
+    val speedSource: SpeedSource = SpeedSource.CAR_WHEN_AVAILABLE,
 )
 
 data class PgwState(
@@ -72,6 +76,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val reviewReports = booleanPreferencesKey("review_reports")
         val speedPanel = booleanPreferencesKey("speed_panel")
         val mutedUntil = longPreferencesKey("muted_until")
+        val speedSource = stringPreferencesKey("speed_source")
         val simSpeed = androidx.datastore.preferences.core.floatPreferencesKey("sim_speed")
 
         val mapsKey = stringPreferencesKey("maps_api_key_enc")
@@ -105,6 +110,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             speedPanelOn = p[K.speedPanel] ?: true,
             mutedUntilMs = p[K.mutedUntil] ?: 0,
             simulationSpeed = p[K.simSpeed] ?: 1f,
+            speedSource = p[K.speedSource]?.let { runCatching { SpeedSource.valueOf(it) }.getOrNull() } ?: SpeedSource.CAR_WHEN_AVAILABLE,
         )
     }
 
@@ -135,6 +141,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.speedPanel] = s.speedPanelOn
             p[K.mutedUntil] = s.mutedUntilMs
             p[K.simSpeed] = s.simulationSpeed
+            p[K.speedSource] = s.speedSource.name
         }
     }
 

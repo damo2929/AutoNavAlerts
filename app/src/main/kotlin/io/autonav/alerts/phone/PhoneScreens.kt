@@ -540,6 +540,16 @@ fun SettingsScreen(deps: PhoneDeps) {
                 listOf(-0.001, 0.0, 0.05, 0.1).forEach { p -> FilterChip(s.overspeedPct == p, { set { it.copy(overspeedPct = p) } }, label = { Text(pctLabel(p)) }) }
             }
         }
+        Section("Speed source") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(s.speedSource == io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE,
+                    { set { it.copy(speedSource = io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE) } }, label = { Text("Car when available") })
+                FilterChip(s.speedSource == io.autonav.alerts.settings.SpeedSource.PHONE_GPS,
+                    { set { it.copy(speedSource = io.autonav.alerts.settings.SpeedSource.PHONE_GPS) } }, label = { Text("Phone GPS only") })
+            }
+            Text("Uses the car's own speed from Android Auto when the car shares it, and falls back to phone GPS otherwise.",
+                style = MaterialTheme.typography.bodySmall)
+        }
         Section("Speed panel") {
             SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
         }

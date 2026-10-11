@@ -74,6 +74,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
                 deps.guidance().startGuidance(simulate = true)
             }
         })
+        deps.carSpeed().start(carContext)
         deps.tts().warmUp()
         deps.alerts().start(App.appScope)
         deps.dispatcher().carSink = CarAlertSink(::showCarAlert)
@@ -139,7 +140,10 @@ class NavSession : Session(), DefaultLifecycleObserver {
         if (!speedPanelOn) { panel.post { panel.visibility = android.view.View.GONE }; return }
         if (speedMps == null) return
         if (panel.visibility != android.view.View.VISIBLE) panel.post { panel.visibility = android.view.View.VISIBLE }
-        val speed = if (imperial) speedMps / Geo.MPS_PER_MPH else speedMps * 3.6
+        // The car's display speed matches its dashboard; otherwise the engine's speed (car raw or GPS).
+        val shownMps = deps.carSpeed().fresh()?.displayMps?.toDouble()
+            ?.takeIf { !deps.guidance().simulating.value } ?: speedMps
+        val speed = if (imperial) shownMps / Geo.MPS_PER_MPH else shownMps * 3.6
         val shown = speed.roundToInt()
         val now = System.currentTimeMillis()
         // While speeding, the SDK reports % over Google's limit, so the limit can be worked out.
@@ -192,6 +196,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
     }
 
     override fun onDestroy(owner: LifecycleOwner) {
+        deps.carSpeed().stop()
         deps.dispatcher().carSink = null
         deps.alerts().stop()
         markers.clear()

@@ -24,20 +24,33 @@ The phone app has five tabs along the bottom: **Setup · POIs · Cameras · Repo
 
 - The over-limit setting applies to **POI and camera limits** (your imported data). The colour of the speed panel follows Google's speed-limit data separately (§1.3).
 
-### 1.3 Speed panel
+### 1.3 Speed source
+| Control | Options | Default | What it does |
+|---|---|---|---|
+| **Speed source** | **Car when available** / Phone GPS only | Car when available | Where your speed comes from. With **Car when available**, the app reads the **car's own speed** through Android Auto whenever the car shares it, and falls back to phone GPS if the car stops reporting for 3 s or doesn't provide speed. **Phone GPS only** ignores the car. |
+
+What car speed is used for:
+- **Speed panel**: the car's **speedometer** figure, so it matches your dashboard. Cars usually read a few percent high.
+- **Alerts**: the car's **measured** road speed, for "seconds ahead" alert distances and the over-limit warning. It's more accurate than GPS in tunnels, under trees and at low speed.
+- **GPS rate** (§1.5): changes as soon as the car's speed changes.
+- Your **position** always comes from the phone's GPS. The car only provides speed.
+
+The car screen's **More → GPS** row shows "Speed from car" or "Speed from phone GPS". Not every car or head unit shares its speed. Some aftermarket units don't, and the app needs car API level 3 or higher.
+
+### 1.4 Speed panel
 | Control | Options | Default | What it does |
 |---|---|---|---|
 | **Show speed and limit on the map** | On / Off | On | Shows your current speed, and a speed-limit sign next to it, in the bottom corner of the car map (kept clear of the turn card and the media panel). |
 
 What the panel shows:
-- **Your speed**: from the phone's GPS, updated on every fix, in your units.
+- **Your speed**: the **car's speedometer reading** when the car shares it (§1.3), otherwise the phone's GPS. It updates on every fix, in your units.
 - **The limit**:
   - **Google's limit for the road.** The Navigation SDK only reveals this while you're **over** it, so it shows while you're speeding and stays for 60 s afterwards.
   - Otherwise, the **limit of the camera** you're being alerted about, marked with a **small blue dot** so it isn't mistaken for Google's figure.
   - If neither is known, only your speed is shown.
 - **Colour**: white normally, **amber** at 5% over Google's limit, **red** at 10% over. These thresholds match Google Maps and can't be changed.
 
-### 1.4 GPS rate
+### 1.5 GPS rate
 How often the phone's GPS is read for alerts. The map has its own location feed from the Navigation SDK.
 
 | Control | Options | Default | What it does |
@@ -55,14 +68,14 @@ How the rate is worked out:
 
 Higher rates make alerts fire closer to the exact distance at speed (at 70 mph, 10 Hz is a fix every 3 m; 1 Hz is every 31 m), but use more battery.
 
-### 1.5 Bench testing (debug builds only)
+### 1.6 Bench testing (debug builds only)
 | Control | Options | Default | What it does |
 |---|---|---|---|
 | **Simulate speed** | **1×**, 2×, 4× | 1× | Speed of the **Simulate** drive started from the car's route preview. 1× is real time. Alerts, the GPS rate and the speed panel all work during simulation. See [TESTING.md](../TESTING.md). |
 
 This section isn't shown in release builds.
 
-### 1.6 About
+### 1.7 About
 Licence (Apache 2.0) and the note that the code is AI-assisted. Nothing to set here.
 
 ---
@@ -199,6 +212,7 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Units | mph, miles, yards |
 | Voice / Chime | On / On |
 | Over-limit warning | **−0.1%** |
+| Speed source | Car when available |
 | Speed panel | On |
 | GPS rate | 1 Hz below 10 mph, rising to 10 Hz at 50 mph |
 | Simulate speed (debug builds) | 1× |

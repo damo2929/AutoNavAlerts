@@ -845,6 +845,28 @@ Runs while the foreground service is up (§9.3). It stops when the car session e
 
 ---
 
+### 10.6 Car speed from the head unit
+Android Auto can pass the **car's own speed** to the app. The Car App Library reads it through `CarHardwareManager.carInfo.addSpeedListener` (car API level 3+, permission `com.google.android.gms.permission.CAR_SPEED`). The `Speed` object it returns has:
+- **raw speed**: the car's measured road speed
+- **display speed**: what the car's own speedometer shows, usually a few percent high
+- **speedometer unit**: the car's mph/km/h setting
+
+**Setting:** **Speed source** = **Car when available** (default) / **Phone GPS only**.
+
+**What each speed is used for** (when the car's speed is *fresh*, i.e. reported in the last 3 s):
+| Use | Speed used | Why |
+|---|---|---|
+| Speed panel number | **Car display speed** | Matches the dashboard exactly |
+| Alert engine (TIME-mode trigger distance, over-limit check) | **Car raw speed** | Accurate in tunnels, under trees and at low speed, and doesn't lag |
+| Adaptive GPS rate (§10.2) | **Car raw speed**, applied as soon as each car update arrives | Reacts as the car speeds up, without waiting for GPS smoothing |
+| Position and heading | **Phone GPS**, unchanged | The car only gives speed. Car GPS (`CarSensors.addCarHardwareLocationListener`) is a possible later source |
+
+**Fallback:**
+- If the car doesn't provide speed (the value status isn't SUCCESS), or nothing has arrived for 3 s, the phone's smoothed GPS speed is used, exactly as before.
+- The car screen's **More → GPS** row shows which source is in use.
+
+**Simulation:** during a debug **Simulate** drive the simulated speed is used, and car speed is ignored. The DHU only sends speed with `config/default_sensors.ini`.
+
 ## 11. Alert engine maths
 
 Inputs per fix: position *P*, smoothed speed *v* (m/s), heading *h*, plus the route polyline if one is set.
@@ -1297,6 +1319,7 @@ One `ChargerProvider` interface lets sources be added or turned off. Results are
 - **Alerts**:
   - Adaptive 1–10 Hz GPS, the 5×5 cell cache, and the full `AlertEngine`: 3 stages including the compulsory 100 yd passing alert, direction and parallel-road checks, missed-passing safety net, average-speed chains, overspeed.
   - Car `Alert` with Dismiss/Mute, a navigation heads-up notification when the app is in the background, and TTS on the guidance channel with ducking and queueing behind SDK voice.
+- **Car speed** (§10.6): the speed panel uses the car's display speed, and the alert engine and GPS rate use its raw speed, falling back to phone GPS. It can be switched off in Settings.
 - **Map extras**: markers redrawn as a diff on every fix (ACTIVE/AHEAD/OTHER), and the speed panel, which shows Google's limit worked out from `SpeedingListener` while speeding, or a camera limit.
 - **PGW**:
   - Encrypted login, the daily RSS conditional GET, an automatic download on a new release, a held swap during guidance, notifications, Sync now / Force re-download.

@@ -16,6 +16,8 @@
     <!-- Car App Library: navigation templates and map surface -->
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
     <uses-permission android:name="androidx.car.app.ACCESS_SURFACE" />
+    <!-- The car's own speed from the head unit (DESIGN.md §10.6) -->
+    <uses-permission android:name="com.google.android.gms.permission.CAR_SPEED" />
 
     <application
         android:name=".App"

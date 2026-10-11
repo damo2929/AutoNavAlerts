@@ -28,14 +28,17 @@ import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class LocationStats(val requestedHz: Int, val actualHz: Double, val speedMph: Double)
+data class LocationStats(val requestedHz: Int, val actualHz: Double, val speedMph: Double, val speedFromCar: Boolean = false)
 
 /**
  * Speed-aware fused location for the alert engine (DESIGN.md §10): 1 Hz below 10 mph, linear up
  * to 10 Hz at 50 mph, whole-Hz steps with a 2 s hold, capped to what the chip delivers.
  */
 @Singleton
-class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val context: Context) {
+class AdaptiveLocationSource @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val carSpeed: CarSpeedSource,
+) {
     private val client = LocationServices.getFusedLocationProviderClient(context)
     private var thread: HandlerThread? = null
     private var controller = AdaptiveRateController()
@@ -76,6 +79,8 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
     fun start() {
         if (running) return
         running = true
+        // React to car speed changes straight away, without waiting for the next GPS fix (§10.6).
+        carSpeed.onUpdate = { cs -> if (!simulated) cs.rawMps?.let { onCarSpeed(it.toDouble()) } }
         thread = HandlerThread("adaptive-location").also { it.start() }
         request(controller.requestedHz)
     }
@@ -92,9 +97,15 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
         if (simulated) onLocation(loc)
     }
 
+    @Synchronized
+    private fun onCarSpeed(mps: Double) {
+        controller.onSpeed(mps / Geo.MPS_PER_MPH, SystemClock.elapsedRealtime()).newHz?.let(::request)
+    }
+
     fun stop() {
         if (!running) return
         running = false
+        carSpeed.onUpdate = null
         client.removeLocationUpdates(callback)
         thread?.quitSafely()
         thread = null
@@ -130,7 +141,10 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
             }
             else -> 0.0
         }
-        val speed = smoother.add(rawSpeed)
+        val gpsSpeed = smoother.add(rawSpeed)
+        // Car speed when the head unit provides it (DESIGN.md §10.6); simulated drives use their own.
+        val car = if (simulated) null else carSpeed.fresh(arrival)
+        val speed = car?.rawMps?.toDouble() ?: gpsSpeed
         val heading = when {
             loc.hasBearing() && speed > 2.0 -> loc.bearing.toDouble()
             else -> {
@@ -155,7 +169,7 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
         val avg = intervals.filter { it > 0 }.average().takeIf { !it.isNaN() }
         val actualHz = avg?.let { 1000.0 / it } ?: 0.0
         if (avg != null) controller.onMeasuredRate(actualHz, now).newHz?.let(::request)
-        _stats.value = LocationStats(controller.requestedHz, actualHz, mph)
+        _stats.value = LocationStats(controller.requestedHz, actualHz, mph, speedFromCar = car != null)
 
         _fixes.tryEmit(Fix(loc.latitude, loc.longitude, speed, heading, System.currentTimeMillis()))
     }

@@ -196,12 +196,23 @@ Work through these and tick off each expected result. "DHU" means the car screen
 |---|---|---|
 | X1 | Zoom to 11 or closer near POIs | Markers with icons and speed badges. Up to 200, nearest first. |
 | X2 | Watch markers during the drive | Cameras **ahead** facing you are full colour, others faded, and the one being alerted is **larger with a red halo**. They update on every GPS fix. |
-| X3 | Speed panel (bottom corner) | Your speed in mph or km/h, updating smoothly |
+| X3 | Speed panel (bottom corner) | Your speed in mph or km/h, updating smoothly. It's the car's speedometer figure when the car provides speed (§6.4a). |
 | X4 | Go over the road limit | The panel turns **amber** (5% over) or **red** (10% over), and Google's limit sign appears (it stays for 60 s) |
 | X5 | During a camera alert, under the limit | The camera's limit appears with a small **blue dot** |
 | X6 | Settings → Speed panel off | The panel disappears |
 | X7 | **More → GPS** at different simulated speeds | "Requested" is 1 Hz below 10 mph, rising to 10 Hz at 50 mph+ (e.g. about 6 Hz at 30 mph). "Actual" shows what's delivered. |
 | X8 | Settings → GPS rate: "max 5 Hz", "full at 40" | At 40 mph+ the requested rate is 5 Hz |
+
+### 6.4a Car speed (start the DHU with `-c config/default_sensors.ini`)
+| # | Steps | Expected |
+|---|---|---|
+| C1 | DHU started with `default_sensors.ini`, no simulation running | **More → GPS** shows "Speed from car". The speed panel shows the speed the DHU reports. (Change it with the DHU console; type `help` for the sensor commands.) |
+| C2 | Settings → **Speed source → Phone GPS only** | **More → GPS** shows "Speed from phone GPS" |
+| C3 | DHU with the default config (no speed sensor) | Falls back to phone GPS: "Speed from phone GPS" |
+| C4 | Car speed at 50+ mph (DHU sensor) | **More → GPS** "Requested" goes to 10 Hz within about 2 s, without waiting for GPS |
+| C5 | During a **Simulate** drive | The simulated speed is used (car speed is ignored), so alerts follow the simulated car |
+
+In a real car: compare the speed panel with your dashboard (they should match), and check **More → GPS** says "Speed from car".
 
 ### 6.5 Living alongside media
 | # | Steps | Expected |

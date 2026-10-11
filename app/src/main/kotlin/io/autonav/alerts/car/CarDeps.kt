@@ -35,6 +35,7 @@ interface CarDeps {
     fun places(): PlacesSearch
     fun reports(): CameraReportRepository
     fun settings(): SettingsStore
+    fun carSpeed(): io.autonav.alerts.nav.CarSpeedSource
 
     companion object {
         fun from(context: Context): CarDeps = EntryPointAccessors.fromApplication(context.applicationContext, CarDeps::class.java)
