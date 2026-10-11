@@ -91,7 +91,8 @@ class AlertEngine(
         val minMovingMps: Double = 2.0,
         val maxLookaheadM: Double = 3_000.0,
         val rateLimitMs: Long = 3_000,
-        val overspeedPct: Double = 0.05,
+        /** Over-limit threshold as a fraction of the limit; −0.001 warns just before reaching it. */
+        val overspeedPct: Double = -0.001,
         val zoneGapM: Double = 5_000.0,
         val zoneMaxM: Double = 30_000.0,
         val zoneMaxMs: Long = 30 * 60_000L,

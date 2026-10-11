@@ -6,8 +6,11 @@ package io.autonav.alerts.nav
 import android.app.Application
 import android.util.Log
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.libraries.navigation.AudioGuidanceSettings
 import com.google.android.libraries.navigation.NavigationUpdatesOptions
 import com.google.android.libraries.navigation.Navigator
+import com.google.android.libraries.navigation.RoadSnappedLocationProvider
+import com.google.android.libraries.navigation.RoutingOptions
 import com.google.android.libraries.navigation.SimulationOptions
 import com.google.android.libraries.navigation.Waypoint
 import io.autonav.alerts.BuildConfig
@@ -30,7 +33,14 @@ data class RouteOption(val index: Int, val seconds: Int, val meters: Int, val de
 class GuidanceController @Inject constructor(
     private val app: Application,
     private val holder: NavigatorHolder,
+    private val location: AdaptiveLocationSource,
 ) {
+    private val _simulating = MutableStateFlow(false)
+    /** True while the Navigation SDK simulator drives the route (debug bench testing). */
+    val simulating: StateFlow<Boolean> = _simulating
+
+    private val simListener = RoadSnappedLocationProvider.LocationListener { loc -> location.inject(loc) }
+
     private val _destination = MutableStateFlow<Destination?>(null)
     val destination: StateFlow<Destination?> = _destination
 
@@ -70,7 +80,7 @@ class GuidanceController @Inject constructor(
             }.build()
         }.getOrElse { return "Bad destination: ${it.message}" }
         val status = suspendCancellableCoroutine { cont ->
-            nav.setDestination(waypoint).setOnResultListener { cont.resume(it) }
+            nav.setDestinations(listOf(waypoint), RoutingOptions()) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
         }
         return if (status == Navigator.RouteStatus.OK) {
             _destination.value = dest
@@ -90,7 +100,12 @@ class GuidanceController @Inject constructor(
 
     fun startGuidance(simulate: Boolean = false) {
         val nav = holder.navigator.value ?: return
-        nav.setAudioGuidance(Navigator.AudioGuidance.VOICE_ALERTS_AND_GUIDANCE)
+        nav.setAudioGuidanceSettings(
+            AudioGuidanceSettings.builder()
+                .setGuidanceMode(AudioGuidanceSettings.GuidanceMode.VOICE_ALERTS_AND_GUIDANCE)
+                .setBluetoothAudioEnabled(true)
+                .build(),
+        )
         nav.registerServiceForNavUpdates(
             app.packageName, NavUpdatesService::class.java.name,
             NavigationUpdatesOptions.Builder()
@@ -102,12 +117,24 @@ class GuidanceController @Inject constructor(
         nav.startGuidance()
         _guiding.value = true
         if (simulate && BuildConfig.DEBUG) {
-            nav.simulator.simulateLocationsAlongExistingRoute(SimulationOptions().speedMultiplier(2f))
+            // The simulator moves the SDK's location only, so feed it to the alert engine too.
+            location.setSimulated(true)
+            holder.roadSnappedProvider()?.addLocationListener(simListener)
+            _simulating.value = true
+            nav.simulator.simulateLocationsAlongExistingRoute(SimulationOptions().speedMultiplier(simulationSpeed))
         }
     }
 
+    /** Simulator speed multiplier (1 = real time). */
+    @Volatile var simulationSpeed = 1f
+
     fun stopGuidance() {
         val nav = holder.navigator.value ?: return
+        if (_simulating.value) {
+            holder.roadSnappedProvider()?.removeLocationListener(simListener)
+            location.setSimulated(false)
+            _simulating.value = false
+        }
         runCatching { nav.simulator.unsetUserLocation() }
         nav.stopGuidance()
         nav.clearDestinations()

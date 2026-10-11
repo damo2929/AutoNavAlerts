@@ -24,17 +24,22 @@ import javax.inject.Singleton
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
+const val DEFAULT_OVERSPEED = -0.001
+
 data class AppSettings(
     val units: Units = Units.IMPERIAL,
     val voiceOn: Boolean = true,
     val chimeOn: Boolean = true,
-    val overspeedPct: Double = 0.05,
+    /** Over-limit warning threshold as a fraction: −0.001 = warn above 99.9% of the limit. */
+    val overspeedPct: Double = DEFAULT_OVERSPEED,
     val rateCurve: RateCurve = RateCurve(),
     val pgwAutoSync: Boolean = true,
     val pgwWifiOnly: Boolean = false,
     val reviewReportsFirst: Boolean = true,
     val speedPanelOn: Boolean = true,
     val mutedUntilMs: Long = 0,
+    /** Debug builds: Navigation SDK simulator speed multiplier for bench testing. */
+    val simulationSpeed: Float = 1f,
 )
 
 data class PgwState(
@@ -67,6 +72,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val reviewReports = booleanPreferencesKey("review_reports")
         val speedPanel = booleanPreferencesKey("speed_panel")
         val mutedUntil = longPreferencesKey("muted_until")
+        val simSpeed = androidx.datastore.preferences.core.floatPreferencesKey("sim_speed")
 
         val mapsKey = stringPreferencesKey("maps_api_key_enc")
         val pgwUser = stringPreferencesKey("pgw_user_enc")
@@ -89,7 +95,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             units = p[K.units]?.let { runCatching { Units.valueOf(it) }.getOrNull() } ?: Units.IMPERIAL,
             voiceOn = p[K.voice] ?: true,
             chimeOn = p[K.chime] ?: true,
-            overspeedPct = p[K.overspeed] ?: 0.05,
+            overspeedPct = p[K.overspeed] ?: DEFAULT_OVERSPEED,
             rateCurve = runCatching {
                 RateCurve(minMph = p[K.gpsMinMph] ?: 10.0, maxMph = p[K.gpsMaxMph] ?: 50.0, maxHz = p[K.gpsMaxHz] ?: 10)
             }.getOrDefault(RateCurve()),
@@ -98,6 +104,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             reviewReportsFirst = p[K.reviewReports] ?: true,
             speedPanelOn = p[K.speedPanel] ?: true,
             mutedUntilMs = p[K.mutedUntil] ?: 0,
+            simulationSpeed = p[K.simSpeed] ?: 1f,
         )
     }
 
@@ -127,6 +134,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.reviewReports] = s.reviewReportsFirst
             p[K.speedPanel] = s.speedPanelOn
             p[K.mutedUntil] = s.mutedUntilMs
+            p[K.simSpeed] = s.simulationSpeed
         }
     }
 

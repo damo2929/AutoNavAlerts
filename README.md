@@ -7,6 +7,9 @@ An Android Auto navigation app built on the Google Navigation SDK. It's meant to
 ## Status
 **First test build (v0.1.0).** It builds and lint passes, and the `:core` logic has 61 unit tests. It **hasn't been run on a real car or the Desktop Head Unit yet**, so expect rough edges.
 
+- **Testing without a car:** [TESTING.md](TESTING.md) is the complete bench guide (Desktop Head Unit, simulated drives, test data, checklist).
+- **Every setting explained:** [docs/SETTINGS.md](docs/SETTINGS.md).
+
 The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, and record design changes there first. [DESIGN.md Appendix B](DESIGN.md#appendix-b--implementation-status-first-test-build-2026-10-11) tracks what's built and what isn't.
 
 ## Features
@@ -39,7 +42,7 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
   - POI sets
   - Cameras: PocketGPSWorld login and sync
   - Reports
-  - Settings: units, voice, chime, over-limit %, speed panel, GPS curve
+  - Settings: units, voice, chime, over-limit % (default −0.1%), speed panel, GPS curve, simulate speed (debug builds). All documented in [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ### Planned (designed, not built yet)
 - Home Assistant people finder: navigate to family members' live locations, e.g. children or relatives living with dementia (DESIGN.md §17)
@@ -77,20 +80,19 @@ You need a Google Maps Platform key with the **Navigation SDK** (access must be 
 4. Add cameras: either enter your PocketGPSWorld login on the **Cameras** tab and press **Sync now**, or import a POI file on the **POIs** tab.
 
 ### Test without a car
-Use the Android Auto **Desktop Head Unit** (`extras;google;auto` in the SDK manager). On the phone, enable "Start head unit server" in Android Auto's developer settings, then:
+Use the Android Auto **Desktop Head Unit** and the **Simulate** drive. See **[TESTING.md](TESTING.md)** for the full step-by-step bench set-up (phone or emulator), test data, and a checklist covering every feature. In short:
 
 ```bash
-adb forward tcp:5277 tcp:5277
+sudo dnf install libcxx libcxxabi          # Fedora: libraries the DHU needs
+adb forward tcp:5277 tcp:5277              # after "Start head unit server" on the phone
 $ANDROID_HOME/extras/google/auto/desktop-head-unit
 ```
-
-Search for a destination and press **Simulate** on the route preview (debug builds only) to drive past your POIs.
 
 ## Project layout
 | Module | What |
 |---|---|
-| `:core` | Plain Kotlin/JVM logic, unit-tested on the JVM: geo maths, grid index, importers, adaptive GPS rate, alert engine, templates, PocketGPSWorld feed and page parsing |
-| `:app` | Android app: Car App Library screens, Navigation SDK map and guidance, Room, WorkManager (PocketGPSWorld sync), Compose phone UI |
+| `:core` | Plain Kotlin/JVM logic (in `core/src/main/kotlin`), unit-tested on the JVM: geo maths, grid index, importers, adaptive GPS rate, alert engine, templates, PocketGPSWorld feed and page parsing |
+| `:app` | Android app (Kotlin, in `app/src/main/kotlin`): Car App Library screens, Navigation SDK map and guidance, Room, WorkManager (PocketGPSWorld sync), Compose phone UI |
 
 Main versions: AGP 9.4.1, Kotlin 2.4.21, Gradle 9.8.1, Car App Library 1.7.0, Navigation SDK 8.0.0. minSdk 26, targetSdk 36, compileSdk 37.
 

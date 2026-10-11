@@ -22,7 +22,12 @@ import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.nav.RouteOption
 import kotlinx.coroutines.launch
 
-/** Route preview with ETA and distance, then Go (DESIGN.md §8). */
+/**
+ * Route preview with ETA and distance, then Go (DESIGN.md §8). Uses RoutePreviewNavigationTemplate,
+ * deprecated in Car App 1.7 in favour of MapWithContentTemplate, which needs car API level 7; the
+ * older template keeps the preview working on older head units.
+ */
+@Suppress("DEPRECATION")
 class RoutePreviewScreen(
     carContext: CarContext,
     private val session: NavSession,

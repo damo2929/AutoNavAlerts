@@ -72,7 +72,8 @@ class AlertCoordinator @Inject constructor(
     private val guidance: GuidanceController,
     private val dispatcher: AlertDispatcher,
 ) {
-    private val engine = AlertEngine()
+    @Volatile private var engine = AlertEngine(AlertEngine.Config(overspeedPct = io.autonav.alerts.settings.DEFAULT_OVERSPEED))
+    private var engineOverspeed = Double.NaN
     private var job: Job? = null
 
     @Volatile private var cacheCentre: Long = Long.MIN_VALUE
@@ -96,7 +97,16 @@ class AlertCoordinator @Inject constructor(
         location.start()
         job = scope.launch {
             launch { repo.changes.collect { cacheCentre = Long.MIN_VALUE } }
-            launch { settings.settings.collect { location.setCurve(it.rateCurve) } }
+            launch {
+                settings.settings.collect {
+                    location.setCurve(it.rateCurve)
+                    guidance.simulationSpeed = it.simulationSpeed
+                    if (it.overspeedPct != engineOverspeed) {
+                        engineOverspeed = it.overspeedPct
+                        engine = AlertEngine(AlertEngine.Config(overspeedPct = it.overspeedPct))
+                    }
+                }
+            }
             location.fixes.collectLatest { fix -> onFix(fix) }
         }
     }

@@ -535,9 +535,9 @@ fun SettingsScreen(deps: PhoneDeps) {
         Section("Alerts") {
             SwitchRow("Voice", s.voiceOn) { v -> set { it.copy(voiceOn = v) } }
             SwitchRow("Chime before the passing alert", s.chimeOn) { v -> set { it.copy(chimeOn = v) } }
-            Text("Over-limit warning above the limit by ${(s.overspeedPct * 100).roundToInt()}%")
+            Text("Over-limit warning when your speed is above the limit by ${pctLabel(s.overspeedPct)}")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(0.0, 0.05, 0.1).forEach { p -> FilterChip(s.overspeedPct == p, { set { it.copy(overspeedPct = p) } }, label = { Text("${(p * 100).roundToInt()}%") }) }
+                listOf(-0.001, 0.0, 0.05, 0.1).forEach { p -> FilterChip(s.overspeedPct == p, { set { it.copy(overspeedPct = p) } }, label = { Text(pctLabel(p)) }) }
             }
         }
         Section("Speed panel") {
@@ -553,8 +553,21 @@ fun SettingsScreen(deps: PhoneDeps) {
                 listOf(40.0, 50.0, 60.0).forEach { v -> FilterChip(c.maxMph == v, { set { it.copy(rateCurve = RateCurve(c.minMph, v, 1, c.maxHz)) } }, label = { Text("full at ${v.roundToInt()}") }) }
             }
         }
+        if (io.autonav.alerts.BuildConfig.DEBUG) Section("Bench testing (debug builds)") {
+            Text("Speed of the Simulate drive on the car screen. 1× is real time; alerts are tested at the speed shown.",
+                style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1f, 2f, 4f).forEach { v -> FilterChip(s.simulationSpeed == v, { set { it.copy(simulationSpeed = v) } }, label = { Text("${v.roundToInt()}×") }) }
+            }
+        }
         Section("About") {
             Text("Apache License 2.0. Written with the help of Claude (AI-assisted code).", style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+/** "−0.1%", "0%", "5%"… for the over-limit setting. */
+private fun pctLabel(p: Double): String {
+    val v = p * 100
+    return if (v == Math.rint(v)) "${v.roundToInt()}%" else "%.1f%%".format(v)
 }

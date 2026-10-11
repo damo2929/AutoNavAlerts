@@ -7,6 +7,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -44,6 +45,11 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
     private var headingFrom: Location? = null
     private var lastHeading: Double? = null
     private val intervals = ArrayDeque<Long>()
+    private var lastArrivalMs = 0L
+
+    /** While true, real GPS is ignored and positions come from [inject] (Navigation SDK simulator). */
+    @Volatile var simulated = false
+        private set
 
     private val _fixes = MutableSharedFlow<Fix>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     /** Raw fixes for the alert engine and the per-fix marker redraw. */
@@ -57,7 +63,7 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            result.locations.forEach(::onLocation)
+            if (!simulated) result.locations.forEach(::onLocation)
         }
     }
 
@@ -72,6 +78,18 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
         running = true
         thread = HandlerThread("adaptive-location").also { it.start() }
         request(controller.requestedHz)
+    }
+
+    /** Bench testing: feed simulated positions (DESIGN.md §15.3). */
+    fun setSimulated(on: Boolean) {
+        simulated = on
+        lastFix = null
+        smoother.reset()
+        intervals.clear()
+    }
+
+    fun inject(loc: Location) {
+        if (simulated) onLocation(loc)
     }
 
     fun stop() {
@@ -97,12 +115,17 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
         Log.d(TAG, "Requested $hz Hz")
     }
 
+    @Synchronized
     private fun onLocation(loc: Location) {
         val prev = lastFix
+        val arrival = SystemClock.elapsedRealtime()
+        val prevArrival = lastArrivalMs
+        lastArrivalMs = arrival
         val rawSpeed = when {
-            loc.hasSpeed() -> loc.speed.toDouble()
+            loc.hasSpeed() && loc.speed > 0f -> loc.speed.toDouble()
             prev != null && loc.accuracy <= 30f -> {
-                val dt = (loc.time - prev.time) / 1000.0
+                val dtFix = (loc.time - prev.time) / 1000.0
+                val dt = if (dtFix > 0) dtFix else (arrival - prevArrival) / 1000.0
                 if (dt > 0) Geo.distanceM(prev.latitude, prev.longitude, loc.latitude, loc.longitude) / dt else 0.0
             }
             else -> 0.0
@@ -122,11 +145,11 @@ class AdaptiveLocationSource @Inject constructor(@ApplicationContext private val
             }
         }
         lastHeading = heading
-        prev?.let { intervals.addLast(loc.time - it.time); while (intervals.size > 20) intervals.removeFirst() }
+        if (prev != null) { intervals.addLast(arrival - prevArrival); while (intervals.size > 20) intervals.removeFirst() }
         lastFix = loc
         _lastLocation.value = loc
 
-        val now = loc.elapsedRealtimeNanos / 1_000_000
+        val now = arrival
         val mph = speed / Geo.MPS_PER_MPH
         controller.onSpeed(mph, now).newHz?.let(::request)
         val avg = intervals.filter { it > 0 }.average().takeIf { !it.isNaN() }

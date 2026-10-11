@@ -129,7 +129,7 @@
 The package names below are unchanged; classes marked as pure logic live in `:core` under `io.autonav.alerts.core.*`.
 
 ```
-app/src/main/java/io/autonav/alerts/
+app/src/main/kotlin/io/autonav/alerts/
   App.kt                         Hilt application; creates notification channels
   car/
     NavCarAppService.kt          CarAppService; host validator (allow-all in debug, known hosts in release)
@@ -878,7 +878,7 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
      - The 5 km gap is a setting.
      - Optional pre-processing at import: `ZoneChainer` groups type-4 points by nearest neighbour (≤ 5 km, bearing within ±30°) into `zoneId` chains and marks the ends of each chain. That improves the "entering" alert at the first camera, but the engine also works without it.
    - The zone also ends after 30 km or 30 min without an end POI.
-9. **Overspeed**: if the POI or zone has a limit and *v* > limit × (1 + `overspeedPct`), defaulting to 5%, the alert gets an "you are over the limit" suffix. In a zone, a repeat overspeed chime can play at most every 15 s.
+9. **Overspeed**: if the POI or zone has a limit and *v* > limit × (1 + `overspeedPct`), defaulting to **−0.1%** (so the warning triggers just below the limit, at 99.9% of it), the alert gets an "you are over the limit" suffix. In a zone, a repeat overspeed chime can play at most every 15 s.
 
 ### 11.1 Alert stages
 | Stage | Settings | Default | Can be turned off? |
@@ -1085,6 +1085,8 @@ While guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s
 - Notification: the built notification has CATEGORY_NAVIGATION and a CarAppExtender with the expected fields.
 
 ### 15.3 DHU end-to-end checklist
+
+> The full procedure is in [TESTING.md](TESTING.md). **Bench simulation:** while the debug **Simulate** drive is running, `AdaptiveLocationSource` ignores the phone's real GPS and takes positions from the Navigation SDK's `RoadSnappedLocationProvider` (the simulated car). So alerts, the GPS rate and the speed panel can all be tested at a desk. Free-drive tests need a moving phone GPS: use the emulator's route playback or a mock-location app.
 Setup: phone with Android Auto developer mode → "Start head unit server"; `adb forward tcp:5277 tcp:5277`; `desktop-head-unit` (with `--config` set to a split-screen 1920×720 profile and a portrait profile).
 
 1. Launch the app on the DHU: the map appears and the T&Cs were already accepted on the phone.
