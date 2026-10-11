@@ -31,7 +31,7 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
 - **Map extras**
   - POI markers redraw on every GPS update
   - A speed panel shows your speed and the limit. Google's limit is only known while you're over it, so otherwise the panel shows the nearest camera's limit, marked with a dot.
-- **Uses the car's own speed** from Android Auto when the car shares it: the speed panel matches your dashboard, and alerts and the GPS rate use the car's measured speed. Falls back to phone GPS.
+- **Uses the car's own speed and GPS** from Android Auto when the car shares them. The speed panel matches your dashboard; alerts use the car's measured speed and GPS position (the phone's GPS drops to a 1 Hz backup). Falls back to the phone.
 - **Speed-aware GPS**: 1 Hz below 10 mph, rising in a straight line to 10 Hz at 50 mph
 - **PocketGPSWorld**, with **your own** subscription
   - Checks their RSS feed daily and logs in to download a new release by itself

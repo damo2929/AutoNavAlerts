@@ -74,7 +74,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
                 deps.guidance().startGuidance(simulate = true)
             }
         })
-        deps.carSpeed().start(carContext)
+        deps.carData().start(carContext)
         deps.tts().warmUp()
         deps.alerts().start(App.appScope)
         deps.dispatcher().carSink = CarAlertSink(::showCarAlert)
@@ -141,7 +141,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         if (speedMps == null) return
         if (panel.visibility != android.view.View.VISIBLE) panel.post { panel.visibility = android.view.View.VISIBLE }
         // The car's display speed matches its dashboard; otherwise the engine's speed (car raw or GPS).
-        val shownMps = deps.carSpeed().fresh()?.displayMps?.toDouble()
+        val shownMps = deps.carData().freshSpeed()?.displayMps?.toDouble()
             ?.takeIf { !deps.guidance().simulating.value } ?: speedMps
         val speed = if (imperial) shownMps / Geo.MPS_PER_MPH else shownMps * 3.6
         val shown = speed.roundToInt()
@@ -196,7 +196,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
     }
 
     override fun onDestroy(owner: LifecycleOwner) {
-        deps.carSpeed().stop()
+        deps.carData().stop()
         deps.dispatcher().carSink = null
         deps.alerts().stop()
         markers.clear()

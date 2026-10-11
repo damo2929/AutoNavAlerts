@@ -203,12 +203,14 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | X7 | **More → GPS** at different simulated speeds | "Requested" is 1 Hz below 10 mph, rising to 10 Hz at 50 mph+ (e.g. about 6 Hz at 30 mph). "Actual" shows what's delivered. |
 | X8 | Settings → GPS rate: "max 5 Hz", "full at 40" | At 40 mph+ the requested rate is 5 Hz |
 
-### 6.4a Car speed (start the DHU with `-c config/default_sensors.ini`)
+### 6.4a Car speed and car GPS (start the DHU with `-c config/default_sensors.ini`)
 | # | Steps | Expected |
 |---|---|---|
-| C1 | DHU started with `default_sensors.ini`, no simulation running | **More → GPS** shows "Speed from car". The speed panel shows the speed the DHU reports. (Change it with the DHU console; type `help` for the sensor commands.) |
-| C2 | Settings → **Speed source → Phone GPS only** | **More → GPS** shows "Speed from phone GPS" |
-| C3 | DHU with the default config (no speed sensor) | Falls back to phone GPS: "Speed from phone GPS" |
+| C1 | DHU started with `default_sensors.ini`, no simulation running | **More → GPS** shows "Location from car · speed from car". The speed panel shows the speed the DHU reports. (Change the DHU's speed and location with its console; type `help` for the sensor commands.) |
+| C2 | Settings → **Speed and location source → Phone only** | **More → GPS** shows "Location from phone · speed from phone" |
+| C3 | DHU with the default config (no sensors) | Falls back: "Location from phone · speed from phone" |
+| C3a | With car GPS in use, look at the log (`adb logcat -s AdaptiveLocation`) | "Requested 1 Hz" for the phone (the backup rate). Quit the DHU sensor feed or switch to Phone only: within about 2 s the phone's adaptive rate returns. |
+| C3b | Set the DHU's car location onto a road with a test camera, then move it along the road | Alerts fire from the car's position |
 | C4 | Car speed at 50+ mph (DHU sensor) | **More → GPS** "Requested" goes to 10 Hz within about 2 s, without waiting for GPS |
 | C5 | During a **Simulate** drive | The simulated speed is used (car speed is ignored), so alerts follow the simulated car |
 

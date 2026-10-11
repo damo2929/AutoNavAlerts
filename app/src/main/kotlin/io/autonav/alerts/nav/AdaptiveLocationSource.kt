@@ -28,7 +28,13 @@ import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
-data class LocationStats(val requestedHz: Int, val actualHz: Double, val speedMph: Double, val speedFromCar: Boolean = false)
+data class LocationStats(
+    val requestedHz: Int,
+    val actualHz: Double,
+    val speedMph: Double,
+    val speedFromCar: Boolean = false,
+    val locationFromCar: Boolean = false,
+)
 
 /**
  * Speed-aware fused location for the alert engine (DESIGN.md §10): 1 Hz below 10 mph, linear up
@@ -37,7 +43,7 @@ data class LocationStats(val requestedHz: Int, val actualHz: Double, val speedMp
 @Singleton
 class AdaptiveLocationSource @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val carSpeed: CarSpeedSource,
+    private val carData: CarDataSource,
 ) {
     private val client = LocationServices.getFusedLocationProviderClient(context)
     private var thread: HandlerThread? = null
@@ -49,6 +55,9 @@ class AdaptiveLocationSource @Inject constructor(
     private var lastHeading: Double? = null
     private val intervals = ArrayDeque<Long>()
     private var lastArrivalMs = 0L
+    /** The rate actually requested from the phone (1 Hz backup while car GPS is fresh). */
+    @Volatile private var phoneHz = -1
+    @Volatile private var usingCarLocation = false
 
     /** While true, real GPS is ignored and positions come from [inject] (Navigation SDK simulator). */
     @Volatile var simulated = false
@@ -66,7 +75,14 @@ class AdaptiveLocationSource @Inject constructor(
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            if (!simulated) result.locations.forEach(::onLocation)
+            if (simulated) return
+            // Car GPS takes priority while it's fresh; the phone is only a backup (DESIGN.md §10.7).
+            if (carData.carLocationFresh()) return
+            if (usingCarLocation) {
+                usingCarLocation = false
+                request(controller.requestedHz) // car went quiet: restore the adaptive phone rate
+            }
+            result.locations.forEach { onLocation(it, fromCar = false) }
         }
     }
 
@@ -80,7 +96,8 @@ class AdaptiveLocationSource @Inject constructor(
         if (running) return
         running = true
         // React to car speed changes straight away, without waiting for the next GPS fix (§10.6).
-        carSpeed.onUpdate = { cs -> if (!simulated) cs.rawMps?.let { onCarSpeed(it.toDouble()) } }
+        carData.onSpeedUpdate = { cs -> if (!simulated) cs.rawMps?.let { onCarSpeed(it.toDouble()) } }
+        carData.onLocation = { loc -> if (!simulated) onCarLocation(loc) }
         thread = HandlerThread("adaptive-location").also { it.start() }
         request(controller.requestedHz)
     }
@@ -88,13 +105,22 @@ class AdaptiveLocationSource @Inject constructor(
     /** Bench testing: feed simulated positions (DESIGN.md §15.3). */
     fun setSimulated(on: Boolean) {
         simulated = on
+        headingFrom = null
         lastFix = null
         smoother.reset()
         intervals.clear()
     }
 
     fun inject(loc: Location) {
-        if (simulated) onLocation(loc)
+        if (simulated) onLocation(loc, fromCar = false)
+    }
+
+    private fun onCarLocation(loc: Location) {
+        if (!usingCarLocation) {
+            usingCarLocation = true
+            request(controller.requestedHz) // drops the phone to its 1 Hz backup rate
+        }
+        onLocation(loc, fromCar = true)
     }
 
     @Synchronized
@@ -105,15 +131,21 @@ class AdaptiveLocationSource @Inject constructor(
     fun stop() {
         if (!running) return
         running = false
-        carSpeed.onUpdate = null
+        carData.onSpeedUpdate = null
+        carData.onLocation = null
+        usingCarLocation = false
+        phoneHz = -1
         client.removeLocationUpdates(callback)
         thread?.quitSafely()
         thread = null
     }
 
     @SuppressLint("MissingPermission")
-    private fun request(hz: Int) {
+    private fun request(wantedHz: Int) {
         val looper = thread?.looper ?: return
+        val hz = if (usingCarLocation && carData.carLocationFresh()) 1 else wantedHz
+        if (hz == phoneHz) return
+        phoneHz = hz
         val interval = RateCurve.intervalMs(hz)
         client.removeLocationUpdates(callback)
         val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
@@ -127,7 +159,7 @@ class AdaptiveLocationSource @Inject constructor(
     }
 
     @Synchronized
-    private fun onLocation(loc: Location) {
+    private fun onLocation(loc: Location, fromCar: Boolean) {
         val prev = lastFix
         val arrival = SystemClock.elapsedRealtime()
         val prevArrival = lastArrivalMs
@@ -143,7 +175,7 @@ class AdaptiveLocationSource @Inject constructor(
         }
         val gpsSpeed = smoother.add(rawSpeed)
         // Car speed when the head unit provides it (DESIGN.md §10.6); simulated drives use their own.
-        val car = if (simulated) null else carSpeed.fresh(arrival)
+        val car = if (simulated) null else carData.freshSpeed(arrival)
         val speed = car?.rawMps?.toDouble() ?: gpsSpeed
         val heading = when {
             loc.hasBearing() && speed > 2.0 -> loc.bearing.toDouble()
@@ -168,8 +200,9 @@ class AdaptiveLocationSource @Inject constructor(
         controller.onSpeed(mph, now).newHz?.let(::request)
         val avg = intervals.filter { it > 0 }.average().takeIf { !it.isNaN() }
         val actualHz = avg?.let { 1000.0 / it } ?: 0.0
-        if (avg != null) controller.onMeasuredRate(actualHz, now).newHz?.let(::request)
-        _stats.value = LocationStats(controller.requestedHz, actualHz, mph, speedFromCar = car != null)
+        // The chip-capability check only applies to the phone's GPS; the car sets its own rate.
+        if (avg != null && !fromCar) controller.onMeasuredRate(actualHz, now).newHz?.let(::request)
+        _stats.value = LocationStats(controller.requestedHz, actualHz, mph, speedFromCar = car != null, locationFromCar = fromCar)
 
         _fixes.tryEmit(Fix(loc.latitude, loc.longitude, speed, heading, System.currentTimeMillis()))
     }

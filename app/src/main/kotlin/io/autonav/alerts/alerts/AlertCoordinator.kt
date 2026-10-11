@@ -71,7 +71,7 @@ class AlertCoordinator @Inject constructor(
     private val settings: SettingsStore,
     private val guidance: GuidanceController,
     private val dispatcher: AlertDispatcher,
-    private val carSpeed: io.autonav.alerts.nav.CarSpeedSource,
+    private val carData: io.autonav.alerts.nav.CarDataSource,
 ) {
     @Volatile private var engine = AlertEngine(AlertEngine.Config(overspeedPct = io.autonav.alerts.settings.DEFAULT_OVERSPEED))
     private var engineOverspeed = Double.NaN
@@ -102,7 +102,7 @@ class AlertCoordinator @Inject constructor(
                 settings.settings.collect {
                     location.setCurve(it.rateCurve)
                     guidance.simulationSpeed = it.simulationSpeed
-                    carSpeed.enabled = it.speedSource == io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE
+                    carData.enabled = it.speedSource == io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE
                     if (it.overspeedPct != engineOverspeed) {
                         engineOverspeed = it.overspeedPct
                         engine = AlertEngine(AlertEngine.Config(overspeedPct = it.overspeedPct))

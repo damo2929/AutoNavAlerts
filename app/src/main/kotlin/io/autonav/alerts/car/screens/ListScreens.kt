@@ -53,7 +53,7 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                 }.build())
             .addItem(Row.Builder().setTitle("GPS")
                 .addText("Requested ${stats.requestedHz} Hz · actual ${"%.1f".format(stats.actualHz)} Hz · ${"%.0f".format(stats.speedMph)} mph")
-                .addText("Speed from " + if (stats.speedFromCar) "car" else "phone GPS")
+                .addText("Location from " + (if (stats.locationFromCar) "car" else "phone") + " · speed from " + (if (stats.speedFromCar) "car" else "phone"))
                 .build())
         return ListTemplate.Builder()
             .setHeader(Header.Builder().setTitle("More").setStartHeaderAction(Action.BACK).build())

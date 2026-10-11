@@ -24,18 +24,22 @@ The phone app has five tabs along the bottom: **Setup · POIs · Cameras · Repo
 
 - The over-limit setting applies to **POI and camera limits** (your imported data). The colour of the speed panel follows Google's speed-limit data separately (§1.3).
 
-### 1.3 Speed source
+### 1.3 Speed and location source
 | Control | Options | Default | What it does |
 |---|---|---|---|
-| **Speed source** | **Car when available** / Phone GPS only | Car when available | Where your speed comes from. With **Car when available**, the app reads the **car's own speed** through Android Auto whenever the car shares it, and falls back to phone GPS if the car stops reporting for 3 s or doesn't provide speed. **Phone GPS only** ignores the car. |
+| **Speed and location source** | **Car when available** / Phone only | Car when available | Where your speed and position come from. With **Car when available**, the app reads the **car's own speed and GPS** through Android Auto whenever the car shares them, and falls back to the phone if the car stops reporting (speed: 3 s, GPS: 2 s) or doesn't provide them. **Phone only** ignores the car. |
 
 What car speed is used for:
 - **Speed panel**: the car's **speedometer** figure, so it matches your dashboard. Cars usually read a few percent high.
 - **Alerts**: the car's **measured** road speed, for "seconds ahead" alert distances and the over-limit warning. It's more accurate than GPS in tunnels, under trees and at low speed.
 - **GPS rate** (§1.5): changes as soon as the car's speed changes.
-- Your **position** always comes from the phone's GPS. The car only provides speed.
+- **Position, from the car's GPS**: used for camera alerts, marker updates and report positions.
+  - The car's GPS antenna is usually better placed than a phone in a pocket or door bin.
+  - While it's in use, the phone's GPS drops to a **1 Hz backup** to save battery, and takes over immediately if the car goes quiet.
+  - The car decides how often it reports, so the adaptive 1–10 Hz rate applies to the phone only.
+- **The map itself** (the car marker and route guidance) follows the **phone's** location services, because Google's Navigation SDK can't be fed the car's GPS. Many cars already pass their GPS to the phone through Android Auto.
 
-The car screen's **More → GPS** row shows "Speed from car" or "Speed from phone GPS". Not every car or head unit shares its speed. Some aftermarket units don't, and the app needs car API level 3 or higher.
+The car screen's **More → GPS** row shows where the location and speed are coming from ("Location from car · speed from car"). Not every car or head unit shares its speed or GPS. Some aftermarket units don't, and the app needs car API level 3 or higher.
 
 ### 1.4 Speed panel
 | Control | Options | Default | What it does |
@@ -212,7 +216,7 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Units | mph, miles, yards |
 | Voice / Chime | On / On |
 | Over-limit warning | **−0.1%** |
-| Speed source | Car when available |
+| Speed and location source | Car when available |
 | Speed panel | On |
 | GPS rate | 1 Hz below 10 mph, rising to 10 Hz at 50 mph |
 | Simulate speed (debug builds) | 1× |

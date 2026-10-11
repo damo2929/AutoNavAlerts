@@ -851,7 +851,7 @@ Android Auto can pass the **car's own speed** to the app. The Car App Library re
 - **display speed**: what the car's own speedometer shows, usually a few percent high
 - **speedometer unit**: the car's mph/km/h setting
 
-**Setting:** **Speed source** = **Car when available** (default) / **Phone GPS only**.
+**Setting:** **Speed and location source** = **Car when available** (default) / **Phone only**. The same setting covers car GPS (§10.7).
 
 **What each speed is used for** (when the car's speed is *fresh*, i.e. reported in the last 3 s):
 | Use | Speed used | Why |
@@ -866,6 +866,16 @@ Android Auto can pass the **car's own speed** to the app. The Car App Library re
 - The car screen's **More → GPS** row shows which source is in use.
 
 **Simulation:** during a debug **Simulate** drive the simulated speed is used, and car speed is ignored. The DHU only sends speed with `config/default_sensors.ini`.
+
+### 10.7 Car GPS for location
+The car's GPS position is read through `CarHardwareManager.carSensors.addCarHardwareLocationListener(UPDATE_RATE_FASTEST, …)` (car API 3+, uses the existing fine-location permission). It's controlled by the same setting as speed, renamed **Speed and location source**: **Car when available** (default) / **Phone only**.
+
+- **Primary feed:** while the car's location is **fresh** (a fix in the last 2 s, with status SUCCESS), car fixes feed the alert engine, the per-fix marker redraw, the report snapshot and the free-drive camera checks. Phone fixes are ignored during that time.
+- **Phone as backup:** while car GPS is fresh, the phone's fused-location request drops to **1 Hz** to save power. If the car stops reporting for 2 s, phone fixes take over straight away, and the adaptive 1–10 Hz rate (§10.2) is restored.
+- **Rate:** the car decides how often it reports. We ask for its fastest rate. The adaptive rate only applies to the phone.
+- **Not changed:** the **map's** car marker and turn-by-turn routing come from the Navigation SDK, which uses the phone's location services. The SDK has no way to feed it the car's GPS. On many cars, Android Auto already passes the car's GPS into the phone's location services anyway.
+- **Diagnostics:** **More → GPS** shows "Location from car / phone" and "Speed from car / phone".
+- **Simulation:** during a debug Simulate drive, simulated positions are used and car GPS is ignored. The DHU provides car location with `config/default_sensors.ini`.
 
 ## 11. Alert engine maths
 
@@ -1319,7 +1329,7 @@ One `ChargerProvider` interface lets sources be added or turned off. Results are
 - **Alerts**:
   - Adaptive 1–10 Hz GPS, the 5×5 cell cache, and the full `AlertEngine`: 3 stages including the compulsory 100 yd passing alert, direction and parallel-road checks, missed-passing safety net, average-speed chains, overspeed.
   - Car `Alert` with Dismiss/Mute, a navigation heads-up notification when the app is in the background, and TTS on the guidance channel with ducking and queueing behind SDK voice.
-- **Car speed** (§10.6): the speed panel uses the car's display speed, and the alert engine and GPS rate use its raw speed, falling back to phone GPS. It can be switched off in Settings.
+- **Car speed and GPS** (§10.6–10.7): the speed panel uses the car's display speed, and the alert engine and GPS rate use its raw speed. Car GPS is the primary position feed for alerts, with the phone as a 1 Hz backup. Both fall back to the phone and can be switched off in Settings.
 - **Map extras**: markers redrawn as a diff on every fix (ACTIVE/AHEAD/OTHER), and the speed panel, which shows Google's limit worked out from `SpeedingListener` while speeding, or a camera limit.
 - **PGW**:
   - Encrypted login, the daily RSS conditional GET, an automatic download on a new release, a held swap during guidance, notifications, Sync now / Force re-download.
