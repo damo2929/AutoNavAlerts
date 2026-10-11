@@ -300,6 +300,8 @@ adb bugreport autonav-bugreport.zip      # full report, including battery/GPS hi
 | Symptom | Fix |
 |---|---|
 | `desktop-head-unit: error while loading shared libraries: libc++.so.1` | Install the C++ runtime (§1.2) |
+| Emulator window opens, then the emulator disappears (crash) | Check `coredumpctl list`. On **AMD GPUs with Mesa 26.x**, `-gpu host` crashes in `radeonsi si_resource_from_memobj`: start with **`-gpu host -feature -Vulkan`**, which `tools/bench.sh` does by default. |
+| SELinux alert "preventing RenderThread from using the execheap access" | Caused by `-gpu swiftshader_indirect` (software rendering needs executable heap memory). Use `-gpu host -feature -Vulkan` instead. We **don't** recommend `setsebool selinuxuser_execheap 1`, because it weakens protection for every program you run. |
 | DHU says it's waiting for the phone | On the phone: **⋮ → Start head unit server** (again after a reboot). Then run `adb forward tcp:5277 tcp:5277` again. Check `adb devices`. |
 | AutoNavAlerts isn't in the DHU launcher | Android Auto developer settings → **Unknown sources** on. Reinstall the APK. |
 | DHU shows "Finish setup on your phone" | Do what the message says on the phone's Setup tab (§2.3) |
