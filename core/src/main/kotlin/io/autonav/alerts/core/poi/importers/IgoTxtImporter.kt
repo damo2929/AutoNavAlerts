@@ -81,13 +81,16 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
     }
 
     companion object {
-        /** PGW iGO type codes found in v24.101 (DESIGN.md §5.2). Code 11 is a best guess, still to confirm. */
+        /**
+         * PGW iGO type codes in v24.101 (DESIGN.md §5.2). Code 11 appears only in the fixed-camera
+         * (gatso) file of the consolidated-by-type package, so it's a fixed-camera subtype.
+         */
         val PGW_CATEGORIES: Map<String, String> = mapOf(
             "1" to "Fixed camera",
             "3" to "Red light camera",
             "4" to "Average speed camera",
             "5" to "Mobile camera site",
-            "11" to "Red light + speed camera",
+            "11" to "Fixed camera (type 11)",
         )
 
         /** Type codes whose points form average-speed chains without start/end markers. */

@@ -60,6 +60,21 @@ object ZipEntries {
         }
     }
 
+    private val PGW_FILE = Regex("""^pocketgps_[a-z]+_([a-z0-9]+)\.txt$""", RegexOption.IGNORE_CASE)
+
+    /**
+     * PGW camera files keyed by type stem, e.g. "gatso", "mobile", "redlight", "specs", "pmobile"
+     * (consolidated by type) or "sc" (single file). Licence/Release/help files are left out.
+     */
+    fun pgwTypeFiles(entries: Map<String, ByteArray>): LinkedHashMap<String, ByteArray> {
+        val out = LinkedHashMap<String, ByteArray>()
+        for ((name, bytes) in entries) {
+            val stem = PGW_FILE.matchEntire(name)?.groupValues?.get(1)?.lowercase() ?: continue
+            if (IgoTxtImporter().sniff(String(bytes, 0, minOf(200, bytes.size), Charsets.ISO_8859_1))) out[stem] = bytes
+        }
+        return out
+    }
+
     /** Picks the PGW main and pending-mobile files by name pattern, ignoring case. */
     fun pgwFiles(entries: Map<String, ByteArray>): Pair<ByteArray?, ByteArray?> {
         val main = entries.entries.firstOrNull { it.key.lowercase().endsWith("_sc.txt") }?.value

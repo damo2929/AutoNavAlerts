@@ -376,7 +376,25 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
   - an error report: counts of good rows, skipped rows and why, and the first 20 bad lines
 - An import **fails as a whole** if more than 20% of rows are bad or there are no good rows. Otherwise it succeeds with warnings.
 
-### 5.2 iGO TXT (main format, PGW) — **checked against real download v24.101 (07 Oct 26)**
+### 5.2 iGO TXT (main format, PGW)
+
+> **Package used: 288 "UK – Consolidated by type"** (iGO, with pending mobiles). Each file becomes **its own set**, and sets are matched by file on every sync, so per-set icon and alert choices are kept:
+>
+> | File | Set | Rows (v24.101) | Type codes |
+> |---|---|---|---|
+> | `pocketgps_uk_gatso.txt` | PGW fixed cameras | 4,248 | 1 (3,932), **11 (316)** |
+> | `pocketgps_uk_mobile.txt` | PGW mobile camera sites | 8,888 | 5 |
+> | `pocketgps_uk_redlight.txt` | PGW red light cameras | 778 | 3 |
+> | `pocketgps_uk_specs.txt` | PGW average speed cameras (SPECS) | 3,396 | 4 (zone points) |
+> | `pocketgps_uk_pmobile.txt` | PGW pending mobile sites (unverified), alerts off | 2,516 | 5 |
+>
+> - The total, 19,826, matches the single-file package 61.
+> - **Type 11 is only in the fixed-camera file**, so it's a fixed-camera subtype, shown as "Fixed camera (type 11)". It isn't red light + speed as first guessed.
+> - PGW sets from an older layout are removed on import.
+> - `PgwSyncWorker.IMPORT_LAYOUT` forces a re-download when the import logic changes.
+>
+> The single-file notes below still describe the file format, which is identical in every file.
+ — **checked against real download v24.101 (07 Oct 26)**
 **What's in the package**: `idPackage=61`, "UK - Single file with all cameras", with "Include pMobile files" ticked. The zip contains:
 
 | File | Contents |
@@ -412,7 +430,7 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
 | 3 | 778 | Red light camera | |
 | 4 | 3,396 | Average speed camera (SPECS) | **Start, middle and end aren't marked.** All SPECS points are type 4. Zones are worked out from chains of points (§11 step 8). |
 | 5 | 8,888 | Mobile camera site | Every row in `pmobile` is type 5 |
-| 11 | 316 | Red light + speed (RedSpeed) | **Best guess.** Mostly 30 mph urban junctions. Confirm by downloading package 288 "Consolidated by type" once, comparing positions, and updating the table. |
+| 11 | 316 | Fixed camera (type 11) | **Confirmed fixed**: package 288 puts all of them in `pocketgps_uk_gatso.txt` (fixed cameras). Exact subtype not stated by PGW. |
 
 - Codes not in the table become a category named "Type N".
 - **pMobile set**: imported as a **separate PoiSet** "PGW pending mobile sites", alerts **off by default** and a lighter icon. PGW says these sites "have not been checked for accuracy", so they could otherwise cause false alerts. They can be turned on in the POI sets screen.

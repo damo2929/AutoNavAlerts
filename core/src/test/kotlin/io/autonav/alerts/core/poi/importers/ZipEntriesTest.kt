@@ -52,6 +52,16 @@ class ZipEntriesTest {
         assertTrue(entries.keys.none { it.contains("evil") })
     }
 
+    @Test
+    fun consolidatedByTypeFilesAreAllFound() {
+        val entries = ZipEntries.read(zip(
+            "_Need_Help.htm" to "<html/>".toByteArray(), "Licence.txt" to "x".toByteArray(),
+            "pocketgps_uk_gatso.txt" to igo, "pocketgps_uk_mobile.txt" to igo, "pocketgps_uk_pmobile.txt" to igo,
+            "pocketgps_uk_redlight.txt" to igo, "pocketgps_uk_specs.txt" to igo,
+        ))
+        assertEquals(listOf("gatso", "mobile", "pmobile", "redlight", "specs"), ZipEntries.pgwTypeFiles(entries).keys.toList())
+    }
+
     /** Optional: PGW_ZIP=/path/to/pgpsw-speed-cams-….zip (your own download, never committed). */
     @Test
     fun realPgwZipIfProvided() {
@@ -59,8 +69,8 @@ class ZipEntriesTest {
         assumeTrue("PGW_ZIP not set", !path.isNullOrBlank())
         val entries = ZipEntries.read(File(path!!))
         println("PGW zip entries: ${entries.map { "${it.key} (${it.value.size})" }}")
-        val (main, pending) = ZipEntries.pgwFiles(entries)
-        assertNotNull("main camera file", main)
-        assertNotNull("pending mobile file", pending)
+        val types = ZipEntries.pgwTypeFiles(entries)
+        println("PGW type files: ${types.keys}")
+        assertTrue("camera files", types.isNotEmpty())
     }
 }

@@ -123,29 +123,43 @@ class PoiRepository @Inject constructor(
     // --- PGW import ----------------------------------------------------------------------------
 
     /** Imports a downloaded PGW zip as two sets (main + pending mobiles). Returns the main outcome. */
+    /**
+     * Imports a PGW zip. "Consolidated by type" (package 288) becomes one set per file (fixed,
+     * mobile, red light, average speed, pending mobile); a single-file package becomes one set.
+     * Sets are matched by file across syncs, so the user's icon/alert choices are kept, and PGW
+     * sets no longer in the download are removed (DESIGN.md §5.2).
+     */
     suspend fun importPgwZip(zip: File, version: String): ImportOutcome = withContext(Dispatchers.IO) {
         val entries = ZipEntries.read(zip)
         android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.map { "${it.key} (${it.value.size})" }}")
-        val (mainBytes, pendingBytes) = ZipEntries.pgwFiles(entries)
-        val main = mainBytes ?: return@withContext ImportOutcome(null, 0, 0, emptyList(), true,
-            "Main camera file missing from download. The zip contained: " +
+        val files = ZipEntries.pgwTypeFiles(entries)
+        if (files.isEmpty()) return@withContext ImportOutcome(null, 0, 0, emptyList(), true,
+            "No camera files in the download. The zip contained: " +
                 entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" })
         val importer = IgoTxtImporter()
-        val mainResult = importer.parse(main.inputStream().bufferedReader(Charsets.ISO_8859_1))
-        val existingMain = db.poiSets().bySource(PoiSourceType.PGW)
-        val outcome = storeImport(
-            mainResult, "PocketGPSWorld cameras", PoiSourceType.PGW, PoiFormat.IGO_TXT.name, existingMain?.id,
-            categoryNamer = IgoTxtImporter::categoryName, version = version,
-        )
-        pendingBytes?.let { pm ->
-            val r = importer.parse(pm.inputStream().bufferedReader(Charsets.ISO_8859_1))
-            val existing = db.poiSets().bySource(PoiSourceType.PGW_PENDING)
-            storeImport(
-                r, "PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING, PoiFormat.IGO_TXT.name, existing?.id,
-                categoryNamer = { "Pending mobile site" }, version = version, alertsDefault = existing?.alertsEnabled ?: false,
+        val keptFormats = HashSet<String>()
+        var total = 0
+        var firstId: Long? = null
+        val failures = ArrayList<String>()
+        for ((stem, bytes) in files) {
+            val info = PgwFile.of(stem)
+            val format = "${PoiFormat.IGO_TXT.name}:$stem"
+            keptFormats += format
+            val result = importer.parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1))
+            val existing = db.poiSets().byFormat(format)
+            val out = storeImport(
+                result, info.setName, info.source, format, existing?.id,
+                categoryNamer = info.categoryName, version = version,
+                alertsDefault = existing?.alertsEnabled ?: info.alertsByDefault, defaultIcon = info.icon,
             )
+            if (out.failed) failures += "${info.setName}: ${out.message}" else { total += out.imported; if (firstId == null) firstId = out.setId }
         }
-        outcome
+        // Remove PGW sets from an older package layout (e.g. the single combined set).
+        db.poiSets().pgwSets().filter { it.format !in keptFormats }.forEach { db.poiSets().delete(it.id) }
+        notifyChanged()
+        if (failures.size == files.size) ImportOutcome(null, 0, 0, failures, true, failures.joinToString("; "))
+        else ImportOutcome(firstId, total, 0, failures, false,
+            "Imported $total cameras in ${files.size - failures.size} sets" + if (failures.isNotEmpty()) " (${failures.size} failed)" else "")
     }
 
     // --- Shared storage ------------------------------------------------------------------------
@@ -159,6 +173,7 @@ class PoiRepository @Inject constructor(
         categoryNamer: (String) -> String,
         version: String? = null,
         alertsDefault: Boolean = true,
+        defaultIcon: String? = null,
     ): ImportOutcome {
         val samples = result.errors.take(20).map { "Line ${it.lineNumber}: ${it.reason}" }
         if (result.failed) {
@@ -167,8 +182,9 @@ class PoiRepository @Inject constructor(
         }
         val old = replaceSetId?.let { db.poiSets().get(it) }
         val now = System.currentTimeMillis()
-        val staging = (old ?: defaultSet(setName, source, format, alertsDefault, now)).copy(
-            id = 0, name = old?.name ?: setName, state = SetState.STAGING, replacesSetId = old?.id,
+        val base = old ?: defaultSet(setName, source, format, alertsDefault, now).let { d -> defaultIcon?.let { d.copy(defaultIconId = it) } ?: d }
+        val staging = base.copy(
+            id = 0, name = old?.name ?: setName, format = format, state = SetState.STAGING, replacesSetId = old?.id,
             poiCount = result.rows.size, version = version, lastUpdated = now,
         )
         val stagingId = db.poiSets().insert(staging)
@@ -206,6 +222,29 @@ class PoiRepository @Inject constructor(
         speedLimit = speed, speedUnit = speedUnit, directionType = dirType, bearing = bearing,
         gridCell = Grid.cellOf(lat, lon),
     )
+
+    /** What each PGW file becomes (DESIGN.md §5.2). */
+    private data class PgwFile(
+        val setName: String,
+        val source: PoiSourceType,
+        val icon: String,
+        val alertsByDefault: Boolean,
+        val categoryName: (String) -> String,
+    ) {
+        companion object {
+            fun of(stem: String): PgwFile = when (stem) {
+                "gatso" -> PgwFile("PGW fixed cameras", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true) { c ->
+                    if (c == "11") "Fixed camera (type 11)" else "Fixed camera"
+                }
+                "mobile" -> PgwFile("PGW mobile camera sites", PoiSourceType.PGW, IconRepository.CAMERA_MOBILE, true) { "Mobile camera site" }
+                "redlight" -> PgwFile("PGW red light cameras", PoiSourceType.PGW, IconRepository.CAMERA_REDLIGHT, true) { "Red light camera" }
+                "specs" -> PgwFile("PGW average speed cameras (SPECS)", PoiSourceType.PGW, IconRepository.CAMERA_AVERAGE, true) { "Average speed camera" }
+                "pmobile" -> PgwFile("PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING, IconRepository.CAMERA_PENDING, false) { "Pending mobile site" }
+                "sc" -> PgwFile("PocketGPSWorld cameras (all)", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
+                else -> PgwFile("PGW ${stem.replaceFirstChar { it.uppercase() }}", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
+            }
+        }
+    }
 
     fun defaultSet(name: String, source: PoiSourceType, format: String, alerts: Boolean, now: Long) = PoiSetEntity(
         name = name, source = source, format = format,

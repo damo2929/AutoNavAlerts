@@ -47,6 +47,10 @@ data class AppSettings(
 
 data class PgwState(
     val installedVersion: String? = null,
+    /** PGW package id the installed data came from (61 single file, 288 consolidated by type). */
+    val installedPackage: Int? = null,
+    /** Import layout the installed data was built with; a different value forces a re-download. */
+    val installedLayout: Int? = null,
     val latestVersion: String? = null,
     val latestSummary: String? = null,
     val pendingVersion: String? = null,
@@ -84,6 +88,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
 
         val termsAcceptedAt = longPreferencesKey("nav_terms_accepted_at")
         val pgwInstalled = stringPreferencesKey("pgw_installed")
+        val pgwInstalledPackage = intPreferencesKey("pgw_installed_package")
+        val pgwInstalledLayout = intPreferencesKey("pgw_installed_layout")
         val pgwLatest = stringPreferencesKey("pgw_latest")
         val pgwLatestSummary = stringPreferencesKey("pgw_latest_summary")
         val pgwPending = stringPreferencesKey("pgw_pending")
@@ -114,7 +120,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
 
     val pgwState: Flow<PgwState> = ds.data.map { p ->
         PgwState(
-            installedVersion = p[K.pgwInstalled], latestVersion = p[K.pgwLatest], latestSummary = p[K.pgwLatestSummary],
+            installedVersion = p[K.pgwInstalled], installedPackage = p[K.pgwInstalledPackage], installedLayout = p[K.pgwInstalledLayout], latestVersion = p[K.pgwLatest], latestSummary = p[K.pgwLatestSummary],
             pendingVersion = p[K.pgwPending], lastFeedCheckMs = p[K.pgwFeedCheck] ?: 0, lastSyncMs = p[K.pgwLastSync] ?: 0,
             lastResult = p[K.pgwResult], feedEtag = p[K.pgwEtag], feedLastModified = p[K.pgwLastModified],
         )
@@ -149,6 +155,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             put(K.pgwInstalled, s.installedVersion); put(K.pgwLatest, s.latestVersion)
             put(K.pgwLatestSummary, s.latestSummary); put(K.pgwPending, s.pendingVersion)
             put(K.pgwResult, s.lastResult); put(K.pgwEtag, s.feedEtag); put(K.pgwLastModified, s.feedLastModified)
+            s.installedPackage?.let { p[K.pgwInstalledPackage] = it } ?: p.remove(K.pgwInstalledPackage)
+            s.installedLayout?.let { p[K.pgwInstalledLayout] = it } ?: p.remove(K.pgwInstalledLayout)
             p[K.pgwFeedCheck] = s.lastFeedCheckMs
             p[K.pgwLastSync] = s.lastSyncMs
         }

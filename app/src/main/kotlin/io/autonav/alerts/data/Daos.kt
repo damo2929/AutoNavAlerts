@@ -28,6 +28,12 @@ interface PoiSetDao {
     @Query("SELECT * FROM poi_set WHERE source = :source AND state = 'ACTIVE' LIMIT 1")
     suspend fun bySource(source: PoiSourceType): PoiSetEntity?
 
+    @Query("SELECT * FROM poi_set WHERE format = :format AND state = 'ACTIVE' LIMIT 1")
+    suspend fun byFormat(format: String): PoiSetEntity?
+
+    @Query("SELECT * FROM poi_set WHERE source IN ('PGW', 'PGW_PENDING') AND state = 'ACTIVE'")
+    suspend fun pgwSets(): List<PoiSetEntity>
+
     @Insert
     suspend fun insert(set: PoiSetEntity): Long
 

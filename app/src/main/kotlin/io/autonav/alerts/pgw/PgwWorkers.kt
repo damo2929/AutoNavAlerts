@@ -108,7 +108,8 @@ class PgwFeedCheckWorker @AssistedInject constructor(
                     it.copy(lastFeedCheckMs = now, feedEtag = r.etag, feedLastModified = r.lastModified,
                         latestVersion = newest?.version, latestSummary = newest?.summary)
                 }
-                if (newest != null && newest.isNewerThan(state.installedVersion)) {
+                if (newest != null && (newest.isNewerThan(state.installedVersion) ||
+                        state.installedPackage != PgwConfig.PACKAGE_UK_IGO || state.installedLayout != PgwSyncWorker.IMPORT_LAYOUT)) {
                     settings.updatePgw { it.copy(pendingVersion = newest.version) }
                     scheduler.queueSync()
                     return Result.success()
@@ -146,7 +147,8 @@ class PgwSyncWorker @AssistedInject constructor(
                 if (r is FeedResult.Releases) settings.updatePgw { it.copy(latestVersion = r.newest?.version, latestSummary = r.newest?.summary, pendingVersion = r.newest?.version) }
             }
             val st = settings.currentPgw()
-            if (!force && st.installedVersion != null && st.latestVersion != null && st.latestVersion == st.installedVersion) {
+            val samePackage = st.installedPackage == PgwConfig.PACKAGE_UK_IGO && st.installedLayout == IMPORT_LAYOUT
+            if (!force && samePackage && st.installedVersion != null && st.latestVersion != null && st.latestVersion == st.installedVersion) {
                 settings.updatePgw { it.copy(lastResult = "Already up to date (${st.installedVersion})", lastSyncMs = now) }
                 return Result.success()
             }
@@ -168,7 +170,7 @@ class PgwSyncWorker @AssistedInject constructor(
                 return Result.failure()
             }
             val summary = settings.currentPgw().latestSummary
-            settings.updatePgw { it.copy(installedVersion = version, pendingVersion = null, lastResult = "Updated to $version: ${outcome.message}", lastSyncMs = now) }
+            settings.updatePgw { it.copy(installedVersion = version, installedPackage = PgwConfig.PACKAGE_UK_IGO, installedLayout = IMPORT_LAYOUT, pendingVersion = null, lastResult = "Updated to $version: ${outcome.message}", lastSyncMs = now) }
             notify("Camera database updated to $version", listOfNotNull(summary, outcome.message).joinToString(" "))
             Result.success()
         } catch (e: PgwAuthException) {
@@ -204,6 +206,8 @@ class PgwSyncWorker @AssistedInject constructor(
     }
 
     companion object {
+        /** Bump when the way PGW zips are turned into sets changes (2 = one set per type file). */
+        const val IMPORT_LAYOUT = 2
         const val KEY_FORCE = "force"
         const val KEY_CHECK_FEED = "check_feed"
         const val CHANNEL = "pgw_sync"
