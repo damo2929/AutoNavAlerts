@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and lower. Same exclusions as data_extraction_rules.xml (DESIGN.md §6.4). -->
+<full-backup-content>
+    <exclude domain="database" path="poi.db" />
+    <exclude domain="database" path="poi.db-wal" />
+    <exclude domain="database" path="poi.db-shm" />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="datastore" />
+    <exclude domain="file" path="pgw" />
+</full-backup-content>

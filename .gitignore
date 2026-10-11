@@ -1,0 +1,17 @@
+.gradle/
+.kotlin/
+build/
+/local.properties
+/secrets.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Never commit PocketGPSWorld data (licence: individual use, watermarked per member)
+pocketgps_*.txt
+pgpsw-speed-cams-*.zip
