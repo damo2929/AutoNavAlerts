@@ -163,7 +163,7 @@ class AlertCoordinator @Inject constructor(
             AlertKind.OVERSPEED -> "Average speed zone, " + AlertTemplateRenderer.OVERSPEED_SUFFIX
         } ?: return null
         val values = TemplateValues(
-            name = r?.poi?.name, category = r?.categoryName, set = r?.set?.name,
+            category = r?.categoryName, setName = r?.set?.name,
             speed = r?.poi?.speedLimit, speedUnit = r?.poi?.speedUnit ?: SpeedUnit.MPH,
             distanceM = e.distanceM.takeIf { it > 0 },
             direction = r?.let { directionWord(fix, it.poi) },

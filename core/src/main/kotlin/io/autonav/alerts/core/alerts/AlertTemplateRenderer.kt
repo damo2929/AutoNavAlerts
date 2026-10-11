@@ -9,16 +9,17 @@ import kotlin.math.roundToInt
 
 enum class Units { IMPERIAL, METRIC }
 
-/** Values available to a template (DESIGN.md §7.2). Null = missing, and its clause is dropped. */
+/**
+ * Values available to a template (DESIGN.md §7.2): {category} {speed} {units} {distance} {direction}.
+ * Null = missing, and its clause is dropped. [setName] is only the fallback for {category}.
+ */
 data class TemplateValues(
-    val name: String? = null,
     val category: String? = null,
-    val set: String? = null,
     val speed: Int? = null,
     val speedUnit: SpeedUnit? = null,
     val distanceM: Double? = null,
     val direction: String? = null,
-    val road: String? = null,
+    val setName: String? = null,
 )
 
 data class RenderedAlert(val display: String, val spoken: String)
@@ -35,14 +36,11 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
     private fun renderOne(template: String, v: TemplateValues, spoken: Boolean): String {
         val speedInUnits = v.speed?.let { convertSpeed(it, v.speedUnit ?: SpeedUnit.MPH) }
         val values = mapOf(
-            "name" to v.name?.takeIf { it.isNotBlank() },
-            "category" to (v.category ?: v.set),
-            "set" to v.set,
+            "category" to (v.category ?: v.setName),
             "speed" to speedInUnits?.toString(),
             "units" to speedInUnits?.let { if (spoken) spokenSpeedUnits() else shortSpeedUnits() },
             "distance" to v.distanceM?.let { if (spoken) spokenDistance(it) else shortDistance(it) },
             "direction" to v.direction,
-            "road" to v.road?.takeIf { it.isNotBlank() },
         )
         val clauses = template.split(',').mapNotNull { clause ->
             val keys = PLACEHOLDER.findAll(clause).map { it.groupValues[1] }.toList()

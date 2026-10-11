@@ -104,7 +104,10 @@ data class PlaceEntity(
     val useCount: Int = 1,
 )
 
-enum class ReportKind { MOBILE_SEEN, NEW_FIXED, NEW_AVERAGE, NEW_RED_LIGHT, NEW_RED_LIGHT_SPEED, CAMERA_GONE, WRONG_LIMIT, WRONG_DIRECTION, WRONG_TYPE }
+enum class ReportKind { UNSPECIFIED, MOBILE_SEEN, NEW_FIXED, NEW_AVERAGE, NEW_RED_LIGHT, NEW_RED_LIGHT_SPEED, CAMERA_GONE, WRONG_LIMIT, WRONG_DIRECTION, WRONG_TYPE }
+/** Where a report's captured speed limit came from (DESIGN.md §8.5). */
+enum class LimitSource { GOOGLE, CAMERA, NONE, USER }
+
 enum class ReportStatus { DRAFT, QUEUED, SENDING, SENT, FAILED, DISCARDED }
 
 @Entity(tableName = "camera_report", indices = [Index("status")])
@@ -124,4 +127,11 @@ data class CameraReportEntity(
     val createdAt: Long,
     val status: ReportStatus,
     val lastError: String? = null,
+    /** Private 16 kHz mono PCM recording of the spoken comment, if any. */
+    val audioPath: String? = null,
+    val limitSource: LimitSource = LimitSource.NONE,
+    /** "My reports" POI added for this report, so review can update or remove it. */
+    val localPoiId: Long? = null,
+    /** PENDING while speech-to-text runs; FAILED if it couldn't transcribe. */
+    val transcription: String? = null,
 )

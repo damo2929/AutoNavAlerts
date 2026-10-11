@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Spoken comments for camera reports, from the car's microphone (DESIGN.md §8.5) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Car App Library: navigation templates and map surface -->
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />

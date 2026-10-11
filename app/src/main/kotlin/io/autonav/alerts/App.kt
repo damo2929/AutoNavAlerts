@@ -22,6 +22,7 @@ class App : Application(), Configuration.Provider {
     @Inject lateinit var dispatcher: AlertDispatcher
     @Inject lateinit var pois: PoiRepository
     @Inject lateinit var pgwScheduler: PgwScheduler
+    @Inject lateinit var driving: io.autonav.alerts.reports.DrivingState
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
@@ -29,6 +30,7 @@ class App : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         dispatcher.ensureChannel()
+        driving.observe()
         appScope.launch {
             pois.cleanupStaging()
             pois.purgeExpired()

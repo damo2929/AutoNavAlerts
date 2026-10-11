@@ -215,8 +215,11 @@ class ReportSubmitWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val client: PgwClient,
     private val reports: io.autonav.alerts.reports.CameraReportRepository,
+    private val driving: io.autonav.alerts.reports.DrivingState,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
+        // Never send while driving (DESIGN.md §8.5): wait and retry once stopped.
+        if (driving.blockedReason() != null) return Result.retry()
         val queued = reports.pending()
         for (r in queued) {
             reports.update(r.copy(status = io.autonav.alerts.data.ReportStatus.SENDING))
@@ -224,9 +227,9 @@ class ReportSubmitWorker @AssistedInject constructor(
             // PGW's confirmation wording isn't known yet (DESIGN.md §16 #19): a logged-in 200 response
             // counts as sent, and the user can check it on the PGW site.
             val ok = res.getOrNull()?.let { io.autonav.alerts.core.pgw.PgwPages.loginState(it) == io.autonav.alerts.core.pgw.PgwPages.LoginState.LOGGED_IN } == true
-            reports.update(r.copy(
-                status = if (ok) io.autonav.alerts.data.ReportStatus.SENT else io.autonav.alerts.data.ReportStatus.FAILED,
-                lastError = res.exceptionOrNull()?.message ?: if (!ok) "Not accepted (logged out?)" else null,
+            if (ok) reports.markSent(r) else reports.update(r.copy(
+                status = io.autonav.alerts.data.ReportStatus.FAILED,
+                lastError = res.exceptionOrNull()?.message ?: "Not accepted (logged out?)",
             ))
         }
         return Result.success()
@@ -237,7 +240,9 @@ class ReportSubmitWorker @AssistedInject constructor(
             WorkManager.getInstance(context).enqueueUniqueWork(
                 "pgw-report-submit", ExistingWorkPolicy.APPEND_OR_REPLACE,
                 OneTimeWorkRequestBuilder<ReportSubmitWorker>()
-                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build(),
+                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                    .setBackoffCriteria(BackoffPolicy.LINEAR, 2, TimeUnit.MINUTES)
+                    .build(),
             )
         }
     }

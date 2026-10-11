@@ -75,6 +75,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
             }
         })
         deps.carData().start(carContext)
+        deps.driving().carSessionOpen = true
         deps.tts().warmUp()
         deps.alerts().start(App.appScope)
         deps.dispatcher().carSink = CarAlertSink(::showCarAlert)
@@ -92,6 +93,17 @@ class NavSession : Session(), DefaultLifecycleObserver {
         handleNavigateIntent(intent)?.let { carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(it) }
     }
 
+    /**
+     * Best-known speed limit right now, for a report (DESIGN.md §8.5): Google's (only known while
+     * speeding), else the camera being alerted, else none.
+     */
+    fun currentLimit(): Pair<Int?, io.autonav.alerts.data.LimitSource> {
+        val now = System.currentTimeMillis()
+        derivedLimit?.takeIf { now - it.second < 60_000 }?.let { return it.first to io.autonav.alerts.data.LimitSource.GOOGLE }
+        deps.alerts().active.value?.takeIf { now - it.timeMs < 20_000 }?.speedLimit?.let { return it to io.autonav.alerts.data.LimitSource.CAMERA }
+        return null to io.autonav.alerts.data.LimitSource.NONE
+    }
+
     /** geo: / google.navigation: / ACTION_NAVIGATE → preview or search (DESIGN.md §9.1). */
     private fun handleNavigateIntent(intent: Intent): Screen? {
         if (intent.action != CarContext.ACTION_NAVIGATE && intent.action != Intent.ACTION_VIEW) return null
@@ -105,6 +117,9 @@ class NavSession : Session(), DefaultLifecycleObserver {
     }
 
     private fun startCollectors() {
+        lifecycleScope.launch {
+            deps.guidance().arrived.collect { if (it) deps.reports().remindIfDrafts() }
+        }
         lifecycleScope.launch {
             deps.settings().settings.collect { imperial = it.units == Units.IMPERIAL; speedPanelOn = it.speedPanelOn }
         }
@@ -124,6 +139,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         lifecycleScope.launch {
             combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active) { f, n, a -> Triple(f, n, a) }
                 .collect { (fix, nearby, active) ->
+                    fix?.let { deps.driving().onSpeed(it.speedMps) }
                     markers.redraw(nearby, fix, active)
                     updateSpeedPanel(fix?.speedMps, active)
                 }
@@ -197,6 +213,9 @@ class NavSession : Session(), DefaultLifecycleObserver {
 
     override fun onDestroy(owner: LifecycleOwner) {
         deps.carData().stop()
+        deps.driving().carSessionOpen = false
+        // End of drive: remind the user to check buffered reports on the phone (§8.5).
+        App.appScope.launch { deps.reports().remindIfDrafts() }
         deps.dispatcher().carSink = null
         deps.alerts().stop()
         markers.clear()

@@ -50,14 +50,16 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var reports: CameraReportRepository
     @Inject lateinit var tts: NavTts
     @Inject lateinit var places: PlacesSearch
+    @Inject lateinit var driving: io.autonav.alerts.reports.DrivingState
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places)
+        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving)
+        val startTab = intent?.getIntExtra(EXTRA_TAB, 0) ?: 0
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-                var tab by rememberSaveable { mutableIntStateOf(0) }
+                var tab by rememberSaveable { mutableIntStateOf(startTab) }
                 Scaffold(
                     bottomBar = {
                         NavigationBar {
@@ -86,6 +88,8 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        const val EXTRA_TAB = "tab"
+        const val TAB_REPORTS = 3
         private val TABS = listOf(
             "Setup" to R.drawable.ic_action_navigate,
             "POIs" to R.drawable.ic_action_layers,
@@ -106,4 +110,5 @@ class PhoneDeps(
     val reports: CameraReportRepository,
     val tts: NavTts,
     val places: PlacesSearch,
+    val driving: io.autonav.alerts.reports.DrivingState,
 )

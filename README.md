@@ -36,14 +36,14 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
 - **PocketGPSWorld**, with **your own** subscription
   - Checks their RSS feed daily and logs in to download a new release by itself
   - Never swaps in new cameras while you're navigating
-- **Report a camera** from the car screen in two taps (type, then speed), with Undo. Reports are reviewed on the phone and only sent when you press Send.
+- **Report a camera with one tap** in the car. It saves your position, direction and the best-known speed limit, then records an optional **spoken comment** (speech-to-text). Reports are buffered, and after the drive the phone asks you to check them. **Review and Send happen only in the phone app, never while driving.**
 - **Recents** that you can delete from the car screen
 - **Phone app tabs**
   - Setup: your own **Maps API key**, permissions, navigation terms
   - POI sets
   - Cameras: PocketGPSWorld login and sync
   - Reports
-  - Settings: units, voice, chime, over-limit % (default −0.1%), speed panel, GPS curve, simulate speed (debug builds). All documented in [docs/SETTINGS.md](docs/SETTINGS.md).
+  - Settings: units, voice, chime, over-limit warning slider (−5% to +20%, default −0.1%), speed panel, GPS curve, simulate speed (debug builds). All documented in [docs/SETTINGS.md](docs/SETTINGS.md).
 
 ### Planned (designed, not built yet)
 - Home Assistant people finder: navigate to family members' live locations, e.g. children or relatives living with dementia (DESIGN.md §17)

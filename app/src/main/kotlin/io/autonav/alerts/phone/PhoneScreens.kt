@@ -69,7 +69,9 @@ import io.autonav.alerts.core.poi.importers.CsvImporter
 import io.autonav.alerts.core.poi.importers.CsvProfile
 import io.autonav.alerts.data.CameraReportEntity
 import io.autonav.alerts.data.PoiSetEntity
+import io.autonav.alerts.data.ReportKind
 import io.autonav.alerts.data.ReportStatus
+import io.autonav.alerts.reports.Transcriber
 import io.autonav.alerts.data.StageCols
 import io.autonav.alerts.pgw.ReportSubmitWorker
 import io.autonav.alerts.reports.CameraReportRepository
@@ -137,11 +139,14 @@ fun SetupScreen(activity: Activity, deps: PhoneDeps) {
             val notif = Build.VERSION.SDK_INT < 33 || granted(ctx, Manifest.permission.POST_NOTIFICATIONS)
             val contacts = granted(ctx, Manifest.permission.READ_CONTACTS)
             Text("Location: ${if (fine) "allowed" else "needed"} · Background: ${if (bg) "allowed" else "recommended"}")
-            Text("Notifications: ${if (notif) "allowed" else "needed"} · Contacts: ${if (contacts) "allowed" else "optional"}")
+            val mic = granted(ctx, Manifest.permission.RECORD_AUDIO)
+            Text("Notifications: ${if (notif) "allowed" else "needed"} · Microphone: ${if (mic) "allowed" else "for spoken report comments"}")
+            Text("Contacts: ${if (contacts) "allowed" else "optional"}")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     val ps = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
                     if (Build.VERSION.SDK_INT >= 33) ps += Manifest.permission.POST_NOTIFICATIONS
+                    ps += Manifest.permission.RECORD_AUDIO
                     permLauncher.launch(ps.toTypedArray())
                 }) { Text("Allow") }
                 OutlinedButton(enabled = fine && !bg, onClick = {
@@ -328,7 +333,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
             Text("Always on while sound is enabled for this set.", style = MaterialTheme.typography.bodySmall)
         }
         Section("Spoken text") {
-            Text("Placeholders: {name} {category} {set} {speed} {units} {distance} {direction} {road}", style = MaterialTheme.typography.bodySmall)
+            Text("Placeholders: {category} {speed} {units} {distance} {direction}", style = MaterialTheme.typography.bodySmall)
             TemplateField(deps, "1st alert", set.firstTemplate, units) { set = set.copy(firstTemplate = it) }
             TemplateField(deps, "2nd alert", set.secondTemplate, units) { set = set.copy(secondTemplate = it) }
             TemplateField(deps, "Passing", set.passingTemplate, units) { set = set.copy(passingTemplate = it) }
@@ -386,7 +391,7 @@ private fun StageEditor(
 
 @Composable
 private fun TemplateField(deps: PhoneDeps, label: String, value: String, units: Units, onChange: (String) -> Unit) {
-    val sample = TemplateValues(name = "A61 Leeds Rd", category = "Fixed camera", set = "Cameras", speed = 30, speedUnit = SpeedUnit.MPH, distanceM = 400.0, direction = "ahead")
+    val sample = TemplateValues(category = "Fixed camera", speed = 30, speedUnit = SpeedUnit.MPH, distanceM = 400.0, direction = "ahead")
     val rendered = AlertTemplateRenderer(units).render(value, sample)
     OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth())
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -461,61 +466,147 @@ fun CameraDbScreen(deps: PhoneDeps) {
     }
 }
 
-// --- Reports -----------------------------------------------------------------------------------
+// --- Reports (final review and submission happen only here, never on the car screen) ----------
 
 @Composable
 fun ReportsScreen(activity: Activity, deps: PhoneDeps) {
     val reports by deps.reports.reports.collectAsState(initial = emptyList())
-    val settings by deps.settings.settings.collectAsState(initial = io.autonav.alerts.settings.AppSettings())
+    val carConnected by deps.driving.carConnected.collectAsState()
     val scope = rememberCoroutineScope()
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(carConnected) { tick++ }
+    val blocked = remember(carConnected, tick, reports) { deps.driving.blockedReason() }
+    val drafts = reports.filter { it.status == ReportStatus.DRAFT || it.status == ReportStatus.FAILED }
+
     Column {
         Text("Camera reports", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
-        Column(Modifier.padding(horizontal = 16.dp)) {
-            SwitchRow("Review on the phone before sending", settings.reviewReportsFirst) { on ->
-                scope.launch { deps.settings.update { it.copy(reviewReportsFirst = on) } }
-            }
-            Text("Don't report warning signs or Traffic Master cameras. Only report mobiles when a unit is actually there.",
+        Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Reports made with the Report button in the car wait here. Check each one, then press Send. " +
+                "Don't report warning signs or Traffic Master cameras; only report mobiles when a unit is actually there.",
                 style = MaterialTheme.typography.bodySmall)
+            blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (drafts.size > 1) Button(enabled = blocked == null, onClick = {
+                scope.launch { drafts.forEach { deps.reports.queueForSending(it) }; ReportSubmitWorker.enqueue(activity) }
+            }) { Text("Send all ${drafts.size}") }
         }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        if (reports.isEmpty()) Text("No reports yet. Use Report on the car screen.", Modifier.padding(16.dp))
+        if (reports.isEmpty()) Text("No reports yet. Tap Report on the car screen when you see a camera.", Modifier.padding(16.dp))
         LazyColumn {
-            items(reports, key = { it.id }) { r -> ReportCard(activity, deps, r) }
+            items(reports, key = { it.id }) { r -> ReportCard(activity, deps, r, blocked) }
         }
     }
 }
 
 @Composable
-private fun ReportCard(activity: Activity, deps: PhoneDeps, r: CameraReportEntity) {
+private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraReportEntity, blocked: String?) {
     val scope = rememberCoroutineScope()
-    var comment by remember(r.id) { mutableStateOf(r.comment.orEmpty()) }
+    var r by remember(initial) { mutableStateOf(initial) }
+    var units by remember { mutableStateOf(Units.IMPERIAL) }
+    LaunchedEffect(Unit) { units = deps.settings.current().units }
+    val editable = r.status == ReportStatus.DRAFT || r.status == ReportStatus.FAILED
+    fun save(n: CameraReportEntity) { r = n; scope.launch { deps.reports.saveReview(n) } }
+
     Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(CameraReportRepository.label(r.kind).removeSuffix(" (reported)") + (r.speedLimit?.let { " · $it" } ?: ""),
-                style = MaterialTheme.typography.titleMedium)
-            Text("%.5f, %.5f · heading %s · %s".format(r.lat, r.lon, r.heading?.roundToInt()?.toString() ?: "?",
-                r.status.name.lowercase()) + (r.lastError?.let { " · $it" } ?: ""), style = MaterialTheme.typography.bodySmall)
-            if (r.status == ReportStatus.DRAFT || r.status == ReportStatus.FAILED) {
-                OutlinedTextField(comment, { comment = it }, label = { Text("Comment") }, modifier = Modifier.fillMaxWidth())
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        scope.launch {
-                            deps.reports.update(r.copy(comment = comment, status = ReportStatus.QUEUED, lastError = null))
-                            ReportSubmitWorker.enqueue(activity)
-                        }
-                    }) { Text("Send") }
-                    OutlinedButton(onClick = { scope.launch { deps.reports.discard(r) } }) { Text("Discard") }
-                    TextButton(onClick = {
-                        val s = deps.reports.toSubmission(r.copy(comment = comment))
-                        val text = s.formFields().filter { it.first != "SendEntry" }.joinToString("\n") { "${it.first}: ${it.second}" }
-                        activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Camera report", text))
-                        activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PgwConfig.BASE + PgwConfig.SUBMIT_PATH)))
-                    }) { Text("Open in browser") }
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(CameraReportRepository.label(r.kind).removeSuffix(" (reported)"), style = MaterialTheme.typography.titleMedium)
+            Text(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(r.createdAt)) +
+                " · " + r.status.name.lowercase() + (r.lastError?.let { " · $it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+            if (!editable) return@Column
+
+            // Type (guessed from the spoken comment; confirm here)
+            Text("Type", style = MaterialTheme.typography.labelLarge)
+            listOf(
+                ReportKind.MOBILE_SEEN to "Mobile", ReportKind.NEW_FIXED to "Fixed", ReportKind.NEW_AVERAGE to "Average",
+                ReportKind.NEW_RED_LIGHT to "Red light", ReportKind.NEW_RED_LIGHT_SPEED to "Red light + speed",
+                ReportKind.CAMERA_GONE to "Not there", ReportKind.WRONG_LIMIT to "Wrong limit", ReportKind.UNSPECIFIED to "Not sure",
+            ).chunked(4).forEach { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    row.forEach { (k, label) -> FilterChip(r.kind == k, { save(r.copy(kind = k)) }, label = { Text(label) }) }
                 }
+            }
+
+            // Position, with fine nudges
+            Text("Position: %.5f, %.5f".format(r.lat, r.lon), style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                val dLat = 10.0 / 111_195.0
+                val dLon = 10.0 / (111_195.0 * kotlin.math.cos(Math.toRadians(r.lat)))
+                listOf("N" to (dLat to 0.0), "S" to (-dLat to 0.0), "E" to (0.0 to dLon), "W" to (0.0 to -dLon)).forEach { (l, d) ->
+                    OutlinedButton(onClick = { save(r.copy(lat = r.lat + d.first, lon = r.lon + d.second)) }) { Text("$l 10 m") }
+                }
+            }
+            TextButton(onClick = {
+                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:${r.lat},${r.lon}?q=${r.lat},${r.lon}(Reported camera)")))
+            }) { Text("Show on map") }
+
+            // Speed limit (with where it came from)
+            val src = when (r.limitSource) {
+                io.autonav.alerts.data.LimitSource.GOOGLE -> "from Google"
+                io.autonav.alerts.data.LimitSource.CAMERA -> "from camera data"
+                io.autonav.alerts.data.LimitSource.USER -> "set by you"
+                io.autonav.alerts.data.LimitSource.NONE -> "unknown"
+            }
+            Text("Speed limit: ${r.speedLimit?.let { "$it mph" } ?: "not set"} ($src)", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(20, 30, 40, 50, 60, 70).forEach { v ->
+                    FilterChip(r.speedLimit == v, { save(r.copy(speedLimit = v, limitSource = io.autonav.alerts.data.LimitSource.USER)) }, label = { Text("$v") })
+                }
+            }
+
+            // Direction
+            Text("Direction of travel: ${r.heading?.roundToInt()?.let { "$it° (${compass(it)})" } ?: "unknown"}", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                fun turn(by: Int) = save(r.copy(heading = (((r.heading ?: 0f) + by) % 360 + 360) % 360, directionType =
+                    if (r.directionType == io.autonav.alerts.core.poi.DirectionType.ANY) io.autonav.alerts.core.poi.DirectionType.ONE_WAY else r.directionType))
+                OutlinedButton(onClick = { turn(-45) }) { Text("−45°") }
+                OutlinedButton(onClick = { turn(-5) }) { Text("−5°") }
+                OutlinedButton(onClick = { turn(5) }) { Text("+5°") }
+                OutlinedButton(onClick = { turn(45) }) { Text("+45°") }
+                OutlinedButton(onClick = { turn(180) }) { Text("Reverse") }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(r.directionType == io.autonav.alerts.core.poi.DirectionType.ONE_WAY,
+                    { save(r.copy(directionType = io.autonav.alerts.core.poi.DirectionType.ONE_WAY)) }, label = { Text("One way") })
+                FilterChip(r.directionType == io.autonav.alerts.core.poi.DirectionType.BOTH,
+                    { save(r.copy(directionType = io.autonav.alerts.core.poi.DirectionType.BOTH)) }, label = { Text("Both ways") })
+            }
+
+            // Comment (speech-to-text from the car, editable)
+            OutlinedTextField(r.comment.orEmpty(), { r = r.copy(comment = it) }, label = { Text("Comment") },
+                modifier = Modifier.fillMaxWidth(), supportingText = {
+                    Text(when (r.transcription) {
+                        "PENDING" -> "Turning your recording into text…"
+                        "FAILED" -> "Couldn't transcribe the recording. Play it and type the comment."
+                        "DONE" -> "From your spoken comment; edit if needed."
+                        else -> "Optional"
+                    })
+                })
+            r.audioPath?.let { path ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { Transcriber.play(java.io.File(path)) }) { Text("Play recording") }
+                    if (r.transcription == "FAILED") OutlinedButton(onClick = {
+                        scope.launch { deps.reports.transcribe(r.id) }
+                    }) { Text("Try transcribing again") }
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = blocked == null, onClick = {
+                    scope.launch { deps.reports.queueForSending(r); ReportSubmitWorker.enqueue(activity) }
+                }) { Text("Send") }
+                OutlinedButton(onClick = { scope.launch { deps.reports.saveReview(r) } }) { Text("Save") }
+                OutlinedButton(onClick = { scope.launch { deps.reports.discard(r) } }) { Text("Discard") }
+                TextButton(onClick = {
+                    val s = deps.reports.toSubmission(r)
+                    val text = s.formFields().filter { it.first != "SendEntry" }.joinToString("\n") { "${it.first}: ${it.second}" }
+                    activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Camera report", text))
+                    activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PgwConfig.BASE + PgwConfig.SUBMIT_PATH)))
+                }) { Text("Browser") }
             }
         }
     }
 }
+
+private fun compass(deg: Int): String = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")[((deg + 22) % 360) / 45]
 
 // --- Settings ----------------------------------------------------------------------------------
 
@@ -535,10 +626,7 @@ fun SettingsScreen(deps: PhoneDeps) {
         Section("Alerts") {
             SwitchRow("Voice", s.voiceOn) { v -> set { it.copy(voiceOn = v) } }
             SwitchRow("Chime before the passing alert", s.chimeOn) { v -> set { it.copy(chimeOn = v) } }
-            Text("Over-limit warning when your speed is above the limit by ${pctLabel(s.overspeedPct)}")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(-0.001, 0.0, 0.05, 0.1).forEach { p -> FilterChip(s.overspeedPct == p, { set { it.copy(overspeedPct = p) } }, label = { Text(pctLabel(p)) }) }
-            }
+            OverLimitSlider(s.overspeedPct) { p -> set { it.copy(overspeedPct = p) } }
         }
         Section("Speed and location source") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -576,8 +664,35 @@ fun SettingsScreen(deps: PhoneDeps) {
     }
 }
 
+/** Over-limit warning threshold: −5% to +20% in 0.1% steps (DESIGN.md §11 step 9). */
+@Composable
+private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
+    var v by remember(current) { mutableStateOf((current * 1000).roundToInt().toFloat()) } // tenths of a percent
+    val pct = v / 10.0
+    Text("Over-limit warning: ${pctLabel(pct / 100)}", style = MaterialTheme.typography.bodyLarge)
+    Text(
+        when {
+            pct < 0 -> "Warns ${pctLabel(-pct / 100)} before you reach the limit"
+            pct == 0.0 -> "Warns as soon as you go over the limit"
+            else -> "Warns when you're more than ${pctLabel(pct / 100)} over the limit"
+        },
+        style = MaterialTheme.typography.bodySmall,
+    )
+    androidx.compose.material3.Slider(
+        value = v, onValueChange = { v = Math.round(it).toFloat() },
+        onValueChangeFinished = { onChange(v / 1000.0) },
+        valueRange = -50f..200f, steps = 249,
+    )
+    Row(Modifier.fillMaxWidth()) {
+        Text("−5%", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        TextButton(onClick = { v = -1f; onChange(-0.001) }) { Text("Reset to −0.1%") }
+        Text("+20%", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
 /** "−0.1%", "0%", "5%"… for the over-limit setting. */
 private fun pctLabel(p: Double): String {
     val v = p * 100
-    return if (v == Math.rint(v)) "${v.roundToInt()}%" else "%.1f%%".format(v)
+    val text = if (kotlin.math.abs(v - Math.rint(v)) < 1e-9) "${Math.rint(v).roundToInt()}%" else "%.1f%%".format(v)
+    return text.replace("-", "−")
 }

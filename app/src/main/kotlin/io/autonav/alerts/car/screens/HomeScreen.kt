@@ -159,13 +159,28 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         return strip.build()
     }
 
+    /**
+     * One-tap report (DESIGN.md §8.5): saves position, direction and the best-known speed limit at
+     * the moment of the tap, then asks for an optional spoken comment. Review and Send are phone-only.
+     */
     private fun openReport() {
-        // Saved at the moment of the tap, so the report marks where the camera was seen (§8.5).
-        val snap = deps.alerts().lastFix.value?.toSnapshot()
-        if (snap == null) {
+        val fix = deps.alerts().lastFix.value
+        if (fix == null) {
             CarToast.makeText(carContext, "Waiting for a GPS fix", CarToast.LENGTH_SHORT).show()
             return
         }
-        screenManager.push(ReportTypeScreen(carContext, session, snap))
+        val snap = fix.toSnapshot()
+        val (limit, source) = session.currentLimit()
+        val candidates = deps.alerts().nearby.value.map { it.poi.id to (it.poi.lat to it.poi.lon) }
+        val related = deps.alerts().active.value?.takeIf { System.currentTimeMillis() - it.timeMs < 20_000 }?.poiId?.takeIf { it >= 0 }
+            ?: deps.reports().justPassed(fix, candidates)
+        lifecycleScope.launch {
+            val id = deps.reports().capture(snap, limit, source, related)
+            if (io.autonav.alerts.reports.CarVoiceRecorder.available(carContext)) {
+                screenManager.push(VoiceCommentScreen(carContext, session, id))
+            } else {
+                CarToast.makeText(carContext, "Camera reported. Check it on your phone after the drive.", CarToast.LENGTH_LONG).show()
+            }
+        }
     }
 }

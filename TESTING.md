@@ -225,15 +225,24 @@ In a real car: compare the speed panel with your dashboard (they should match), 
 | D4 | Make the media app full screen, then pass a camera | The alert appears as a **notification card** over the media screen, with speech |
 | D5 | Narrow screen (`default.ini`) and portrait layouts | Everything stays usable; the speed panel stays inside the visible area |
 
-### 6.6 Reporting cameras
+### 6.6 Reporting cameras (capture in the car, review and send only on the phone)
+Before testing, allow the **microphone** on the phone's Setup tab. On the DHU, the car's microphone is your PC's microphone.
+
 | # | Steps | Expected |
 |---|---|---|
-| R1 | **Report** (⚠) → **Mobile** → **30** | You return to the map with "Mobile reported (30). Sent after your drive." and **Undo** |
-| R2 | **Undo** within 5 s | The report and its marker are removed |
-| R3 | Report **Fixed**, then simulate the same road again | A "My reports" marker at the spot where you **tapped Report**, which alerts in your direction |
-| R4 | Just after passing a camera, **Report → Not there** | That camera stops alerting (it's hidden until the next PGW release) |
-| R5 | Phone **Reports** tab | Drafts list with type, speed, position and heading. **Discard** removes one. **Open in browser** copies the details and opens PGW's submission page. **Don't press Send unless you mean to submit a real report.** |
-| R6 | Reports: switch **Review before sending** off, then report on the DHU | The report is queued (status "queued") and is sent by the background worker. **This submits a real report**, so only do this deliberately. |
+| R1 | During a Simulate drive, tap **Report** (⚠) once | There's **no menu**: a tone plays and the screen says "Listening…" |
+| R2 | Say "mobile van in the lay-by", then stop talking | It stops after about 2 s of silence. You're back on the map with "Camera reported with your comment… Check it on your phone after the drive" and **Undo**. |
+| R3 | Tap Report, then **Skip** (or say nothing for 6 s) | Saved without a comment |
+| R4 | **Undo** within 5 s | The report and its marker are removed |
+| R5 | Tap Report while over Google's limit (higher simulate speed) | At review the speed limit says *from Google* |
+| R6 | Tap Report while a camera alert is showing, under the limit | The limit says *from camera data* |
+| R7 | Stop the drive / disconnect the DHU | The phone shows "N camera reports to check". Tapping it opens the Reports tab. |
+| R8 | Reports tab, while the DHU is still connected | **Send** is disabled, with the red "Disconnect from Android Auto first…" message |
+| R9 | Disconnect, wait 2 min still. Check one report: type (pre-filled "Mobile" from "van"), nudge position, set the limit, rotate the direction and pick One way / Both, edit the comment, **Play recording** | All edits stick. The comment shows the transcript of what you said. |
+| R10 | Set a report to **Not there** and **Save**, then simulate past the camera you'd passed | That camera no longer alerts |
+| R11 | Report **Fixed**, review, then simulate the same road again | The "My reports" marker alerts in your direction |
+| R12 | **Discard** / **Browser** | Discard removes it. Browser copies the details and opens PGW's submission page. |
+| R13 | **Send** (only if you mean to submit a **real** report) | Status goes queued → sent. **This submits to PocketGPSWorld.** |
 
 ### 6.7 POI import and editing (phone)
 | # | Steps | Expected |

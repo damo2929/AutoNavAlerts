@@ -77,6 +77,12 @@ interface PoiDao {
     @Query("SELECT * FROM poi WHERE id = :id")
     suspend fun get(id: Long): PoiEntity?
 
+    @Update
+    suspend fun update(poi: PoiEntity)
+
+    @Query("DELETE FROM poi WHERE id = :id")
+    suspend fun delete(id: Long)
+
     @Query("UPDATE poi SET hiddenByReport = :hidden WHERE id = :id")
     suspend fun setHidden(id: Long, hidden: Boolean)
 

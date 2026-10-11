@@ -20,7 +20,7 @@ The phone app has five tabs along the bottom: **Setup · POIs · Cameras · Repo
 |---|---|---|---|
 | **Voice** | On / Off | On | Speaks POI alerts on the navigation audio channel. Off silences **all** POI speech, including the passing alert. Car-screen cards and notifications still appear. Google's own turn-by-turn voice isn't affected. |
 | **Chime before the passing alert** | On / Off | On | Plays a short beep just before the 100 yd passing alert. There's no chime before the 1st and 2nd alerts. |
-| **Over-limit warning** | **−0.1%**, 0%, 5%, 10% | **−0.1%** | When an alert fires and your speed is above the POI's (or the average-speed zone's) limit by more than this, "you are over the limit" is added to the spoken alert. **−0.1%** means the warning starts **just before** the limit (above 99.9% of it). 0% means anything over the limit, and 5% or 10% allow a margin. In an average-speed zone, the over-limit warning can repeat at most every 15 s. |
+| **Over-limit warning** | **Slider, −5% to +20%** in 0.1% steps, plus **Reset to −0.1%** | **−0.1%** | When an alert fires and your speed is above the POI's (or the average-speed zone's) limit by more than this, "you are over the limit" is added to the spoken alert. **Negative values warn before the limit**: −0.1% warns just before (above 99.9% of it), −5% warns at 95% of it (28.5 mph in a 30). 0% warns as soon as you're over. Positive values allow a margin: +10% warns above 33 mph in a 30. The text under the slider explains the current value. In an average-speed zone, the warning can repeat at most every 15 s. |
 
 - The over-limit setting applies to **POI and camera limits** (your imported data). The colour of the speed panel follows Google's speed-limit data separately (§1.3).
 
@@ -111,7 +111,7 @@ If something here isn't done, the car screen shows **"Finish setup on your phone
 ### 3.2 Import dialog
 | Field | What it does |
 |---|---|
-| **Set name** | Name shown in lists and used for `{set}` in alert text. It defaults to the file name. |
+| **Set name** | Name shown in lists, and spoken for `{category}` when a POI has no category. It defaults to the file name. |
 | **CSV columns** (CSV files only): **Lat, Lon, Name, Speed, Heading, Dir** | Column numbers, **0 = first column**. Leave a box blank if the file has no such column. **Heading** is the direction of travel the POI applies to, in degrees. **Dir** is the direction type, read as `0/1/2`, `any/one/both` or `a/o/b`. With a heading but no Dir column, the POI applies one way. With neither, it applies in any direction. The delimiter (`,` `;` tab or `|`) and header row are detected automatically, and the first rows are shown as a preview. |
 | **Import** | Reads the file. The result says how many POIs were imported and how many rows were skipped, with the first problem shown. **The import fails as a whole if more than 20% of rows are bad.** |
 
@@ -141,14 +141,11 @@ Importing a file creates a **new** set. Each new set starts with the [defaults b
 
 | Placeholder | Becomes |
 |---|---|
-| `{name}` | The POI's own name, e.g. a road |
-| `{category}` | Its category (e.g. "Fixed camera", "Red light camera"), or the set name |
-| `{set}` | The set name |
+| `{category}` | Its category (e.g. "Fixed camera", "Red light camera"), or the set name if it has no category |
 | `{speed}` | The speed limit in your units |
 | `{units}` | "mph" / "km/h" on screen, "miles per hour" / "kilometres per hour" spoken |
 | `{distance}` | e.g. "300 yd" on screen, "300 yards" or "a quarter of a mile" spoken |
 | `{direction}` | "ahead", "on your left" or "on your right" |
-| `{road}` | The current road name, where known |
 
 - If a value is missing, the comma-separated part of the text that uses it is **dropped**. For example, `{category} ahead, {speed} limit` with no limit says "Mobile camera site ahead".
 - The over-limit phrase (§1.2) is added automatically when it applies.
@@ -179,15 +176,44 @@ You get a notification when the database updates, when your login fails, or when
 ---
 
 ## 5. Reports tab
+Camera reports are **captured in the car with one tap** and **checked and sent only here, on the phone**. The car screen never shows the review or a Send button.
 
-| Control | Default | What it does |
-|---|---|---|
-| **Review on the phone before sending** | **On** | When on, reports made on the car screen wait here as drafts until you press **Send**. When off, they're queued to send automatically. **They're never sent during a drive by the car screen itself.** |
-| Report card | | Type, speed, position and heading, and status (draft, queued, sending, sent, failed) |
-| **Comment** | | Extra detail for PocketGPSWorld's checkers, e.g. "van in lay-by". Reports without enough information can be rejected. |
-| **Send** | | Sends the report to PocketGPSWorld's **Submit Speed Cameras** form using your login |
-| **Discard** | | Drops the report without sending it |
-| **Open in browser** | | Copies the report details to the clipboard and opens PocketGPSWorld's submission page, so you can paste them in by hand |
+**In the car:** tap **Report** (⚠). The app saves straight away:
+- your **position**: car GPS if available, otherwise the phone
+- your **direction of travel**
+- the **speed limit**: Google's if it's known at that moment (Google only reveals it while you're over it), otherwise the camera being alerted, otherwise none
+
+Then a tone plays and the car's microphone listens for up to 15 s for a **spoken comment**, e.g. "mobile van in the lay-by". It stops after 2 s of silence, or tap **Done** / **Skip**. You're back on the map with **Undo** for 5 s.
+
+**After the drive:** when you arrive or disconnect from the car, the phone shows **"N camera reports to check"**. Tapping it opens this tab.
+
+| Control | What it does |
+|---|---|
+| Report card header | The type, when it was made, and its status (draft, queued, sending, sent, failed) |
+| **Type** chips | Mobile, Fixed, Average, Red light, Red light + speed, Not there, Wrong limit, Not sure. It's **pre-filled from your spoken comment** ("van" → Mobile, "specs" → Average, "not there" → Not there…). Check it. |
+| **Position** + **N/S/E/W 10 m** | The saved spot, with nudges to move it exactly onto the camera. **Show on map** opens it in a map app. |
+| **Speed limit** | The captured limit and where it came from: *from Google*, *from camera data*, *unknown*, or *set by you*. Tap 20–70 to set it. |
+| **Direction of travel** | The heading the camera applies to (e.g. "274° (W)"). Adjust it with **−45° −5° +5° +45° Reverse**, and choose **One way** or **Both ways**. |
+| **Comment** | Your spoken comment turned into text, which you can edit. The status under it says whether it's still being transcribed, done, or failed. |
+| **Play recording** | Plays your spoken comment back on the phone |
+| **Try transcribing again** | Shown if speech-to-text failed (it needs Android 13+ and a speech service) |
+| **Send** | Sends this report to PocketGPSWorld's **Submit Speed Cameras** form with your login |
+| **Send all N** | Sends every draft at once (after you've checked them) |
+| **Save** | Keeps your edits without sending |
+| **Discard** | Drops the report and its recording |
+| **Browser** | Copies the details to the clipboard and opens PocketGPSWorld's submission page, to submit by hand |
+
+**Never while driving.** Send and Send all are **disabled**, with the reason shown in red, while:
+- the phone is connected to Android Auto
+- a car session is open
+- or you've moved faster than 5 mph in the last 2 minutes
+
+A send already queued waits and retries once you've stopped.
+
+Review edits are applied to the local **My reports** marker straight away:
+- **Not there** removes it, and hides the camera you'd passed.
+- Fixed, average and red-light types keep it permanently.
+- Mobile reports and unchecked reports drop off after 24 h.
 
 PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Master cameras, and only report mobile cameras when a unit is actually there.
 
@@ -221,6 +247,5 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | GPS rate | 1 Hz below 10 mph, rising to 10 Hz at 50 mph |
 | Simulate speed (debug builds) | 1× |
 | PocketGPSWorld auto-update / Wi-Fi only | On / Off |
-| Review reports before sending | On |
 | New set: 1st / 2nd / passing alert | 30 s ahead (min 500 yd) / 300 yd / 100 yd |
 | New set: Show on map / Alerts / Sound | On / On / On (pending mobile sites: alerts Off) |

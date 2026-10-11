@@ -249,6 +249,8 @@ class PoiRepository @Inject constructor(
     }
 
     suspend fun addReportPoi(entity: PoiEntity): Long = db.pois().insert(entity).also { notifyChanged() }
+    suspend fun updatePoi(p: PoiEntity) { db.pois().update(p); notifyChanged() }
+    suspend fun deletePoi(id: Long) { db.pois().delete(id); notifyChanged() }
     suspend fun setHidden(poiId: Long, hidden: Boolean) { db.pois().setHidden(poiId, hidden); notifyChanged() }
     suspend fun poi(id: Long) = db.pois().get(id)
     suspend fun purgeExpired() = db.pois().deleteExpired(System.currentTimeMillis())

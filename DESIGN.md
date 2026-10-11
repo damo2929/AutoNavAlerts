@@ -577,14 +577,11 @@ The user accepts this risk for personal use.
 ### 7.2 Template placeholders
 | Placeholder | Value |
 |---|---|
-| `{name}` | POI name (empty → omitted cleanly) |
-| `{category}` | Category name, or the set name |
-| `{set}` | Set name |
+| `{category}` | Category name, or the set name if the POI has no category |
 | `{speed}` | Speed limit converted to the user's units (number only) |
 | `{units}` | "mph" / "kilometres per hour" (spoken form) |
 | `{distance}` | Distance spoken in the user's units, rounded: "400 yards", "a quarter of a mile", "300 metres" |
 | `{direction}` | "ahead" / "on your left" / "on your right", from the bearing to the POI relative to your heading |
-| `{road}` | Current road name from the Navigation SDK, if known |
 
 - **Rendering rules**:
   - When a placeholder's value is missing, any sentence piece that depends on it is dropped. For example `"{category} ahead, {speed} limit"` with no speed becomes "Fixed camera ahead".
@@ -615,7 +612,7 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 | Arrival | `NavigationTemplate` + `MessageInfo` | Destination name, "Done" |
 | POI layers | `ListTemplate` (pushed; map stays behind) | Per set: toggle map, toggle alerts; global "Mute alerts for 30 min" |
 | **People** | `PlaceListNavigationTemplate` | Tracked HA people with live markers, distance, "updated 2 min ago", and accuracy; tap → Find (§17.3) |
-| **Report camera** | `GridTemplate` → `GridTemplate` (speed) | Big-icon report types, then an optional speed limit; 1–2 taps (§8.5) |
+| **Report** (one tap) | `MessageTemplate` "Listening…" with Done / Skip | One tap saves the report, then an optional spoken comment from the car mic; Undo alert (§8.5). No review or Send on the car. |
 | More | `ListTemplate` | Recents · POI layers · Mute alerts 30 min · Diagnostics (debug) |
 
 **Action strip** (up to 4): Search · **Report** · People · More. While navigating, People is replaced by Stop navigation, and People moves to More. Recents are also shown in Search's empty state, so they're still one tap away. Mute is also available directly from each alert's own **Mute** action (§12.1). The People action only appears when a HA server is set up.
@@ -717,32 +714,41 @@ Each redraw:
 
 ### 8.5 Report a camera menu
 
-**Goal**: report a camera while driving with as few taps as possible, like Waze, and send it to PocketGPSWorld's **Submit Speed Cameras** form (`modules.php?name=Cameras&op=SubmitCamera`, login needed). PGW checks the reports, and verified new cameras earn subscription rewards.
+**Goal**: report a camera while driving with **one tap** and no reading, then check the details calmly after the drive and send them to PocketGPSWorld's **Submit Speed Cameras** form (`modules.php?name=Cameras&op=SubmitCamera`, login needed). PGW checks the reports, and verified new cameras earn subscription rewards.
 
-**Car flow**:
-1. Tap **Report** on the action strip. **Your position, heading, speed and road are saved at that moment**, so the report is placed where you saw the camera, not where you are a few seconds later after choosing.
-2. **Report type** (`GridTemplate`, large icons):
-   - Mobile camera / van
-   - New fixed camera
-   - Average speed camera
-   - Red light camera
-   - Red light + speed camera
-   - Camera not there
-   - Wrong speed limit
-3. **Speed limit** (`GridTemplate`): 20 · 30 · 40 · 50 · 60 · 70 (in km/h steps in metric) · **Skip**. Google's current road limit (§8.4) is shown as the suggested choice. "Camera not there" skips this step.
-4. A confirmation `Alert` with **Undo** (5 s): "Mobile camera reported (30 mph). Will be sent after your drive."
+**Car flow (one button)**:
+1. Tap **Report** (⚠) on the action strip. **Straight away, without any menu**, the app saves:
+   - **position**: from car GPS if fresh, otherwise the phone (§10.7)
+   - **direction of travel**: the heading at the moment of the tap, saved as one-way in that direction
+   - **speed limit**: Google's limit if it's known at that moment, otherwise the nearest camera's limit, otherwise none. The source is recorded as GOOGLE, CAMERA or NONE.
+     - Google's limit is only exposed by the Navigation SDK **while you're over it** (`SpeedingListener` gives the percentage over the limit, §8.4), so it's often not available. It's confirmed or set at review.
+   - **speed, time, road** and the nearest camera already in the database (for "not there" or "seen again")
+2. A **voice comment** prompt appears: "Report saved. Say a comment after the tone." A tone plays, then:
+   - **Recording**: up to **15 s** from the car's microphone with `CarAudioRecord` (car API 5+, `RECORD_AUDIO`). It stops after **2 s of silence**, or when you tap **Done**. **Skip** saves without a comment.
+   - **No microphone** (car API < 5, or the permission isn't granted): the prompt is skipped. The report is still saved, and you can add a comment at review.
+3. You're back on the map with a 5 s **Undo** alert.
+   - Total: **one tap**, no typing and no reading.
+   - The report **type** isn't asked for in the car. It's guessed from the spoken comment ("mobile", "van" → Mobile; "average", "specs" → Average speed; "red light" → Red light; "not there", "gone" → Camera not there; otherwise Not sure) and confirmed at review.
 
-That's two taps at most after Report, so it stays within the Car App Library's limits on steps while driving. Nothing needs typing in the car. **Direction** is ONE_WAY along your heading by default; you can change it, or set it to BOTH, on the phone.
+**Speech to text**:
+- The recording (16 kHz PCM, saved as a private WAV file) is transcribed **on the phone** with Android's `SpeechRecognizer`, using `EXTRA_AUDIO_SOURCE` on Android 13+, ideally on-device.
+- Transcription runs in the background once the recording finishes.
+- If it fails or isn't available, the audio is kept. At review you can play it back, retry transcription, or type the comment.
+- Audio files are deleted once the report is sent or discarded.
 
-**Reporting a problem with a camera you're being alerted about**: the car `Alert` for a camera (§12.1) gets a **Report** action. It opens a short `GridTemplate` (Not there · Wrong limit · Wrong direction · Wrong type) and fills in `relatedPoiId` and that camera's details. If no alert is showing, "Camera not there" from the main menu picks the closest camera behind you within 300 m, the one you've just passed.
-
-**What changes in the app straight away**:
-- **New-camera reports** go into a local **"My reports"** POI set, a normal `PoiSet` with source REPORT that you can edit, so you get alerts for them on your next trips. Mobile-camera reports **expire after 24 h**, and fixed-camera reports are removed once a later PGW database release contains a camera within 50 m.
-- **"Camera not there"** **hides** that camera locally (a per-POI hide flag). Its alerts stop until the next PGW release; if that release still has the camera, the hide is cleared, because PGW didn't accept the report.
-
-**Sending the report**:
-- **Review on phone first** (default ON): reports are saved as DRAFT. After the drive, when the car disconnects, the phone shows a notification "2 camera reports ready to send". The **Reports** screen shows each one on a map, where you can move the pin, change the type, limit and direction, and add a comment, then **Send** or **Discard**.
-- **Auto-send** (setting): reports are QUEUED and `ReportSubmitWorker` sends them **after the drive**. They're never sent during guidance, so there's no network or attention cost while driving. It needs any network connection.
+**Buffering and end-of-drive review**:
+- Reports are **buffered as drafts** on the phone. **Nothing is ever sent from the car screen or while driving.**
+- **End of drive**: when guidance ends at the destination, or the car disconnects (the car session closes), and there are drafts, the phone shows a notification: **"3 camera reports to check"**. Tapping it opens the **Reports** tab.
+- **Final review and submission happen only in the phone app** (Reports tab). The head unit never shows the review screen, the edit controls or a Send button; it only captures.
+- **Review on the phone**: for each draft you can:
+  - **check the map pin** and adjust it with fine nudges (move 10 m N/S/E/W)
+  - **change the type**
+  - **confirm or change the speed limit** (with its source shown: "from Google" / "from camera data" / "unknown")
+  - **change the direction**: heading (±5°/±45° steps or "reverse"), plus **One way / Both ways**
+  - **edit the comment** (the transcript), with **Play recording**
+  - then press **Send**. There's also **Send all checked**.
+- **Never while driving**: Send is disabled, and the submit worker refuses to run, while the phone is connected to Android Auto (`CarConnection` type ≠ NOT_CONNECTED) or has moved faster than 5 mph in the last 2 minutes. A queued send waits and retries once you've stopped.
+- There's **no auto-send**. Every report is checked by you before it goes to PGW.
 - **`PgwReportSubmitter`**: re-uses the `PgwClient` login and cookies (§6.1).
   1. GET `modules.php?name=Cameras&op=SubmitCamera` while logged in. Pick out the per-user hidden fields `POISubmitted`, `email`, `userid`, `Country` and `MAX_FILE_SIZE` from the page. **Never hard-code or log them.**
   2. Build a `multipart/form-data` POST to `modules.php?name=Cameras` that matches the browser's **"Send Entry"** button (`SendEntry`). **The fields were checked on 2026-10-11; nothing has been submitted yet:**
@@ -774,7 +780,7 @@ That's two taps at most after Report, so it stays within the Car App Library's l
 - **Fallback** when the form can't be automated (fields changed, captcha): **"Open in browser"** opens the SubmitCamera page with the report details copied to the clipboard and shown on screen, so you can paste them.
 - Status SENT/FAILED shows in the Reports screen. Failed reports retry with backoff (3 attempts), then are left FAILED and offered for manual sending.
 
-**Privacy**: a report only contains the camera location and the details above. Nothing is sent without either your review or your choice of auto-send.
+**Privacy**: a report only contains the camera location and the details above. Nothing is sent until you have reviewed it and pressed Send on the phone, and never while driving. Recordings stay in private app storage and are deleted once the report is sent or discarded.
 
 ---
 
@@ -810,7 +816,7 @@ See §12.3. Media is **ducked, never paused**.
 ### 10.1 Two feeds
 | Feed | Source | Used for |
 |---|---|---|
-| Road-snapped | Navigation SDK `RoadSnappedLocationProvider` | Map car marker, guidance, `{road}` |
+| Road-snapped | Navigation SDK `RoadSnappedLocationProvider` | Map car marker, guidance |
 | Raw adaptive | `FusedLocationProviderClient`, `PRIORITY_HIGH_ACCURACY`, speed-based interval | POI alert engine |
 
 Raw fixes are used for alerts because the SDK's road-snapped rate isn't under our control. The alert maths need a rate we choose so trigger distances are accurate.
@@ -910,7 +916,7 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
      - The 5 km gap is a setting.
      - Optional pre-processing at import: `ZoneChainer` groups type-4 points by nearest neighbour (≤ 5 km, bearing within ±30°) into `zoneId` chains and marks the ends of each chain. That improves the "entering" alert at the first camera, but the engine also works without it.
    - The zone also ends after 30 km or 30 min without an end POI.
-9. **Overspeed**: if the POI or zone has a limit and *v* > limit × (1 + `overspeedPct`), defaulting to **−0.1%** (so the warning triggers just below the limit, at 99.9% of it), the alert gets an "you are over the limit" suffix. In a zone, a repeat overspeed chime can play at most every 15 s.
+9. **Overspeed**: if the POI or zone has a limit and *v* > limit × (1 + `overspeedPct`). It's set with a **slider from −5% to +20% in 0.1% steps**, defaulting to **−0.1%** (so the warning triggers just below the limit, at 99.9% of it), the alert gets an "you are over the limit" suffix. In a zone, a repeat overspeed chime can play at most every 15 s.
 
 ### 11.1 Alert stages
 | Stage | Settings | Default | Can be turned off? |
@@ -1003,7 +1009,7 @@ While guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s
    3. Contacts (optional, for navigating to contacts' addresses)
    4. Navigation SDK Terms & Conditions dialog (`NavigationApi.showTermsAndConditionsDialog`)
    5. Android Auto setup checklist (developer mode, unknown sources), with deep links
-2. **Reports**: drafts, queued, sent and failed camera reports on a map. Edit the pin, type, limit, direction and comment; Send / Discard / Open in browser. Settings: review first (on by default) or auto-send after the drive.
+2. **Reports**: the end-of-drive review (§8.5). Per report: type (guessed from the comment), position nudges, speed limit with its source, direction (heading ± and One way / Both), comment transcript with Play recording, then Send / Send all / Save / Discard / Browser. Send is disabled while connected to the car or moving.
 3. **POI sets** (home): a card per set showing the name, source, count, last updated, and switches for map and alerts. FAB: Import file / Add PGW.
 4. **Import flow**: pick file → auto-detect format (shown, can be overridden) → the CSV wizard if needed (§5.7) → name the set → choose the default icon and template → progress → result report.
 5. **Set detail**:
@@ -1104,7 +1110,7 @@ While guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s
 - **ContactsSource**: a fake contacts provider (several addresses, custom labels, no address); name matching in search; the geocode cache hit, miss and 90-day expiry; choosing between several matches.
 - **SpeedPanel**: unit conversion, rounding and steadying; the normal/amber/red thresholds; the fallback to a POI limit with its icon; "no limit" showing speed only.
 - **PgwUpdateFeed**: a fixture of the real feed → releases in order; "version 24.101:07 Oct 26" → (24, 101, 2026-10-07); a list in mixed order still finds the newest; a missing date is accepted.
-- **CameraReportRepository**: the position is saved when Report is tapped (not when the type is picked); undo removes it; a mobile report expires after 24 h; a fixed report is cleared when a PGW release has a camera within 50 m; "not there" hides the camera and the hide is cleared if the next release still has it; review-first vs auto-send status changes.
+- **CameraReportRepository**: one-tap capture saves the position, heading and limit with its source; undo removes the report, its marker and its audio; type guessed from the comment ("van" → Mobile, "not there" → Camera gone); review edits update or remove the My reports marker; "not there" hides the related camera; DrivingState blocks Send while connected or moving.
 - **TurnByTurnMapper**: sample NavInfo → expected RoutingInfo.
 
 ### 15.2 Instrumented tests (`src/androidTest`)

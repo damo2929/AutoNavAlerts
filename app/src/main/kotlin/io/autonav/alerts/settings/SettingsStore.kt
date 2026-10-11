@@ -38,7 +38,6 @@ data class AppSettings(
     val rateCurve: RateCurve = RateCurve(),
     val pgwAutoSync: Boolean = true,
     val pgwWifiOnly: Boolean = false,
-    val reviewReportsFirst: Boolean = true,
     val speedPanelOn: Boolean = true,
     val mutedUntilMs: Long = 0,
     /** Debug builds: Navigation SDK simulator speed multiplier for bench testing. */
@@ -73,7 +72,6 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val gpsMaxHz = intPreferencesKey("gps_max_hz")
         val pgwAuto = booleanPreferencesKey("pgw_auto")
         val pgwWifi = booleanPreferencesKey("pgw_wifi_only")
-        val reviewReports = booleanPreferencesKey("review_reports")
         val speedPanel = booleanPreferencesKey("speed_panel")
         val mutedUntil = longPreferencesKey("muted_until")
         val speedSource = stringPreferencesKey("speed_source")
@@ -100,13 +98,12 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             units = p[K.units]?.let { runCatching { Units.valueOf(it) }.getOrNull() } ?: Units.IMPERIAL,
             voiceOn = p[K.voice] ?: true,
             chimeOn = p[K.chime] ?: true,
-            overspeedPct = p[K.overspeed] ?: DEFAULT_OVERSPEED,
+            overspeedPct = (p[K.overspeed] ?: DEFAULT_OVERSPEED).coerceIn(-0.05, 0.20),
             rateCurve = runCatching {
                 RateCurve(minMph = p[K.gpsMinMph] ?: 10.0, maxMph = p[K.gpsMaxMph] ?: 50.0, maxHz = p[K.gpsMaxHz] ?: 10)
             }.getOrDefault(RateCurve()),
             pgwAutoSync = p[K.pgwAuto] ?: true,
             pgwWifiOnly = p[K.pgwWifi] ?: false,
-            reviewReportsFirst = p[K.reviewReports] ?: true,
             speedPanelOn = p[K.speedPanel] ?: true,
             mutedUntilMs = p[K.mutedUntil] ?: 0,
             simulationSpeed = p[K.simSpeed] ?: 1f,
@@ -137,7 +134,6 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.gpsMaxHz] = s.rateCurve.maxHz
             p[K.pgwAuto] = s.pgwAutoSync
             p[K.pgwWifi] = s.pgwWifiOnly
-            p[K.reviewReports] = s.reviewReportsFirst
             p[K.speedPanel] = s.speedPanelOn
             p[K.mutedUntil] = s.mutedUntilMs
             p[K.simSpeed] = s.simulationSpeed

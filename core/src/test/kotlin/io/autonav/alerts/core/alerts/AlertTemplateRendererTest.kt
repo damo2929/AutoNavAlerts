@@ -48,7 +48,7 @@ class AlertTemplateRendererTest {
 
     @Test
     fun categoryFallsBackToSetName() {
-        val out = r.render("{category} now", TemplateValues(set = "My POIs"))
+        val out = r.render("{category} now", TemplateValues(setName = "My POIs"))
         assertEquals("My POIs now", out.display)
     }
 }
