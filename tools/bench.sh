@@ -80,8 +80,13 @@ car() {
 }
 
 stop() {
-  pkill -f desktop-head-unit || true
-  [ -n "$(serial)" ] && $ADB -s "$(serial)" emu kill || true
+  # Match the real binaries only (the [d]/[q] trick stops pkill matching this shell's own command line).
+  pkill -f '[d]esktop-head-unit -c' || true
+  s=$(serial)
+  [ -n "$s" ] && $ADB -s "$s" emu kill >/dev/null 2>&1 || true
+  pkill -TERM -f '[q]emu/linux-x86_64/qemu-system' || true
+  for _ in $(seq 1 30); do pgrep -f '[q]emu/linux-x86_64/qemu-system' >/dev/null || { echo "Emulator stopped."; return; }; sleep 1; done
+  echo "Emulator still shutting down; check with: pgrep -af qemu-system"
 }
 
 case "${1:-}" in
