@@ -83,7 +83,6 @@ class PoiRepository @Inject constructor(
     /** Reads a picked file (zip files are opened and the first matching entry used). */
     suspend fun importFile(
         uri: Uri,
-        setName: String,
         format: PoiFormat? = null,
         csvProfile: CsvProfile? = null,
         replaceSetId: Long? = null,
@@ -92,7 +91,12 @@ class PoiRepository @Inject constructor(
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: return@withContext fail("Couldn't open the file")
         val entry: Pair<String, ByteArray> = if (name.endsWith(".zip", true)) {
-            firstPoiEntry(bytes) ?: return@withContext fail("No POI file found in the zip")
+            val entries = ZipEntries.read(bytes)
+            val poiFiles = poiFilesIn(entries)
+            if (poiFiles.isEmpty()) return@withContext fail("No POI file found in the zip")
+            // Every file in the zip becomes its own set (never merged), with its own icon if supplied.
+            if (poiFiles.size > 1) return@withContext importZipFiles(name, entries, poiFiles, csvProfile)
+            poiFiles.entries.first().toPair()
         } else {
             name to bytes
         }
@@ -100,7 +104,8 @@ class PoiRepository @Inject constructor(
         val fmt = format ?: FormatSniffer.detect(entryName, data.copyOf(minOf(512, data.size)))
             ?: return@withContext fail("Unknown file format")
         val result = parse(fmt, data, csvProfile) ?: return@withContext fail("CSV files need a column mapping")
-        storeImport(result, setName, PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
+        // Set name comes from the file itself, never asked for.
+        storeImport(result, setNameFor(entryName), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
     }
 
     private fun fail(msg: String) = ImportOutcome(null, 0, 0, emptyList(), true, msg)
@@ -114,12 +119,64 @@ class PoiRepository @Inject constructor(
     }
 
     /** First POI file in a picked zip (read via the central directory; see ZipEntries). */
-    private fun firstPoiEntry(zip: ByteArray): Pair<String, ByteArray>? =
-        ZipEntries.read(zip).entries.firstOrNull { (name, _) ->
+    /** POI files in a zip (by extension), leaving out licence/readme files. */
+    private fun poiFilesIn(entries: Map<String, ByteArray>): LinkedHashMap<String, ByteArray> =
+        LinkedHashMap(entries.filter { (name, _) ->
             val lower = name.lowercase()
             listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } &&
-                !lower.endsWith("licence.txt") && !lower.endsWith("release.txt")
-        }?.toPair()
+                listOf("licence", "license", "release", "readme").none { lower.contains(it) }
+        })
+
+    /** Names of the POI files in a picked zip (for the import dialog). */
+    suspend fun zipPoiFileNames(uri: Uri): List<String> = withContext(Dispatchers.IO) {
+        if (!displayName(uri).endsWith(".zip", true)) return@withContext emptyList()
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@withContext emptyList()
+        runCatching { poiFilesIn(ZipEntries.read(bytes)).keys.toList() }.getOrDefault(emptyList())
+    }
+
+    /** "Croydon_Tramlink_Stop_PGPSW.ov2" → "Croydon Tramlink Stop". */
+    fun setNameFor(fileName: String): String =
+        fileName.substringBeforeLast('.').replace(Regex("(?i)[_ -]?pgpsw$"), "").replace('_', ' ').trim()
+            .ifEmpty { fileName }
+
+    /** One set per POI file in a zip; re-importing the same zip updates those sets instead of adding new ones. */
+    private suspend fun importZipFiles(
+        zipName: String,
+        entries: Map<String, ByteArray>,
+        poiFiles: Map<String, ByteArray>,
+        csvProfile: CsvProfile?,
+    ): ImportOutcome {
+        var total = 0
+        var skippedRows = 0
+        var sets = 0
+        var firstId: Long? = null
+        val problems = ArrayList<String>()
+        for ((fileName, data) in poiFiles) {
+            val fmt = FormatSniffer.detect(fileName, data.copyOf(minOf(512, data.size)))
+            if (fmt == null) { problems += "$fileName: unknown format"; continue }
+            val result = parse(fmt, data, csvProfile)
+            if (result == null) { problems += "$fileName: CSV needs a column mapping"; continue }
+            val stem = fileName.substringBeforeLast('.')
+            val iconBytes = entries.entries.firstOrNull { (n, _) ->
+                n.substringBeforeLast('.').equals(stem, true) && n.lowercase().let { it.endsWith(".bmp") || it.endsWith(".png") }
+            }?.value
+            val icon = iconBytes?.let { icons.saveImportedIcon(stem, it) }
+            val key = "${fmt.name}:file:$fileName"
+            val existing = db.poiSets().byFormat(key)
+            val out = storeImport(
+                result, setNameFor(fileName), PoiSourceType.FILE, key, existing?.id,
+                categoryNamer = { it }, defaultIcon = icon, fileIcon = icon != null,
+            )
+            if (out.failed) problems += "$fileName: ${out.message}" else {
+                total += out.imported; skippedRows += out.skipped; sets++
+                if (firstId == null) firstId = out.setId
+            }
+        }
+        val msg = "Imported $total POIs from $zipName into $sets sets" +
+            (if (skippedRows > 0) " ($skippedRows rows skipped)" else "") +
+            (if (problems.isNotEmpty()) ". Not imported: ${problems.joinToString("; ")}" else "")
+        return ImportOutcome(firstId, total, skippedRows, problems, sets == 0, msg)
+    }
 
     // --- PGW import ----------------------------------------------------------------------------
 
@@ -199,7 +256,7 @@ class PoiRepository @Inject constructor(
         val now = System.currentTimeMillis()
         // A sync refreshes the icon only if the user hasn't picked their own (built-in defaults and
         // PGW-supplied icons are replaced; anything else is kept).
-        val keepUserIcon = old != null && !(old.defaultIconId in IconRepository.BUILTIN || IconRepository.isPgwIcon(old.defaultIconId))
+        val keepUserIcon = old != null && !(old.defaultIconId in IconRepository.BUILTIN || IconRepository.isSuppliedIcon(old.defaultIconId))
         val base = old?.let { o -> if (defaultIcon != null && !keepUserIcon) o.copy(defaultIconId = defaultIcon) else o }
             ?: defaultSet(setName, source, format, alertsDefault, now).let { d -> defaultIcon?.let { d.copy(defaultIconId = it) } ?: d }
         val staging = base.copy(

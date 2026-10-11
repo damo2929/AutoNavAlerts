@@ -355,6 +355,8 @@ passing  = soundOn          // 100 yd passing alert: compulsory whenever sound i
 
 ## 5. POI importer spec
 
+**No set name is asked for on import.** Names come from what's loaded: a single file is named after the file, and a **zip becomes one set per POI file inside it (never merged)**, each named after its file and using the zip's matching `.bmp`/`.png` as its icon. Re-importing a zip updates its sets, matched by file name. Sets can be renamed in the set editor.
+
 **Free and third-party POI files are loaded by hand only.** You pick a file on the phone, through the Storage Access Framework or by sharing a file to the app. There's **no automatic download, scheduled refresh or URL subscription** for any source other than PGW (§6). Updating a free set means re-importing it by hand (§13 → set detail → **Re-import**), which keeps your icon, template and alert settings (§4.4).
 
 ### 5.1 Common interface

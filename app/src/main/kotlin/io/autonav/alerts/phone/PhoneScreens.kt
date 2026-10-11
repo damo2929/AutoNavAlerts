@@ -345,7 +345,8 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val fileName = remember { deps.pois.displayName(uri) }
-    var name by remember { mutableStateOf(fileName.substringBeforeLast('.')) }
+    var zipFiles by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(uri) { zipFiles = deps.pois.zipPoiFileNames(uri) }
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
     val isCsv = fileName.endsWith(".csv", true)
@@ -364,7 +365,12 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
         title = { Text("Import $fileName") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(name, { name = it }, label = { Text("Set name") }, singleLine = true)
+                // Set names come from the files themselves (DESIGN.md §5): nothing to type.
+                val names = if (zipFiles.isNotEmpty()) zipFiles else listOf(fileName)
+                Text(if (names.size > 1) "${names.size} sets will be created, one per file:" else "Will be imported as:",
+                    style = MaterialTheme.typography.bodyMedium)
+                names.take(12).forEach { Text("• " + deps.pois.setNameFor(it), style = MaterialTheme.typography.bodySmall) }
+                if (names.size > 12) Text("…and ${names.size - 12} more", style = MaterialTheme.typography.bodySmall)
                 if (isCsv) {
                     Text("CSV columns (0 = first column). Leave blank if not present.", style = MaterialTheme.typography.bodySmall)
                     preview.forEach { Text(it.take(80), style = MaterialTheme.typography.bodySmall) }
@@ -379,7 +385,7 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
             }
         },
         confirmButton = {
-            Button(enabled = !busy && result == null && name.isNotBlank(), onClick = {
+            Button(enabled = !busy && result == null, onClick = {
                 busy = true
                 scope.launch {
                     val profile = if (isCsv) CsvProfile(
@@ -389,7 +395,7 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
                         nameCol = nameCol.toIntOrNull(), speedCol = speedCol.toIntOrNull(),
                         bearingCol = bearingCol.toIntOrNull(), dirTypeCol = dirCol.toIntOrNull(),
                     ) else null
-                    val out = runCatching { deps.pois.importFile(uri, name, csvProfile = profile) }
+                    val out = runCatching { deps.pois.importFile(uri, csvProfile = profile) }
                     result = out.fold({ it.message + (it.errorSamples.firstOrNull()?.let { s -> "\nFirst problem: $s" } ?: "") }, { "Import failed: ${it.message}" })
                     busy = false
                 }
@@ -425,6 +431,10 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onDone) { Text("‹ Back") }
             Text(set.name, style = MaterialTheme.typography.headlineSmall)
+        }
+        Section("Name") {
+            OutlinedTextField(set.name, { set = set.copy(name = it) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text("Taken from the file when imported. Change it here if you like.", style = MaterialTheme.typography.bodySmall)
         }
         Section("Show and alert") {
             SwitchRow("Show on map", set.showOnMap) { set = set.copy(showOnMap = it) }
@@ -465,7 +475,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         val error = validate(set)
         error?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
         Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = error == null, onClick = { scope.launch { deps.pois.updateSet(set); onDone() } }) { Text("Save") }
+            Button(enabled = error == null && set.name.isNotBlank(), onClick = { scope.launch { deps.pois.updateSet(set); onDone() } }) { Text("Save") }
             OutlinedButton(onClick = { confirmDelete = true }) { Text("Delete set") }
         }
         Spacer(Modifier.height(32.dp))

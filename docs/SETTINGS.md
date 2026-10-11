@@ -113,7 +113,7 @@ If something here isn't done, the car screen shows **"Finish setup on your phone
 ### 3.2 Import dialog
 | Field | What it does |
 |---|---|
-| **Set name** | Name shown in lists, and spoken for `{category}` when a POI has no category. It defaults to the file name. |
+| (no set name to type) | **Set names come from what you load**: a single file is named after the file, and a zip creates **one set per POI file inside it** (never merged), each named after its file, e.g. `Croydon_Tramlink_Stop_PGPSW.ov2` → "Croydon Tramlink Stop". Each set uses the file's matching `.bmp`/`.png` icon from the zip if there is one. Re-importing the same zip updates those sets instead of adding duplicates. The dialog lists the sets it will create. Rename a set later in its editor if needed. |
 | **CSV columns** (CSV files only): **Lat, Lon, Name, Speed, Heading, Dir** | Column numbers, **0 = first column**. Leave a box blank if the file has no such column. **Heading** is the direction of travel the POI applies to, in degrees. **Dir** is the direction type, read as `0/1/2`, `any/one/both` or `a/o/b`. With a heading but no Dir column, the POI applies one way. With neither, it applies in any direction. The delimiter (`,` `;` tab or `|`) and header row are detected automatically, and the first rows are shown as a preview. |
 | **Import** | Reads the file. The result says how many POIs were imported and how many rows were skipped, with the first problem shown. **The import fails as a whole if more than 20% of rows are bad.** |
 

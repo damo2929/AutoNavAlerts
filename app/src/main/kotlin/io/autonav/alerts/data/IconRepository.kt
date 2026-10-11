@@ -55,6 +55,15 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         return "user:$id"
     }
 
+    /** Saves an icon supplied inside an imported zip (BMP/PNG) as `user:imp_<name>`. */
+    fun saveImportedIcon(name: String, bytes: ByteArray): String? {
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        val id = "imp_" + name.lowercase().replace(Regex("[^a-z0-9_]"), "_")
+        File(dirUser(), "$id.png").outputStream().use { decoded.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        cache.evictAll()
+        return "user:$id"
+    }
+
     /** Keeps the icon licence next to the icons, as the licence requires. */
     fun savePgwIconLicence(text: ByteArray) {
         File(dirUser(), "LICENCE_pgw_X2_icons.txt").writeBytes(text)
@@ -137,6 +146,9 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         )
 
         fun isPgwIcon(id: String) = id.startsWith("user:pgw_")
+
+        /** Icons that came with a download or imported zip (refreshed on re-import unless the user picked another). */
+        fun isSuppliedIcon(id: String) = isPgwIcon(id) || id.startsWith("user:imp_")
 
         fun pgwIconFor(code: String, source: PoiSourceType): String = when {
             source == PoiSourceType.PGW_PENDING || code == "pMOBILE" -> CAMERA_PENDING
