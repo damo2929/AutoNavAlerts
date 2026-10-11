@@ -273,6 +273,14 @@ Before testing, allow the **microphone** on the phone's Setup tab. On the DHU, t
 
 ---
 
+## 6.10 Navigation SDK feature watch
+Google's live incident reporting isn't available to apps on Android Auto yet (DESIGN.md §16 #21). After updating the Navigation SDK, run:
+```bash
+tools/check-nav-sdk-features.sh            # the version in gradle/libs.versions.toml
+tools/check-nav-sdk-features.sh --latest   # the newest published version
+```
+It exits with code 10 and says so if `NavigationViewForAuto` has gained the reporting APIs. The app then enables them automatically: Google's report button on the car map, and **More → Report to Google Maps** during navigation. Test those on the DHU. The log line `IncidentReporting: Incident reporting not supported on Android Auto…` confirms it's still off.
+
 ## 7. Logs and diagnostics
 Live log, filtered to the app's components:
 ```bash

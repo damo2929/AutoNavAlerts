@@ -72,6 +72,7 @@ class MapSurface(private val carContext: CarContext) : SurfaceCallback {
         pres.show()
         presentation = pres
         navView = view
+        IncidentReporting.enableButton(view)
         view.getMapAsync { m ->
             runCatching { m.isMyLocationEnabled = true }
             m.uiSettings.isCompassEnabled = false
@@ -129,6 +130,11 @@ class MapSurface(private val carContext: CarContext) : SurfaceCallback {
     }
 
     val isFollowing: Boolean get() = following
+
+    /** Google incident reporting on the car screen, if a future Navigation SDK supports it (§16 #21). */
+    val incidentReportingSupported: Boolean get() = navView?.let(IncidentReporting::supportedBySdk) == true
+    val incidentReportingAvailableNow: Boolean get() = navView?.let(IncidentReporting::availableNow) == true
+    fun showIncidentPanel(): Boolean = navView?.let(IncidentReporting::showPanel) == true
 
     /**
      * Keeps the car marker and route clear of the turn card, rail and split-screen media panel:

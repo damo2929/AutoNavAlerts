@@ -51,6 +51,20 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                         invalidate()
                     }
                 }.build())
+            .apply {
+                // Only appears if the Navigation SDK ever supports reporting on Android Auto (§16 #21).
+                if (session.surface.incidentReportingSupported) addItem(
+                    Row.Builder().setTitle("Report to Google Maps")
+                        .addText(if (session.surface.incidentReportingAvailableNow) "Crash, slowdown, hazard…" else "Available during navigation")
+                        .setImage(CarUi.icon(carContext, R.drawable.ic_action_report))
+                        .setOnClickListener {
+                            screenManager.pop()
+                            if (!session.surface.showIncidentPanel()) {
+                                androidx.car.app.CarToast.makeText(carContext, "Reporting isn't available here right now", androidx.car.app.CarToast.LENGTH_SHORT).show()
+                            }
+                        }.build(),
+                )
+            }
             .addItem(Row.Builder().setTitle("GPS")
                 .addText("Requested ${stats.requestedHz} Hz · actual ${"%.1f".format(stats.actualHz)} Hz · ${"%.0f".format(stats.speedMph)} mph")
                 .addText("Location from " + (if (stats.locationFromCar) "car" else "phone") + " · speed from " + (if (stats.speedFromCar) "car" else "phone"))
