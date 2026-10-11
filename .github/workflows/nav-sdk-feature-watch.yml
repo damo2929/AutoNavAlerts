@@ -4,6 +4,13 @@
 # Quarterly check: has Google's Navigation SDK added live incident reporting to the
 # Android Auto map view (NavigationViewForAuto)? See DESIGN.md §16 #21.
 # Opens (or updates) an issue when it has; otherwise does nothing.
+#
+# Cost: free. Public repositories get unlimited free minutes on standard GitHub-hosted runners.
+# To keep it that way this job only uses the free Linux runner (ubuntu-latest), stores no
+# artifacts or caches, can't run twice at once, and is capped at 10 minutes (it normally takes
+# about 1 minute, 4 times a year). If the repo is ever made private, that's about 4 minutes a
+# year against the free 2,000 minutes a month. GitHub can only bill an account that has a payment
+# method and a spending limit above $0.
 name: Navigation SDK feature watch
 
 on:
@@ -15,9 +22,14 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: nav-sdk-feature-watch
+  cancel-in-progress: true
+
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest   # free standard runner; never use larger/macOS/Windows runners here
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
