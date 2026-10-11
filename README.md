@@ -5,43 +5,99 @@ An Android Auto navigation app built on the Google Navigation SDK. It's meant to
 > **AI-assisted code:** this project is written with the help of **Claude** (Anthropic's AI assistant, via Claude Code). A human reviews, tests and is responsible for the code. Commits that include AI-generated changes are marked with a `Co-Authored-By: Claude` trailer.
 
 ## Status
-Early development. The full design is in [DESIGN.md](DESIGN.md); read it before changing anything, and record design changes there first.
+**First test build (v0.1.0).** It builds and lint passes, and the `:core` logic has 61 unit tests. It **hasn't been run on a real car or the Desktop Head Unit yet**, so expect rough edges.
 
-## Features (planned)
-- Google Maps–style navigation on Android Auto: search, route preview, turn-by-turn guidance, lanes, traffic, the speed panel and the cluster
-- Works alongside media in Android Auto's split-screen layout
-- Generic POI alerts: import any POI file (iGO TXT, KML, GPX, OV2, CSV wizard), with a custom icon and spoken text per set, and three alert stages including a compulsory 100 yd passing alert
-- PocketGPSWorld camera database, synced automatically when their RSS feed announces a new release (requires **your own** subscription)
-- Report cameras to PocketGPSWorld from the car screen
-- Speed-aware GPS rate: 1 Hz below 10 mph, rising to 10 Hz at 50 mph
-- Recents (including Google Maps history imports), contacts' addresses, and a Home Assistant people finder
+The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, and record design changes there first. [DESIGN.md Appendix B](DESIGN.md#appendix-b--implementation-status-first-test-build-2026-10-11) tracks what's built and what isn't.
 
-## Project layout
-| Module | What |
-|---|---|
-| `:core` | Plain Kotlin/JVM logic (geo maths, grid, importers, GPS-rate maths, PGW feed parsing); unit-tested on the JVM |
-| `:app` | Android app: Car App Library, Navigation SDK, Room, WorkManager, Compose |
+## Features
 
-## Building
+### In the test build
+- **Navigation on the car screen**
+  - Google map with traffic and pan, zoom and recenter
+  - Places search, with recents shown before you type
+  - Route preview with ETA and traffic
+  - Turn-by-turn guidance, with turn cards in Android Auto's rail and on the cluster
+- **Lives alongside media**: uses only Android Auto navigation templates, so music keeps playing in split-screen and alert speech lowers the volume rather than pausing it
+- **POI alerts**
+  - Import iGO TXT, KML, GPX, OV2 or CSV files (with column mapping), zipped or not
+  - Per-set icon (built-in or your own image) and spoken text, with a live preview and **Test speak**
+  - Three alert stages: a 1st and 2nd at distances you set, and a **compulsory 100 yd passing alert** whenever sound is on
+  - Direction-aware: cameras facing the other way, or on a parallel road, don't alert
+  - Average-speed zones and over-limit warnings
+  - Shown as a card on the car screen, or as a navigation notification when another app fills the screen
+- **Map extras**
+  - POI markers redraw on every GPS update
+  - A speed panel shows your speed and the limit. Google's limit is only known while you're over it, so otherwise the panel shows the nearest camera's limit, marked with a dot.
+- **Speed-aware GPS**: 1 Hz below 10 mph, rising in a straight line to 10 Hz at 50 mph
+- **PocketGPSWorld**, with **your own** subscription
+  - Checks their RSS feed daily and logs in to download a new release by itself
+  - Never swaps in new cameras while you're navigating
+- **Report a camera** from the car screen in two taps (type, then speed), with Undo. Reports are reviewed on the phone and only sent when you press Send.
+- **Recents** that you can delete from the car screen
+- **Phone app tabs**
+  - Setup: your own **Maps API key**, permissions, navigation terms
+  - POI sets
+  - Cameras: PocketGPSWorld login and sync
+  - Reports
+  - Settings: units, voice, chime, over-limit %, speed panel, GPS curve
+
+### Planned (designed, not built yet)
+- Home Assistant people finder: navigate to family members' live locations, e.g. children or relatives living with dementia (DESIGN.md §17)
+- Contacts' addresses (§8.3) and Google Maps history imports (§8.2)
+- EV chargers via Google Places and Open Charge Map, with a hand-off to Electroverse (§18)
+- Background alerts during free drive with no route set, a phone "Send to car" option, and per-category overrides
+
+## Getting started
+
+### Build
 Requirements:
-- A Java runtime to start Gradle. Gradle downloads JDK 21 for the build itself.
-- The Android SDK, with platform 37.0 and build-tools 37, and its location set as `sdk.dir` in `local.properties`.
-- A Google Maps Platform API key with the **Navigation SDK** and **Places API (New)** enabled.
+- **A Java runtime** to start Gradle. Gradle downloads JDK 21 itself (`gradle/gradle-daemon-jvm.properties`).
+- **The Android SDK**, with platform **37.0**, build-tools 37 and platform-tools. Set its path as `sdk.dir` in `local.properties`.
 
 ```bash
-echo "MAPS_API_KEY=your-key" >> local.properties   # never committed
+echo "sdk.dir=$HOME/Android/Sdk" >> local.properties   # local.properties is never committed
 ./gradlew :core:test          # JVM unit tests
-./gradlew :app:assembleDebug  # debug APK
+./gradlew :app:assembleDebug  # → app/build/outputs/apk/debug/app-debug.apk
 ```
 
-To test without a car, use the Android Auto **Desktop Head Unit**. Turn on Android Auto developer mode on the phone, enable "Unknown sources" and "Start head unit server", then:
+You can test the importer against your own PocketGPSWorld download without committing it:
+```bash
+PGW_IGO_FILE=/path/to/pocketgps_uk_sc.txt ./gradlew :core:test --tests '*realPgwFileIfProvided'
+```
+
+### Google Maps API key
+You need a Google Maps Platform key with the **Navigation SDK** (access must be approved by Google) and **Places API (New)** enabled. Restrict it to the package `io.autonav.alerts` and your signing SHA-1.
+
+**Enter the key in the phone app's Setup tab after installing.** It's stored encrypted on the device and applied at run time, so no rebuild is needed and each user can bring their own key. Alternatively, put `MAPS_API_KEY=...` in `local.properties` to build it in.
+
+### Install and set up
+1. `adb install app/build/outputs/apk/debug/app-debug.apk`
+2. In the phone app's **Setup** tab: add the Maps API key, allow location ("all the time" is recommended) and notifications, and accept Google's navigation terms.
+3. In Android Auto: tap the version number repeatedly to turn on developer mode, then enable **Unknown sources**. This app is sideloaded. Pick AutoNavAlerts as your navigation app.
+4. Add cameras: either enter your PocketGPSWorld login on the **Cameras** tab and press **Sync now**, or import a POI file on the **POIs** tab.
+
+### Test without a car
+Use the Android Auto **Desktop Head Unit** (`extras;google;auto` in the SDK manager). On the phone, enable "Start head unit server" in Android Auto's developer settings, then:
 
 ```bash
 adb forward tcp:5277 tcp:5277
 $ANDROID_HOME/extras/google/auto/desktop-head-unit
 ```
 
+Search for a destination and press **Simulate** on the route preview (debug builds only) to drive past your POIs.
+
+## Project layout
+| Module | What |
+|---|---|
+| `:core` | Plain Kotlin/JVM logic, unit-tested on the JVM: geo maths, grid index, importers, adaptive GPS rate, alert engine, templates, PocketGPSWorld feed and page parsing |
+| `:app` | Android app: Car App Library screens, Navigation SDK map and guidance, Room, WorkManager (PocketGPSWorld sync), Compose phone UI |
+
+Main versions: AGP 9.4.1, Kotlin 2.4.21, Gradle 9.8.1, Car App Library 1.7.0, Navigation SDK 8.0.0. minSdk 26, targetSdk 36, compileSdk 37.
+
 ## Data and licensing
 - The code is licensed under the **Apache License 2.0**; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-- **PocketGPSWorld data is never included in this repository or the app.** Each user downloads their own copy with their own subscription, under PocketGPSWorld's licence. Test fixtures are made up.
-- Google Maps, the Navigation SDK and Places are used under Google's terms.
+- **PocketGPSWorld data is never included in this repository or the app.**
+  - Each user signs in with their **own** subscription and gets their own watermarked copy, under PocketGPSWorld's licence.
+  - That copy is kept in private app storage and excluded from backups.
+  - Test fixtures are made up, and `.gitignore` blocks PocketGPSWorld files.
+- Google Maps, the Navigation SDK and Places are used under Google's terms, with your own API key.
