@@ -24,13 +24,13 @@ import io.autonav.alerts.core.poi.importers.IgoTxtImporter
 import io.autonav.alerts.core.poi.importers.KmlImporter
 import io.autonav.alerts.core.poi.importers.Ov2Importer
 import io.autonav.alerts.core.poi.importers.PoiFormat
+import io.autonav.alerts.core.poi.importers.ZipEntries
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.File
-import java.util.zip.ZipInputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -112,40 +112,24 @@ class PoiRepository @Inject constructor(
         PoiFormat.CSV -> csv?.let { CsvImporter(it).parse(data.inputStream().bufferedReader(Charsets.UTF_8)) }
     }
 
-    private fun firstPoiEntry(zip: ByteArray): Pair<String, ByteArray>? {
-        ZipInputStream(ByteArrayInputStream(zip)).use { zis ->
-            var total = 0L
-            while (true) {
-                val e = zis.nextEntry ?: return null
-                if (e.isDirectory || e.name.contains("..")) continue
-                val lower = e.name.lowercase()
-                if (listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } && !lower.endsWith("licence.txt") && !lower.endsWith("release.txt")) {
-                    val b = zis.readBytes()
-                    total += b.size
-                    if (total > 200L * 1024 * 1024) return null
-                    return e.name.substringAfterLast('/') to b
-                }
-            }
-        }
-    }
+    /** First POI file in a picked zip (read via the central directory; see ZipEntries). */
+    private fun firstPoiEntry(zip: ByteArray): Pair<String, ByteArray>? =
+        ZipEntries.read(zip).entries.firstOrNull { (name, _) ->
+            val lower = name.lowercase()
+            listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } &&
+                !lower.endsWith("licence.txt") && !lower.endsWith("release.txt")
+        }?.toPair()
 
     // --- PGW import ----------------------------------------------------------------------------
 
     /** Imports a downloaded PGW zip as two sets (main + pending mobiles). Returns the main outcome. */
     suspend fun importPgwZip(zip: File, version: String): ImportOutcome = withContext(Dispatchers.IO) {
-        val entries = HashMap<String, ByteArray>()
-        ZipInputStream(zip.inputStream().buffered()).use { zis ->
-            var total = 0L
-            while (true) {
-                val e = zis.nextEntry ?: break
-                if (e.isDirectory || e.name.contains("..")) continue
-                val b = zis.readBytes()
-                total += b.size
-                if (total > 200L * 1024 * 1024) error("Zip too large")
-                entries[e.name.substringAfterLast('/')] = b
-            }
-        }
-        val main = entries[PgwConfig.MAIN_FILE] ?: return@withContext ImportOutcome(null, 0, 0, emptyList(), true, "Main camera file missing from download")
+        val entries = ZipEntries.read(zip)
+        android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.map { "${it.key} (${it.value.size})" }}")
+        val (mainBytes, pendingBytes) = ZipEntries.pgwFiles(entries)
+        val main = mainBytes ?: return@withContext ImportOutcome(null, 0, 0, emptyList(), true,
+            "Main camera file missing from download. The zip contained: " +
+                entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" })
         val importer = IgoTxtImporter()
         val mainResult = importer.parse(main.inputStream().bufferedReader(Charsets.ISO_8859_1))
         val existingMain = db.poiSets().bySource(PoiSourceType.PGW)
@@ -153,7 +137,7 @@ class PoiRepository @Inject constructor(
             mainResult, "PocketGPSWorld cameras", PoiSourceType.PGW, PoiFormat.IGO_TXT.name, existingMain?.id,
             categoryNamer = IgoTxtImporter::categoryName, version = version,
         )
-        entries[PgwConfig.PENDING_MOBILE_FILE]?.let { pm ->
+        pendingBytes?.let { pm ->
             val r = importer.parse(pm.inputStream().bufferedReader(Charsets.ISO_8859_1))
             val existing = db.poiSets().bySource(PoiSourceType.PGW_PENDING)
             storeImport(

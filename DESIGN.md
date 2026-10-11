@@ -390,6 +390,7 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
   - Comma-separated, ASCII, LF line endings (Release.txt uses CRLF; handle both).
   - Header `X,Y,Type,Speed,DirType,Direction`; matching ignores case.
   - Coordinates have 5 decimal places.
+- **Reading the zip**: PGW's zips must be read through the zip's **central directory** (`java.util.zip.ZipFile`, `ZipEntries.kt`). Java's streaming `ZipInputStream` stops after the first entry (`_Need_Help.htm`) and never sees the camera files. Found on the first real sync, 2026-10-11.
 - **Watermark row**: the **last line** of each file is `0.72185,51.51508,Copyright PocketGPSWorld.com,,`. It's a copyright and watermark row with a non-numeric Type, and the importer **must skip it**. Generally, any row whose Type isn't an integer is skipped quietly; it isn't counted as an error.
 - **Empty fields are normal**. In `sc`, 163 rows (mostly mobile sites) have empty DirType/Direction, and some rows have an empty Speed. They're valid rows, not errors.
 

@@ -186,6 +186,8 @@ class PgwSyncWorker @AssistedInject constructor(
             settings.updatePgw { it.copy(lastResult = "Network problem: ${e.message}") }
             if (runAttemptCount < 3) Result.retry() else Result.failure()
         } finally {
+            // Debug builds keep the last download for diagnosis (adb pull …/cache/pgw/last.zip).
+            if (io.autonav.alerts.BuildConfig.DEBUG && zip.exists()) zip.copyTo(File(client.cacheDir(), "last.zip"), overwrite = true)
             zip.delete()
         }
     }

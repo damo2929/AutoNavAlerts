@@ -100,6 +100,7 @@ class PgwClient @Inject constructor(
         val body = FormBody.Builder().apply { PgwConfig.downloadForm().forEach { (k, v) -> add(k, v) } }
             .add("System", "iGO").add("voicePack", "noVoice").build()
         val html = http.newCall(Request.Builder().url(PgwConfig.BASE + PgwConfig.CAMERAS_PATH).post(body).build()).execute().use { it.body.string() }
+        android.util.Log.i(TAG, "Download page: ${html.length} chars, zip link: ${PgwPages.findZipLink(html)}")
         val link = PgwPages.findZipLink(html)
             ?: if (PgwPages.loginState(html) == PgwPages.LoginState.LOGGED_IN) throw PgwSubscriptionException("No download link: is your subscription active?")
             else throw PgwAuthException("Logged out while downloading")
@@ -107,6 +108,7 @@ class PgwClient @Inject constructor(
         http.newCall(Request.Builder().url(link).build()).execute().use { resp ->
             if (!resp.isSuccessful) throw IOException("Download HTTP ${resp.code}")
             val type = resp.header("Content-Type").orEmpty()
+            android.util.Log.i(TAG, "Zip response: HTTP ${resp.code}, type=$type, length=${resp.header("Content-Length")}")
             if (!type.contains("zip")) throw PgwParseException("Download wasn't a zip ($type)")
             dest.parentFile?.mkdirs()
             dest.outputStream().use { out -> resp.body.byteStream().copyTo(out) }
@@ -154,4 +156,6 @@ class PgwClient @Inject constructor(
     }
 
     fun cacheDir(): File = File(context.cacheDir, "pgw")
+
+    companion object { private const val TAG = "PgwClient" }
 }
