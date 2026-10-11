@@ -32,10 +32,7 @@ object IncidentReporting {
 
     /** True when reporting can be used right now (active navigation, supported country). */
     fun availableNow(view: View): Boolean = runCatching {
-        when (val r = view.javaClass.getMethod("isIncidentReportingAvailable").invoke(view)) {
-            is Boolean -> r
-            else -> false
-        }
+        view.javaClass.getMethod("isIncidentReportingAvailable").invoke(view) as? Boolean == true
     }.getOrDefault(false)
 
     /** Opens Google's report panel on the car screen. Returns false if not available. */
