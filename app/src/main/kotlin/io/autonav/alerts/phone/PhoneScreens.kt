@@ -15,6 +15,10 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -256,6 +260,7 @@ fun PoiSetsScreen(deps: PhoneDeps) {
     var importUri by remember { mutableStateOf<Uri?>(null) }
     var editing by remember { mutableStateOf<PoiSetEntity?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf<PoiSetEntity?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> importUri = uri }
 
     editing?.let { set -> SetEditor(deps, set, onDone = { editing = null }); return }
@@ -270,19 +275,63 @@ fun PoiSetsScreen(deps: PhoneDeps) {
         message?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.primary) }
         LazyColumn {
             items(sets, key = { it.id }) { set ->
-                Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp).clickable { editing = set }) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Image(deps.icons.bitmap(set.defaultIconId, 96).asImageBitmap(), null, Modifier.size(40.dp))
-                        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                            Text(set.name, style = MaterialTheme.typography.titleMedium)
-                            Text("${set.poiCount} POIs · ${set.source.name.lowercase().replace('_', ' ')}" +
-                                (set.version?.let { " · v$it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+                // Swipe left to delete (with confirmation); the swipe springs back if cancelled.
+                val swipe = androidx.compose.material3.rememberSwipeToDismissBoxState()
+                LaunchedEffect(swipe.currentValue) {
+                    if (swipe.currentValue == androidx.compose.material3.SwipeToDismissBoxValue.EndToStart) {
+                        confirmDelete = set
+                        swipe.reset()
+                    }
+                }
+                androidx.compose.material3.SwipeToDismissBox(
+                    state = swipe,
+                    enableDismissFromStartToEnd = false,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    backgroundContent = {
+                        Row(
+                            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, MaterialTheme.shapes.medium).padding(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(painterResource(io.autonav.alerts.R.drawable.ic_action_delete), null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                            Spacer(Modifier.size(8.dp))
+                            Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleMedium)
                         }
-                        Switch(checked = set.enabled, onCheckedChange = { on -> scope.launch { deps.pois.updateSet(set.copy(enabled = on)) } })
+                    },
+                ) {
+                    Card(Modifier.fillMaxWidth().clickable { editing = set }) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Image(deps.icons.bitmap(set.defaultIconId, 96).asImageBitmap(), null, Modifier.size(40.dp))
+                            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                Text(set.name, style = MaterialTheme.typography.titleMedium)
+                                Text("${set.poiCount} POIs · ${set.source.name.lowercase().replace('_', ' ')}" +
+                                    (set.version?.let { " · v$it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(checked = set.enabled, onCheckedChange = { on -> scope.launch { deps.pois.updateSet(set.copy(enabled = on)) } })
+                        }
                     }
                 }
             }
         }
+        if (sets.isNotEmpty()) Text("Tip: swipe a set left to delete it.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+    }
+
+    confirmDelete?.let { set ->
+        val pgw = set.source == io.autonav.alerts.data.PoiSourceType.PGW || set.source == io.autonav.alerts.data.PoiSourceType.PGW_PENDING
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete ${set.name}?") },
+            text = {
+                Text("Its ${set.poiCount} POIs will be removed from this phone." +
+                    if (pgw) " The next PocketGPSWorld sync will download them again. To stop that, turn off automatic updates on the Cameras tab." else "")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    scope.launch { deps.pois.deleteSet(set.id); message = "Deleted ${set.name}" }
+                    confirmDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
     }
 
     importUri?.let { uri ->

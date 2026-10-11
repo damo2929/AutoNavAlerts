@@ -108,6 +108,7 @@ If something here isn't done, the car screen shows **"Finish setup on your phone
 | **Import file** | Picks a POI file: iGO TXT, KML, GPX, TomTom OV2 or CSV, or a **zip** containing one. Free and third-party POI files are **only ever loaded by hand**; nothing is downloaded automatically except PocketGPSWorld (Cameras tab). |
 | Set card | Tap to edit the set (§3.3). It shows the icon, name, POI count, source and version. |
 | Switch on each card | Turns the whole set **on or off**: markers, alerts and speech. Same as the toggle on the car screen under **More → POI layers**. |
+| **Swipe left** on a card | Reveals **Delete**. A confirmation follows ("Delete <set>?"), and the card springs back if you cancel. Deleting a PocketGPSWorld set only removes the phone's copy: the next sync downloads it again unless automatic updates are off. You can also delete from the set's editor (**Delete set**). |
 
 ### 3.2 Import dialog
 | Field | What it does |

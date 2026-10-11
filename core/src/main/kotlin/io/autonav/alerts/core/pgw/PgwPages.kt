@@ -18,7 +18,12 @@ object PgwConfig {
     const val RSS_URL = "https://www.pocketgpsworld.com/speed-camera-rss.php"
 
     /** iGO, UK, single file with all cameras. */
-    const val PACKAGE_UK_IGO = 61
+    const val PACKAGE_UK_IGO_SINGLE = 61
+
+    /** iGO, UK, consolidated by type (one file per camera type): the package the app uses. */
+    const val PACKAGE_UK_IGO_BY_TYPE = 288
+
+    const val PACKAGE_UK_IGO = PACKAGE_UK_IGO_BY_TYPE
 
     fun loginForm(user: String, password: String) = listOf(
         "username" to user, "user_password" to password, "op" to "login",
