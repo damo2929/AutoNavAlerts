@@ -51,6 +51,7 @@ fun AlertStage.toCols() = StageCols(enabled, mode, metres, seconds)
 class PoiRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val db: AppDatabase,
+    private val icons: IconRepository,
 ) {
     private val _changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     /** Emits after any import, swap, delete or settings change, so caches reload. */
@@ -141,6 +142,8 @@ class PoiRepository @Inject constructor(
             ZipEntries.pgwTypeFiles(entries).mapValues { (_, bytes) -> { IgoTxtImporter().parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1)) } }
         }
         val fileFormat = if (ov2.isNotEmpty()) PoiFormat.OV2.name else PoiFormat.IGO_TXT.name
+        entries.entries.firstOrNull { it.key.equals(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_LICENCE_FILE, true) }
+            ?.let { icons.savePgwIconLicence(it.value) }
         if (files.isEmpty()) return@withContext ImportOutcome(null, 0, 0, emptyList(), true,
             "No camera files in the download. The zip contained: " +
                 entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" })
@@ -154,10 +157,13 @@ class PoiRepository @Inject constructor(
             keptFormats += format
             val result = load()
             val existing = db.poiSets().byFormat(format)
+            // The icon shipped with this file, if any (OV2 downloads include one per file).
+            val fileIcon = io.autonav.alerts.core.poi.importers.PgwOv2.iconFor(stem, entries)?.let { icons.savePgwIcon(stem, it) }
             val out = storeImport(
                 result, info.setName, info.source, format, existing?.id,
                 categoryNamer = info.categoryName, version = version,
-                alertsDefault = existing?.alertsEnabled ?: info.alertsByDefault, defaultIcon = info.icon,
+                alertsDefault = existing?.alertsEnabled ?: info.alertsByDefault, defaultIcon = fileIcon ?: info.icon,
+                fileIcon = fileIcon != null,
             )
             if (out.failed) failures += "${info.setName}: ${out.message}" else { total += out.imported; if (firstId == null) firstId = out.setId }
         }
@@ -181,6 +187,8 @@ class PoiRepository @Inject constructor(
         version: String? = null,
         alertsDefault: Boolean = true,
         defaultIcon: String? = null,
+        /** True when [defaultIcon] came from the download: categories then use the set's icon. */
+        fileIcon: Boolean = false,
     ): ImportOutcome {
         val samples = result.errors.take(20).map { "Line ${it.lineNumber}: ${it.reason}" }
         if (result.failed) {
@@ -189,7 +197,11 @@ class PoiRepository @Inject constructor(
         }
         val old = replaceSetId?.let { db.poiSets().get(it) }
         val now = System.currentTimeMillis()
-        val base = old ?: defaultSet(setName, source, format, alertsDefault, now).let { d -> defaultIcon?.let { d.copy(defaultIconId = it) } ?: d }
+        // A sync refreshes the icon only if the user hasn't picked their own (built-in defaults and
+        // PGW-supplied icons are replaced; anything else is kept).
+        val keepUserIcon = old != null && !(old.defaultIconId in IconRepository.BUILTIN || IconRepository.isPgwIcon(old.defaultIconId))
+        val base = old?.let { o -> if (defaultIcon != null && !keepUserIcon) o.copy(defaultIconId = defaultIcon) else o }
+            ?: defaultSet(setName, source, format, alertsDefault, now).let { d -> defaultIcon?.let { d.copy(defaultIconId = it) } ?: d }
         val staging = base.copy(
             id = 0, name = old?.name ?: setName, format = format, state = SetState.STAGING, replacesSetId = old?.id,
             poiCount = result.rows.size, version = version, lastUpdated = now,
@@ -201,9 +213,9 @@ class PoiRepository @Inject constructor(
             for (code in result.rows.mapNotNull { it.categoryCode }.distinct()) {
                 val prev = oldCats[code]
                 val isPgw = source == PoiSourceType.PGW || source == PoiSourceType.PGW_PENDING
-                val cat = (prev ?: PoiCategoryEntity(
+                val cat = (prev?.let { p -> if (fileIcon && p.iconId in IconRepository.BUILTIN) p.copy(iconId = null) else p } ?: PoiCategoryEntity(
                     setId = stagingId, sourceCode = code, name = categoryNamer(code),
-                    iconId = if (isPgw) IconRepository.pgwIconFor(code, source) else null,
+                    iconId = if (isPgw && !fileIcon) IconRepository.pgwIconFor(code, source) else null,
                     zoneRole = if (isPgw && (code in IgoTxtImporter.PGW_AVERAGE_SPEED_CODES || io.autonav.alerts.core.poi.importers.PgwOv2.isAverageSpeed(code))) ZoneRole.ZONE_POINT else ZoneRole.NONE,
                 )).copy(id = 0, setId = stagingId)
                 catIds[code] = db.categories().insert(cat)

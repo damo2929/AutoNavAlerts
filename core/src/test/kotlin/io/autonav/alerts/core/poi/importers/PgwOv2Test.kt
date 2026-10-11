@@ -87,6 +87,17 @@ class PgwOv2Test {
         assertEquals("variable limit", PgwOv2.speedLabel("var"))
     }
 
+    @Test
+    fun iconPrefersX2() {
+        val e = mapOf(
+            "pocketgps_uk_gatso_30.bmp" to byteArrayOf(1), "pocketgps_uk_gatso_30_X2.bmp" to byteArrayOf(2),
+            "pocketgps_uk_redlight.bmp" to byteArrayOf(3), "pocketgps_uk_gatso_300.bmp" to byteArrayOf(9),
+        )
+        assertEquals(2, PgwOv2.iconFor("gatso_30", e)!![0].toInt())
+        assertEquals(3, PgwOv2.iconFor("redlight", e)!![0].toInt())
+        assertNull(PgwOv2.iconFor("specs_var", e))
+    }
+
     /** Optional: PGW_OV2_ZIP=/path/to/your/ov2 download (never committed). */
     @Test
     fun realOv2ZipIfProvided() {

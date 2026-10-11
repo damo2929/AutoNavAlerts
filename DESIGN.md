@@ -443,6 +443,9 @@ The user chooses **TomTom OV2** (default) or **iGO** on the Cameras tab (`PgwDow
 - **Every file becomes its own set. Files are never merged** (owner's rule). For example `gatso_30` → "PGW fixed cameras · 30 mph", `specs_var` → "PGW average speed cameras (SPECS) · variable limit", `redlight` → "PGW red light cameras".
   - v24.101 has **33 files / 33 sets**.
   - Each set keeps its own icon, alerts and sound across syncs, matched by file stem.
+- **Icons supplied in the download are used.** Each file's `pocketgps_uk_<stem>_X2.bmp` (44 px, otherwise the 22 px `.bmp`) becomes that set's icon (`user:pgw_<stem>`), and category icons don't override it.
+  - A sync refreshes a set's icon unless the user chose their own.
+  - The `_X2` icons are **© GerryC, 2007**: free for non-commercial use, with credit and the licence included. The licence text is saved next to the icons, and the credit appears in the set editor and Settings → About ("Show icon licence").
 - **Plain OV2 has no direction field, but PGW encodes it in each entry's name**: `<compass>-[R-][t]<TYPE>:<pgwId>[@<mph>]`, e.g. `E-R-MONITRON:3209@30`.
   - **compass** (N, NE, … NW) is the direction of travel. It's within 22.5° of iGO's exact degrees for 98% of cameras. It's missing for 49 entries, mostly pending mobiles, which are treated as ANY.
   - **`R-`** means reversible (BOTH). It matches iGO DirType 2 for 3,955 of 3,958 cameras.

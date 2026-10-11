@@ -209,7 +209,7 @@ class PgwSyncWorker @AssistedInject constructor(
 
     companion object {
         /** Bump when the way PGW zips are turned into sets changes (2 = one set per type file). */
-        const val IMPORT_LAYOUT = 4 // 4 = one set per file in the download (OV2: per type and speed)
+        const val IMPORT_LAYOUT = 5 // 5 = one set per file, with the icon supplied for each file
         const val KEY_FORCE = "force"
         const val KEY_CHECK_FEED = "check_feed"
         const val CHANNEL = "pgw_sync"

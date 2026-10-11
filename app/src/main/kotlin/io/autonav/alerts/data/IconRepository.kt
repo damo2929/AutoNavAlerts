@@ -33,9 +33,9 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     private fun dirUser() = File(context.filesDir, "icons").apply { mkdirs() }
 
     fun builtinIds(): List<String> = BUILTIN.keys.toList()
-    fun userIds(): List<String> = dirUser().listFiles()?.map { "user:" + it.nameWithoutExtension }?.sorted() ?: emptyList()
+    fun userIds(): List<String> = dirUser().listFiles { f -> f.extension == "png" }?.map { "user:" + it.nameWithoutExtension }?.sorted() ?: emptyList()
 
-    fun label(id: String): String = BUILTIN_LABELS[id] ?: "Custom icon"
+    fun label(id: String): String = BUILTIN_LABELS[id] ?: if (isPgwIcon(id)) "PocketGPSWorld icon" else "Custom icon"
 
     /** Copies a picked image into app storage and returns its id. */
     fun addUserIcon(uri: Uri): String? {
@@ -45,6 +45,22 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         File(dirUser(), "$id.png").outputStream().use { scaled.compress(Bitmap.CompressFormat.PNG, 100, it) }
         return "user:$id"
     }
+
+    /** Saves an icon shipped in a PGW download (BMP) as `user:pgw_<stem>`; null if it can't be decoded. */
+    fun savePgwIcon(stem: String, bmp: ByteArray): String? {
+        val decoded = BitmapFactory.decodeByteArray(bmp, 0, bmp.size) ?: return null
+        val id = "pgw_" + stem.replace(Regex("[^a-z0-9_]"), "_")
+        File(dirUser(), "$id.png").outputStream().use { decoded.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        cache.evictAll()
+        return "user:$id"
+    }
+
+    /** Keeps the icon licence next to the icons, as the licence requires. */
+    fun savePgwIconLicence(text: ByteArray) {
+        File(dirUser(), "LICENCE_pgw_X2_icons.txt").writeBytes(text)
+    }
+
+    fun pgwIconLicence(): String? = File(dirUser(), "LICENCE_pgw_X2_icons.txt").takeIf { it.exists() }?.readText(Charsets.ISO_8859_1)
 
     /** Square icon bitmap in pixels. */
     fun bitmap(id: String, sizePx: Int): Bitmap {
@@ -119,6 +135,8 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
             CAMERA_REDLIGHT to "Red light", CAMERA_REDLIGHT_SPEED to "Red light + speed", CAMERA_PENDING to "Pending site",
             PIN to "Pin", HAZARD to "Hazard", SCHOOL to "School", FUEL to "Fuel", EV to "EV charger", STAR to "Star",
         )
+
+        fun isPgwIcon(id: String) = id.startsWith("user:pgw_")
 
         fun pgwIconFor(code: String, source: PoiSourceType): String = when {
             source == PoiSourceType.PGW_PENDING || code == "pMOBILE" -> CAMERA_PENDING

@@ -125,6 +125,7 @@ Importing a file creates a **new** set. Each new set starts with the [defaults b
 | Show and alert | **Show on map** | On | Draws this set's markers on the car map (at zoom 11 or closer; up to 200 markers, nearest first) |
 | | **Alerts** | On, except **PGW pending mobile sites**, which is Off | Whether this set's POIs trigger alerts at all |
 | | **Sound** | On | Spoken alerts for this set. **While on, the 100 yd passing alert is compulsory.** Off gives cards and notifications only. |
+| Icon | (from the download) | PocketGPSWorld sets | Each PocketGPSWorld set uses **the icon supplied for its file** (e.g. a Gatso "30" sign). A sync updates it unless you've chosen your own. These icons are © GerryC, 2007 (non-commercial use with credit). The credit is shown here, and the full licence is in **Settings → About → Show icon licence**. |
 | Icon | **Choose** | Camera icon for PGW, pin for files | Picks from the built-in icons (camera types, red light, pending site, pin, hazard, school, fuel, EV, star) or icons you've added |
 | | **From file** | | Adds your own image (scaled to 256 px) and uses it for this set |
 | **1st alert** | **Distance / Seconds ahead** | Seconds ahead: **30 s, minimum 500 yd** | When the first warning fires. "Seconds ahead" scales with speed (30 s at 70 mph ≈ 940 m) but never fires closer than the minimum. The 1st alert can't be switched off (turn off the set's Alerts instead). |

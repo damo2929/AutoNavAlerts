@@ -72,6 +72,7 @@ import io.autonav.alerts.core.poi.SpeedUnit
 import io.autonav.alerts.core.poi.importers.CsvImporter
 import io.autonav.alerts.core.poi.importers.CsvProfile
 import io.autonav.alerts.data.CameraReportEntity
+import io.autonav.alerts.data.IconRepository
 import io.autonav.alerts.data.PoiSetEntity
 import io.autonav.alerts.data.ReportKind
 import io.autonav.alerts.data.ReportStatus
@@ -436,6 +437,9 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
                 OutlinedButton(onClick = { pickIcon = !pickIcon }) { Text("Choose") }
                 OutlinedButton(onClick = { iconPicker.launch(arrayOf("image/*")) }) { Text("From file") }
             }
+            if (IconRepository.isPgwIcon(set.defaultIconId)) {
+                Text(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_CREDIT, style = MaterialTheme.typography.bodySmall)
+            }
             if (pickIcon) {
                 (deps.icons.builtinIds() + deps.icons.userIds()).chunked(6).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -795,6 +799,14 @@ fun SettingsScreen(deps: PhoneDeps) {
         }
         Section("About") {
             Text("Apache License 2.0. Written with the help of Claude (AI-assisted code).", style = MaterialTheme.typography.bodySmall)
+            var showLicence by remember { mutableStateOf(false) }
+            val licence = remember { deps.icons.pgwIconLicence() }
+            if (licence != null) {
+                Text("Camera set icons from your PocketGPSWorld download are © GerryC, 2007, used non-commercially with credit.",
+                    style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { showLicence = !showLicence }) { Text(if (showLicence) "Hide icon licence" else "Show icon licence") }
+                if (showLicence) Text(licence.replace("\r", ""), style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }

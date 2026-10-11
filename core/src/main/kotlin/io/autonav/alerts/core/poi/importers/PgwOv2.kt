@@ -107,6 +107,19 @@ object PgwOv2 {
         return out
     }
 
+    /**
+     * The icon shipped with a file: `pocketgps_uk_<stem>_X2.bmp` (44 px, © GerryC, non-commercial use
+     * with credit, see `licence_X2_icons.txt`) if present, else `pocketgps_uk_<stem>.bmp` (22 px).
+     */
+    fun iconFor(stem: String, entries: Map<String, ByteArray>): ByteArray? {
+        val x2 = Regex("""^pocketgps_[a-z]+_${Regex.escape(stem)}_X2\.bmp$""", RegexOption.IGNORE_CASE)
+        val plain = Regex("""^pocketgps_[a-z]+_${Regex.escape(stem)}\.bmp$""", RegexOption.IGNORE_CASE)
+        return entries.entries.firstOrNull { x2.matches(it.key) }?.value ?: entries.entries.firstOrNull { plain.matches(it.key) }?.value
+    }
+
+    const val ICON_LICENCE_FILE = "licence_X2_icons.txt"
+    const val ICON_CREDIT = "Icon © GerryC, 2007 (from your PocketGPSWorld download, non-commercial use)"
+
     /** "gatso_30" → ("gatso", "30"); "redlight" → ("redlight", null). */
     fun splitStem(stem: String): Pair<String, String?> =
         stem.substringBefore('_') to stem.substringAfter('_', "").ifEmpty { null }
