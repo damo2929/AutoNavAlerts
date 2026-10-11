@@ -75,13 +75,16 @@ class PgwOv2Test {
     }
 
     @Test
-    fun familiesMergeSpeedFiles() {
-        val f = PgwOv2.families(mapOf(
+    fun oneEntryPerFile() {
+        val f = PgwOv2.files(mapOf(
             "pocketgps_uk_gatso_30.ov2" to ByteArray(1), "pocketgps_uk_gatso_tba.ov2" to ByteArray(1),
             "pocketgps_uk_redlight.ov2" to ByteArray(1), "pocketgps_uk_gatso_30.bmp" to ByteArray(1),
         ))
-        assertEquals(listOf("gatso", "redlight"), f.keys.toList())
-        assertEquals(2, f["gatso"]!!.size)
+        assertEquals(listOf("gatso_30", "gatso_tba", "redlight"), f.keys.toList())
+        assertEquals("gatso" to "30", PgwOv2.splitStem("gatso_30"))
+        assertEquals("redlight" to null, PgwOv2.splitStem("redlight"))
+        assertEquals("30 mph", PgwOv2.speedLabel("30"))
+        assertEquals("variable limit", PgwOv2.speedLabel("var"))
     }
 
     /** Optional: PGW_OV2_ZIP=/path/to/your/ov2 download (never committed). */
@@ -89,9 +92,9 @@ class PgwOv2Test {
     fun realOv2ZipIfProvided() {
         val path = System.getenv("PGW_OV2_ZIP")
         assumeTrue("PGW_OV2_ZIP not set", !path.isNullOrBlank())
-        val fams = PgwOv2.families(ZipEntries.read(File(path!!)))
-        val summary = fams.mapValues { (_, files) -> files.sumOf { PgwOv2.parse(it).rows.size } }
-        println("PGW OV2 families: $summary total=${summary.values.sum()}")
+        val files = PgwOv2.files(ZipEntries.read(File(path!!)))
+        val summary = files.mapValues { (_, b) -> PgwOv2.parse(b).rows.size }
+        println("PGW OV2 files: ${files.size} total=${summary.values.sum()} $summary")
         assertTrue(summary.values.sum() > 10_000)
     }
 }

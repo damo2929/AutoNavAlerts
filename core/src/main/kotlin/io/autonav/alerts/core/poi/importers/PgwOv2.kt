@@ -96,15 +96,26 @@ object PgwOv2 {
         return ImportResult(rows, raw.errors, raw.silentlySkipped + skipped)
     }
 
-    /** Groups PGW OV2 files by family: `pocketgps_uk_gatso_30.ov2` → "gatso"; `pocketgps_uk_redlight.ov2` → "redlight". */
-    fun families(entries: Map<String, ByteArray>): LinkedHashMap<String, List<ByteArray>> {
-        val rx = Regex("""^pocketgps_[a-z]+_([a-z]+)(?:_[a-z0-9]+)?\.ov2$""", RegexOption.IGNORE_CASE)
-        val out = LinkedHashMap<String, MutableList<ByteArray>>()
+    /** One entry per PGW OV2 file, keyed by its stem: `pocketgps_uk_gatso_30.ov2` → "gatso_30"; `…_redlight.ov2` → "redlight". */
+    fun files(entries: Map<String, ByteArray>): LinkedHashMap<String, ByteArray> {
+        val rx = Regex("""^pocketgps_[a-z]+_([a-z]+(?:_[a-z0-9]+)?)\.ov2$""", RegexOption.IGNORE_CASE)
+        val out = LinkedHashMap<String, ByteArray>()
         for ((name, bytes) in entries) {
-            val fam = rx.matchEntire(name)?.groupValues?.get(1)?.lowercase() ?: continue
-            out.getOrPut(fam) { ArrayList() } += bytes
+            val stem = rx.matchEntire(name)?.groupValues?.get(1)?.lowercase() ?: continue
+            out[stem] = bytes
         }
-        @Suppress("UNCHECKED_CAST")
-        return out as LinkedHashMap<String, List<ByteArray>>
+        return out
+    }
+
+    /** "gatso_30" → ("gatso", "30"); "redlight" → ("redlight", null). */
+    fun splitStem(stem: String): Pair<String, String?> =
+        stem.substringBefore('_') to stem.substringAfter('_', "").ifEmpty { null }
+
+    /** Human label for a file's speed part: "30 mph", "variable limit", "limit to be confirmed". */
+    fun speedLabel(part: String?): String? = when (part) {
+        null -> null
+        "var" -> "variable limit"
+        "tba" -> "limit to be confirmed"
+        else -> part.toIntOrNull()?.let { "$it mph" } ?: part
     }
 }

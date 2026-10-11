@@ -34,7 +34,7 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
 - **Uses the car's own speed and GPS** from Android Auto when the car shares them. The speed panel matches your dashboard; alerts use the car's measured speed and GPS position (the phone's GPS drops to a 1 Hz backup). Falls back to the phone.
 - **Speed-aware GPS**: 1 Hz below 10 mph, rising in a straight line to 10 Hz at 50 mph
 - **PocketGPSWorld**, with **your own** subscription
-  - Choose **TomTom OV2** (default: direction, camera make, roadworks cameras, PGW camera IDs) or **iGO** (exact direction in degrees). Both give one set per camera type.
+  - Choose **TomTom OV2** (default: direction, camera make, roadworks cameras, PGW camera IDs) or **iGO** (exact direction in degrees). Every file in the download becomes its own set (never merged). For TomTom OV2 that's one set per type and speed, e.g. "PGW fixed cameras · 30 mph".
   - Checks their RSS feed daily and logs in to download a new release by itself
   - Never swaps in new cameras while you're navigating
 - **Report a camera with one tap** in the car. It saves your position, direction and the best-known speed limit, then records an optional **spoken comment** (speech-to-text). Reports are buffered, and after the drive the phone asks you to check them. **Review and Send happen only in the phone app, never while driving.**

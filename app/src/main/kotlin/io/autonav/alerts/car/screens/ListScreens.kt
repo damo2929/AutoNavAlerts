@@ -89,7 +89,11 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
         val s = sets ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
         val list = ItemList.Builder()
         if (s.isEmpty()) list.setNoItemsMessage("No POI sets yet. Import or sync on your phone.")
-        s.take(6).forEach { set ->
+        val limit = runCatching {
+            carContext.getCarService(androidx.car.app.constraints.ConstraintManager::class.java)
+                .getContentLimit(androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
+        }.getOrDefault(6)
+        s.take(limit).forEach { set ->
             list.addItem(
                 Row.Builder().setTitle(set.name)
                     .addText("${set.poiCount} POIs · alerts ${if (set.alertsEnabled) "on" else "off"}")

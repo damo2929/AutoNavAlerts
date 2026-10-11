@@ -112,10 +112,6 @@ class PoiRepository @Inject constructor(
         PoiFormat.CSV -> csv?.let { CsvImporter(it).parse(data.inputStream().bufferedReader(Charsets.UTF_8)) }
     }
 
-    private fun mergeResults(list: List<ImportResult>) = ImportResult(
-        rows = list.flatMap { it.rows }, errors = list.flatMap { it.errors }, silentlySkipped = list.sumOf { it.silentlySkipped },
-    )
-
     /** First POI file in a picked zip (read via the central directory; see ZipEntries). */
     private fun firstPoiEntry(zip: ByteArray): Pair<String, ByteArray>? =
         ZipEntries.read(zip).entries.firstOrNull { (name, _) ->
@@ -137,9 +133,10 @@ class PoiRepository @Inject constructor(
         val entries = ZipEntries.read(zip)
         android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.map { "${it.key} (${it.value.size})" }}")
         // TomTom OV2 (PGW's own naming carries direction, type, id and speed) or iGO TXT, one set per family.
-        val ov2 = io.autonav.alerts.core.poi.importers.PgwOv2.families(entries)
+        val ov2 = io.autonav.alerts.core.poi.importers.PgwOv2.files(entries)
         val files: Map<String, () -> ImportResult> = if (ov2.isNotEmpty()) {
-            ov2.mapValues { (_, list) -> { mergeResults(list.map { io.autonav.alerts.core.poi.importers.PgwOv2.parse(it) }) } }
+            // One set per file in the download (e.g. "PGW fixed cameras · 30 mph").
+            ov2.mapValues { (_, bytes) -> { io.autonav.alerts.core.poi.importers.PgwOv2.parse(bytes) } }
         } else {
             ZipEntries.pgwTypeFiles(entries).mapValues { (_, bytes) -> { IgoTxtImporter().parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1)) } }
         }
@@ -242,8 +239,15 @@ class PoiRepository @Inject constructor(
         val categoryName: (String) -> String,
     ) {
         companion object {
-            fun of(stem: String, ov2: Boolean = false): PgwFile = of(stem).let { f ->
-                if (ov2) f.copy(categoryName = io.autonav.alerts.core.poi.importers.PgwOv2::categoryName) else f
+            fun of(stem: String, ov2: Boolean = false): PgwFile {
+                if (!ov2) return of(stem)
+                val (family, part) = io.autonav.alerts.core.poi.importers.PgwOv2.splitStem(stem)
+                val base = of(family)
+                val speed = io.autonav.alerts.core.poi.importers.PgwOv2.speedLabel(part)
+                return base.copy(
+                    setName = if (speed != null) "${base.setName} · $speed" else base.setName,
+                    categoryName = io.autonav.alerts.core.poi.importers.PgwOv2::categoryName,
+                )
             }
 
             fun of(stem: String): PgwFile = when (stem) {

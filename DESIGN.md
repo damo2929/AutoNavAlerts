@@ -378,7 +378,7 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
 
 ### 5.2 iGO TXT (main format, PGW)
 
-> **Package used: 288 "UK – Consolidated by type"** (iGO, with pending mobiles). Each file becomes **its own set**, and sets are matched by file on every sync, so per-set icon and alert choices are kept:
+> **iGO option: package 288 "UK – Consolidated by type"** (with pending mobiles). Each file becomes **its own set**, and sets are matched by file on every sync, so per-set icon and alert choices are kept:
 >
 > | File | Set | Rows (v24.101) | Type codes |
 > |---|---|---|---|
@@ -440,7 +440,9 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
 The user chooses **TomTom OV2** (default) or **iGO** on the Cameras tab (`PgwDownload`). OV2 is TomTom OV2 → "UK – Speed Zoned Complete", **package 1**, `System=TomTom OV2`. The other OV2 package, "consolidated by type", is package 2.
 
 - **Files**: one per type and speed, e.g. `pocketgps_uk_gatso_30.ov2`, `…_gatso_var.ov2`, `…_gatso_tba.ov2`, `…_redlight.ov2`, `…_specs_50.ov2`, `…_pmobile_70.ov2`. There's also a `.bmp` icon per file, which is ignored.
-- They're **merged into one set per family**: gatso → "PGW fixed cameras", mobile, redlight, specs, pmobile.
+- **Every file becomes its own set. Files are never merged** (owner's rule). For example `gatso_30` → "PGW fixed cameras · 30 mph", `specs_var` → "PGW average speed cameras (SPECS) · variable limit", `redlight` → "PGW red light cameras".
+  - v24.101 has **33 files / 33 sets**.
+  - Each set keeps its own icon, alerts and sound across syncs, matched by file stem.
 - **Plain OV2 has no direction field, but PGW encodes it in each entry's name**: `<compass>-[R-][t]<TYPE>:<pgwId>[@<mph>]`, e.g. `E-R-MONITRON:3209@30`.
   - **compass** (N, NE, … NW) is the direction of travel. It's within 22.5° of iGO's exact degrees for 98% of cameras. It's missing for 49 entries, mostly pending mobiles, which are treated as ANY.
   - **`R-`** means reversible (BOTH). It matches iGO DirType 2 for 3,955 of 3,958 cameras.
