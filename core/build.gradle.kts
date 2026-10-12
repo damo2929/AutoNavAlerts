@@ -22,7 +22,9 @@ dependencies {
 }
 
 tasks.test {
-    // Lets the optional real-file test see PGW_IGO_FILE, and prints its summary.
+    // Lets the optional real-file tests see PGW_IGO_FILE and the drive replay's files, and prints their summaries.
     environment("PGW_IGO_FILE", System.getenv("PGW_IGO_FILE") ?: "")
+    environment("DRIVE_CSV", System.getenv("DRIVE_CSV") ?: "")
+    environment("DRIVE_POIS", System.getenv("DRIVE_POIS") ?: "")
     testLogging { showStandardStreams = true }
 }

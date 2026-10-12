@@ -4,6 +4,7 @@
 package io.autonav.alerts.core.osm
 
 import io.autonav.alerts.core.geo.Geo
+import io.autonav.alerts.core.geo.LatLngPoint
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.max
@@ -30,26 +31,86 @@ class LimitIndex private constructor(
      * With no heading (standing still) the nearest piece within 20 m either way (DESIGN.md §8.4).
      */
     fun limitAt(lat: Double, lon: Double, headingDeg: Double?): Double? {
+        val best = pieceAt(lat, lon, headingDeg) ?: return null
+        return mphOf(best).toDouble()
+    }
+
+    /** The piece [limitAt] would use (its index), or null. For the lookahead (DESIGN.md §8.4a). */
+    fun pieceAt(lat: Double, lon: Double, headingDeg: Double?): Int? {
         val h = headingDeg
         val kx = 111_320.0 * cos(Math.toRadians(lat))
         var best = -1
         var bestD = OsmSpeedLimits.MATCH_M
+        forEachNear(lat, lon) { p ->
+            val d = distanceM(p, lat, lon, kx)
+            if (d <= bestD && (h == null || headingFits(p, h))) { best = p; bestD = d }
+        }
+        return if (best < 0) null else best
+    }
+
+    /** The limit of a piece, mph. */
+    fun mphOf(piece: Int): Int = mph[piece].toInt() and 0xff
+
+    /** The piece's first end (its drawing direction). */
+    fun startOf(piece: Int): LatLngPoint = LatLngPoint(ends[4 * piece] / 1e6, ends[4 * piece + 1] / 1e6)
+
+    /** The piece's end in its drawing direction when [forward], else its start. */
+    fun endOf(piece: Int, forward: Boolean): LatLngPoint =
+        if (forward) LatLngPoint(ends[4 * piece + 2] / 1e6, ends[4 * piece + 3] / 1e6) else startOf(piece)
+
+    /** Bearing from the piece's start to its end, degrees. */
+    fun bearingOf(piece: Int): Double {
+        val o = 4 * piece
+        return Geo.bearingDeg(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
+    }
+
+    fun lengthOf(piece: Int): Double {
+        val o = 4 * piece
+        return Geo.distanceM(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
+    }
+
+    /**
+     * The piece that continues the road from the point (lat, lon) in direction [headingDeg]: one
+     * end within [JOIN_M] of the point and, leaving that end, running within [JOIN_DEG] of the
+     * heading; the straightest wins (DESIGN.md §8.4a). [exclude] is the piece we came along.
+     */
+    fun connectedFrom(lat: Double, lon: Double, headingDeg: Double, exclude: Int = -1): Int? {
+        val kx = 111_320.0 * cos(Math.toRadians(lat))
+        var best = -1
+        var bestDiff = JOIN_DEG
+        forEachNear(lat, lon) { p ->
+            if (p == exclude) return@forEachNear
+            val o = 4 * p
+            val dA = pointDistanceM(ends[o], ends[o + 1], lat, lon, kx)
+            val dB = pointDistanceM(ends[o + 2], ends[o + 3], lat, lon, kx)
+            val out = when {
+                dA <= JOIN_M && dA <= dB -> bearingOf(p)
+                dB <= JOIN_M -> Geo.normalizeDeg(bearingOf(p) + 180.0)
+                else -> return@forEachNear
+            }
+            val diff = Geo.absAngleDiffDeg(out, headingDeg)
+            if (diff < bestDiff) { best = p; bestDiff = diff }
+        }
+        return if (best < 0) null else best
+    }
+
+    /** Every indexed piece in the 3×3 cells around the point, then the wide ones. */
+    private inline fun forEachNear(lat: Double, lon: Double, fn: (Int) -> Unit) {
         val row = cellRow(lat); val col = cellCol(lon)
         for (dr in -1..1) for (dc in -1..1) {
             val key = cellKey(row + dr, col + dc) shl IDX_BITS
             var i = lowerBound(key)
             while (i < cells.size && (cells[i] ushr IDX_BITS) == (key ushr IDX_BITS)) {
-                val p = (cells[i] and IDX_MASK).toInt()
-                val d = distanceM(p, lat, lon, kx)
-                if (d <= bestD && (h == null || headingFits(p, h))) { best = p; bestD = d }
+                fn((cells[i] and IDX_MASK).toInt())
                 i++
             }
         }
-        for (p in wide) {
-            val d = distanceM(p, lat, lon, kx)
-            if (d <= bestD && (h == null || headingFits(p, h))) { best = p; bestD = d }
-        }
-        return if (best < 0) null else (mph[best].toInt() and 0xff).toDouble()
+        for (p in wide) fn(p)
+    }
+
+    private fun pointDistanceM(latE6: Int, lonE6: Int, lat: Double, lon: Double, kx: Double): Double {
+        val x = (lonE6 / 1e6 - lon) * kx; val y = (latE6 / 1e6 - lat) * KY
+        return sqrt(x * x + y * y)
     }
 
     private fun lowerBound(key: Long): Int {
@@ -77,6 +138,11 @@ class LimitIndex private constructor(
 
     companion object {
         val EMPTY = LimitIndex(emptySet(), IntArray(0), ByteArray(0), LongArray(0), IntArray(0))
+
+        /** Two pieces join when an end of one is within this of the other's (DESIGN.md §8.4a). */
+        const val JOIN_M = 20.0
+        /** Heading continuity across a join. */
+        const val JOIN_DEG = 45.0
 
         private const val CELL_DEG = 0.002
         private const val KY = 110_540.0
