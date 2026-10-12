@@ -73,8 +73,6 @@ class SearchScreen(
                     Row.Builder().setTitle(p.name)
                         .apply { p.address?.let { addText(it) } }
                         .setImage(CarUi.icon(carContext, when (p.kind) {
-                            PlaceKind.HOME -> R.drawable.ic_action_home
-                            PlaceKind.WORK -> R.drawable.ic_action_work
                             PlaceKind.FAVOURITE -> R.drawable.ic_action_star
                             PlaceKind.RECENT -> R.drawable.ic_action_recents
                         }))

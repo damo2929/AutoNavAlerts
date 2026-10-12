@@ -46,7 +46,6 @@ class SettingsBackup @Inject constructor(
                 .put("overspeedPct", s.overspeedPct)
                 .put("speedSource", s.speedSource.name)
                 .put("speedPanelOn", s.speedPanelOn)
-                .put("googleAccount", s.googleAccount)
                 .put("satelliteMap", s.satelliteMap)
                 .put("evEfficientRoutes", s.evEfficientRoutes)
                 .put("avoidTolls", s.avoidTolls)
@@ -189,7 +188,6 @@ class SettingsBackup @Inject constructor(
         return cur.copy(
             units = j.optString("units").let { n -> Units.entries.firstOrNull { it.name == n } } ?: cur.units,
             voiceOn = bool("voiceOn", cur.voiceOn),
-            googleAccount = j.optString("googleAccount").ifBlank { null } ?: cur.googleAccount,
             chimeOn = bool("chimeOn", cur.chimeOn),
             overspeedPct = (num(j, "overspeedPct") ?: cur.overspeedPct).coerceIn(-0.05, 0.20),
             rateCurve = rate,

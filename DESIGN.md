@@ -664,7 +664,7 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 | Screen | Template | Content |
 |---|---|---|
 | Home / free-drive | `NavigationTemplate` (no RoutingInfo) | Map, speed panel (§8.4), the next POI ahead (as a `Message` "Camera 0.6 mi") |
-| Search | `SearchTemplate` | Places autocomplete (debounced 300 ms, biased to your location); Home/Work, favourites and recents (including Google Maps imports) when the box is empty (§8.2) |
+| Search | `SearchTemplate` | Places autocomplete (debounced 300 ms, biased to your location); favourites and recents (including Google Maps imports) when the box is empty (§8.2) |
 | Recents | `PlaceListNavigationTemplate` | Recents and favourites with markers; delete action on each row, plus Clear all (§8.2) |
 | Place detail | `MapWithContentTemplate` / `PaneTemplate` | Navigate · Favourite · Remove from recents |
 | Contacts | `SearchTemplate` → `PlaceListNavigationTemplate` | Contacts with a postal address, found by name (voice or typing); one row per address (Home/Work/Other) (§8.3) |
@@ -770,29 +770,12 @@ Each redraw:
 - These are all a couple of taps, and the Car App Library already blocks text entry while driving.
 - **Deleting a Google-sourced entry** writes a `HiddenPlace` tombstone, so the next Takeout, Timeline or Data Portability import doesn't bring it back.
 - **We can't delete it inside Google Maps**, because there's no write API. The phone app's Places screen has a "Manage in Google My Activity" link for that.
-- Home/Work/Favourites can't be removed from the recents action. Removing them needs Unfavourite or the phone app.
+- Favourites can't be removed from the recents action. Removing them needs Unfavourite or the phone app.
 
-### 8.2a Home and Work from your Google account
-**Goal** (owner, 2026-10-12): the car offers **Home** and **Work** as one-tap destinations, using the Home and Work you set in Google Maps on your Google account.
+### 8.2a Home and Work from your Google account — removed
+**Decision (owner, 2026-10-12): removed completely.** The feature fetched the Home and Work set in Google Maps through Google's Data Portability API (`maps.aliased_places`, in-app Google sign-in, one-time or time-based access) and offered them as the first rows of the car's search. It was built and tested end to end, but **Google's export carries no Home or Work for the owner's account** under any plausible scope: `maps.aliased_places` gives an empty "My labeled places" file, `maps.commute_settings` only the commute mode, `maps.commute_routes` nothing — checked with direct API calls outside the app, fresh jobs, archive index complete and not truncated, while Google Maps shows both. Google's export catalogue lists a separate "Home and Work" object with no documented scope. The owner's rule stands: **Google Maps is the only acceptable source** (one Home and Work, the same in both apps), and a manual set-by-address fallback was declined, so with no working source the feature is out rather than half-working.
 
-**There's no live API** for Google Maps' Home/Work. The app uses the official export, from your Google account:
-- **Google account**: phone Settings → **Home and Work** → **Get from my Google account**. The app asks Google (the same in-app Google sign-in as key creation, §13.1) for the **Data Portability API** scope `https://www.googleapis.com/auth/dataportability.maps.aliased_places` ("the places you labeled on Maps"), then:
-   - `POST https://dataportability.googleapis.com/v1/portabilityArchive:initiate` with `{"resources": ["maps.aliased_places"]}` → an `archiveJobId`;
-   - **Account**: the app shows Android's own account chooser (`AccountManager.newChooseAccountIntent`, Google accounts only), so with more than one Google account on the phone the user chooses once; the name is stored in settings (`googleAccount`, in the settings backup too) and passed to Google with `setAccount`, so there's no second prompt. **Use a different account** forgets it. (Play services' `SELECT_ACCOUNT` prompt was tried first: its result carries no email without an email scope, so the account couldn't be remembered and it asked every time.) Found 2026-10-12: the phone had two accounts and Play services picked one silently.
-   - **Finding, 2026-10-12 (tools/dataportability-check.py, direct API calls, outlook.com account, Home and Work visibly set in Maps):** `maps.aliased_places` → "My labeled places/Labeled places.json" = `{"features": []}` (twice, fresh jobs, archive index complete and not truncated); `maps.commute_settings` → only `commuteMode`/`otherTravelMode`; `maps.commute_routes` → no files. Google's own export catalogue lists a separate object **"Home and Work: your declared home and work locations"** (GeoJSON features), but none of the ten `dataportability.maps.*` scopes is documented as delivering it and none of the three plausible ones did. **Open question for Google.** Also learned: the consent page offers **Only once / 30 days / 180 days**; a time-based grant allows repeated `initiate` calls (`accessType: ACCESS_TYPE_TIME_BASED`); a used one-time grant blocks any new consent with "Incremental auth is not allowed" until `authorization:reset` (works, HTTP 200 with the used token) or the user removes the app's access on their Google account.
-   - **One grant, one export**: Google exhausts the scope after one export. If it answers **409** "Requested resources have already been exported in job <id> matching this request", the app calls `POST …/v1/authorization:reset` (revokes the token and resets the exhausted scope), tells the user "Google needs you to allow access again", and starts the sign-in again, giving a **new** export with current data. (A first version reused the old job; wrong, because Home/Work set after that export would never appear.)
-   - A manual **Set Home/Work by address** fallback was proposed 2026-10-12 and **declined** by the owner: Google Maps is the **only** source, so the user keeps a single Home and Work and the app always matches what Google Maps shows. Never add a second place to set them.
-   - polls `GET …/v1/archiveJobs/{id}/portabilityArchiveState` (every 3 s, up to 3 minutes) until `COMPLETE`, then downloads each signed URL in `urls` (a zip or JSON);
-   - parses the labeled places (below) and keeps the ones labelled Home and Work.
-   - **No incremental authorization:** Google refuses a Data Portability scope added to the app's other grants ("Access blocked: Incremental auth is not allowed for the requested scopes", seen 2026-10-12 after **Create a key** had granted `cloud-platform`). The request is made with `setOptOutIncludingGrantedScopes(true)` (play-services-auth 22.0.0), so it asks for this scope alone. Afterwards the token is cleared from Play services' cache (`clearToken`), since a one-time grant is used up by the export and pressing the button again must ask Google again.
-   - Limits: Google offers this API only to accounts in the **UK, EEA and Switzerland**; the scope is **restricted**, so until Google verifies the app, it works for accounts added as **test users** on the app's OAuth consent screen (maintainer task, with `dataportability.googleapis.com` enabled in the app's own Cloud project). Access is one-time: pressing the button again asks again. The token is only held in memory for the call.
-- **No Takeout import** (removed at the owner's request, 2026-10-12).
-
-**Parsing** (`LabeledPlaces`, in the app module since it uses `org.json`; JVM-tested): Google's export is a zip or JSON file of GeoJSON `features`, each with `geometry.coordinates` `[lon, lat]` and `properties` (or `property`) `name` and `address`. A place is **Home** if its name is "Home" or its `semantic_type`/`semanticType` is `TYPE_HOME`, **Work** likewise (any case). Coordinates may be missing (Google can leave them out for Home/Work); then the address is looked up with Places text search (§8, the user's own key).
-
-**Stored**: one `place` row of kind `HOME` and one of kind `WORK` (DB unchanged), replacing the previous ones, with the address. The Settings card shows them with **Clear**.
-
-**Car**: with the search box empty, **Home** and **Work** are the first two rows (house and briefcase icons, the address underneath); one tap previews the route (§8.3a choices apply). When one isn't set, its row is left out. They also lead Recents.
+What was learned, kept for any future attempt: Data Portability scopes can't be added to an app's other grants (request them alone, `setOptOutIncludingGrantedScopes(true)`); a used one-time grant blocks any new consent ("Incremental auth is not allowed") until `POST …/v1/authorization:reset`; the consent page offers Only once / 30 days / 180 days, and a time-based grant allows repeated exports; Play services' `SELECT_ACCOUNT` result carries no email, so the account must be chosen with Android's own `AccountManager` chooser. The place table keeps no HOME/WORK rows (DB v8 deletes any), and `PlaceKind` is RECENT and FAVOURITE only.
 
 ### 8.3 Navigating to contacts' addresses
 - **Permission**: `READ_CONTACTS` (in the manifest), **optional**. Settings → Permissions has a "Contacts (optional)" line and its own **Allow contacts** button (the main **Allow** only asks for the needed permissions). Without it the contact rows and the Contacts entry are hidden, and search works as before.
@@ -803,7 +786,7 @@ Each redraw:
   - **Cache**: the chosen `(placeId, lat, lon, formatted address)` is stored in Room table **`contact_geocode`** (DB **v4**, migration `MIGRATION_3_4`), keyed by SHA-256 of the normalised address (lower case, single spaces), so the address text itself isn't stored. Entries older than **90 days** are looked up again. Settings → Permissions → **Clear contact locations** empties it. The table is in `poi.db`, so like everything else it's excluded from Android backup, and it isn't in the settings backup file (§13.4).
 - **Car UI**:
   - **Search**: typing or speaking a name ("Mum", "Dave Smith") in the `SearchTemplate` shows matching contact addresses **above** the Places results. A contact row has the contact icon, the name as title, and "Home · 12 High Street, Sheffield" as text (plus the distance once the address has been located before).
-  - **Contacts**: the Search screen's empty state (under Home/Work/favourites/recents) has a **Contacts** row that opens a contacts-only search (the same screen, with Places results off and the hint "Search your contacts"). The full address book isn't listed, because of the car's list limits.
+  - **Contacts**: the Search screen's empty state (under favourites/recents) has a **Contacts** row that opens a contacts-only search (the same screen, with Places results off and the hint "Search your contacts"). The full address book isn't listed, because of the car's list limits.
   - Picking a contact address → geocode (cached or new) → RoutePreview. Contacts with several addresses show one row per address.
 - **Assistant**: "Hey Google, navigate to Mum's house" usually reaches us as `ACTION_NAVIGATE` with an address Assistant has already looked up (§9.1). If it only sends a name, it opens Search with that name, where matching contacts are listed first, then Places.
 - **Recents**: a contact destination is stored as a recent titled with the name and type, for example "Mum (Home)", with the formatted address. It can be deleted like any other recent (§8.2).
@@ -1202,7 +1185,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - Bench testing (debug builds): simulated-drive speed.
    - There's no GPS card: the rate is always 10 Hz (§10.2).
 10. **Places**:
-   - Home/Work, favourites and recents, each with its source. Delete by swiping, with undo.
+   - Favourites and recents, each with its source. Delete by swiping, with undo.
    - **Import from Google Maps**: Takeout zip, or Timeline.json, with a months-back setting.
    - **Google account sync** (Data Portability API): connect/disconnect, last sync, Sync now.
    - "Hidden places" list (tombstones), where entries can be restored.

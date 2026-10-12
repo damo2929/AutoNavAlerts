@@ -57,12 +57,11 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var backup: io.autonav.alerts.settings.SettingsBackup
     @Inject lateinit var contacts: io.autonav.alerts.contacts.ContactsSource
     @Inject lateinit var speedLimits: io.autonav.alerts.osm.SpeedLimitRepository
-    @Inject lateinit var homeWork: io.autonav.alerts.places.HomeWork
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving, keyCreator, backup, contacts, speedLimits, homeWork)
+        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving, keyCreator, backup, contacts, speedLimits)
         val requestedTab = intent?.getIntExtra(EXTRA_TAB, -1) ?: -1
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
@@ -131,5 +130,4 @@ class PhoneDeps(
     val backup: io.autonav.alerts.settings.SettingsBackup,
     val contacts: io.autonav.alerts.contacts.ContactsSource,
     val speedLimits: io.autonav.alerts.osm.SpeedLimitRepository,
-    val homeWork: io.autonav.alerts.places.HomeWork,
 )

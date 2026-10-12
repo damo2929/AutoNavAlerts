@@ -54,12 +54,6 @@ What the panel shows:
   - If neither is known, only your speed is shown.
 - **Colour**: white normally, **amber** at 5% over Google's limit, **red** at 10% over. These thresholds match Google Maps and can't be changed.
 
-### 1.4c Home and Work
-Home and Work are the first two rows on the car's search screen (one tap to the route preview). They come from the **Home and Work you set in Google Maps**, fetched from your Google account (DESIGN.md §8.2a):
-- **Get from my Google account**: Google asks you to allow AutoNavAlerts to copy "the places you labeled on Maps" (Google's Data Portability API), each time you press it. Works for Google accounts in the UK, EEA and Switzerland. Until Google verifies the app, your account must be one of the app's test users.
-- If Google gives an address without a position, it's looked up with Places (your Maps key).
-- The card shows the current Home and Work; **Clear Home and Work** removes them. Set or change them in Google Maps (You → Saved → Labeled), then fetch again.
-
 ### 1.4b Routing
 - **Avoid tolls**: **on by default**. Routes avoid toll roads where there's a reasonable way round; if the only way is a toll road, it's still used.
 - **Energy-efficient routes (EV)**: off by default. The route preview then **offers two routes, Fastest and Energy-efficient (EV)**, each with its time and distance, and you pick one before Go (the energy-efficient one is selected first). The energy-efficient one is Google's eco-friendly route for an electric car (Routes API, on your own Maps key, billed to you like the rest). It needs the **Routes API** turned on for your key: **Create a key with my Google account** now does that (press it again if you made your key earlier), or turn it on yourself with the **Routes API** link in the guided steps. If it isn't available, the fastest route is used and the route preview says why.

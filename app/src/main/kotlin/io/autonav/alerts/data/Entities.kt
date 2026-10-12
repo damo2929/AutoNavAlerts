@@ -91,7 +91,7 @@ data class PoiEntity(
     @ColumnInfo(defaultValue = "NULL") val sourceId: String? = null,
 )
 
-enum class PlaceKind { RECENT, FAVOURITE, HOME, WORK }
+enum class PlaceKind { RECENT, FAVOURITE }
 
 @Entity(tableName = "place", indices = [Index("lastUsedAt")])
 data class PlaceEntity(

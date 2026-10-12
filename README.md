@@ -34,7 +34,6 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
   - POI markers redraw on every GPS update
   - A speed panel shows your speed and the limit. Google's limit is only known while you're over it, so otherwise the panel shows the nearest camera's limit, marked with a dot.
   - **OpenStreetMap speed limits for the UK**, downloaded once from Geofabrik (about 1.1 GB fetched, Wi-Fi only by default; 29 MB kept on the phone), fill in the panel's limit when Google and the cameras have none (grey dot). Nothing is looked up online while driving.
-- **Home and Work from your Google account**: one tap on the car's search screen, fetched from the Home and Work you set in Google Maps (Google's Data Portability API)
 - **Route options**: avoid tolls (on by default) and **energy-efficient routes for electric cars**: the preview offers the fastest and Google's eco-friendly route side by side and you pick (Routes API on your own key; falls back to the fastest route)
 - **Uses the car's own speed and GPS** from Android Auto when the car shares them. The speed panel matches your dashboard; alerts use the car's measured speed and GPS position (the phone's GPS drops to a 1 Hz backup). Falls back to the phone.
 - **10 Hz GPS**: the phone's GPS is always read at 10 positions a second, so alerts fire at the right distance at speed
