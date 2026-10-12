@@ -39,6 +39,8 @@ interface CarDeps {
     fun driving(): io.autonav.alerts.reports.DrivingState
     fun contacts(): io.autonav.alerts.contacts.ContactsSource
     fun speedLimits(): io.autonav.alerts.osm.SpeedLimitRepository
+    fun eventLog(): io.autonav.alerts.diag.EventLog
+    fun driveRecorder(): io.autonav.alerts.diag.DriveRecorder
 
     companion object {
         fun from(context: Context): CarDeps = EntryPointAccessors.fromApplication(context.applicationContext, CarDeps::class.java)
