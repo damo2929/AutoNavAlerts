@@ -162,6 +162,7 @@ class MapSurface(
                 topMargin = clearTop + ((MapTypeButtonView.HEIGHT_DP + MapButtonView.GAP_DP + i * (MapButtonView.SIZE_DP + MapButtonView.GAP_DP)) * density).toInt()
             })
         }
+        layoutOverlays()
         pres.show()
         presentation = pres
         navView = view
@@ -310,11 +311,23 @@ class MapSurface(
      * the stable area sets the padding so the camera target stays steady (DESIGN.md §8).
      */
     private fun applyPadding() {
+        layoutOverlays()
         val m = _map.value ?: return
         val area = stableArea ?: visibleArea ?: return
         val w = surfaceWidth.takeIf { it > 0 } ?: return
         val h = surfaceHeight.takeIf { it > 0 } ?: return
         m.setPadding(area.left, area.top, (w - area.right).coerceAtLeast(0), (h - area.bottom).coerceAtLeast(0))
+    }
+
+    /**
+     * Places our overlays in the visible area. It doesn't wait for the map: until the host reports
+     * a visible area the whole surface is used, so the banner never starts full width over the speed
+     * panel after a fresh start.
+     */
+    private fun layoutOverlays() {
+        val w = surfaceWidth.takeIf { it > 0 } ?: return
+        val h = surfaceHeight.takeIf { it > 0 } ?: return
+        val area = stableArea ?: visibleArea ?: Rect(0, 0, w, h)
         speedPanel?.let { p ->
             (p.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
                 // Bottom right of the visible area (DESIGN.md §8.4).
@@ -343,7 +356,7 @@ class MapSurface(
             (t.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
                 val v = visibleArea ?: area
                 val density = t.resources.displayMetrics.density
-                lp.rightMargin = (surfaceWidth - v.right).coerceAtLeast(0) + 16
+                lp.rightMargin = (w - v.right).coerceAtLeast(0) + 16
                 // Always below the action strip: it's persistent now, but the host sometimes reports a
                 // visible area that ignores it (right after the map starts), which put the toggle under it.
                 lp.topMargin = maxOf(v.top, stableArea?.top ?: 0, (ACTION_STRIP_CLEAR_DP * density).toInt()) + 16
@@ -354,7 +367,7 @@ class MapSurface(
                 var top = lp.topMargin + (MapTypeButtonView.HEIGHT_DP * density).toInt() + gap
                 for (b in mapButtons) {
                     (b.layoutParams as? FrameLayout.LayoutParams)?.let { blp ->
-                        blp.rightMargin = (surfaceWidth - v.right).coerceAtLeast(0) + 16
+                        blp.rightMargin = (w - v.right).coerceAtLeast(0) + 16
                         blp.topMargin = top
                         b.layoutParams = blp
                     }

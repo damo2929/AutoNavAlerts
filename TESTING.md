@@ -147,6 +147,7 @@ The terminal the DHU runs in is also a console: type `help` there for its comman
    - `… --es geo "53.38,-1.47"`: route preview to that point
    - `… --es contact "Mum"`: as if the first matching contact row was tapped (locate, cache, route preview); logcat `Bench: Contact Mum (Home): Found(…)`
    - `… --es zoom -2`: like tapping − twice; logcat `Bench: Zoom now 15.5`
+   - `… --es banner "'Speed camera'"`: a test alert banner for 8 s; logcat `Bench: Banner at x=… y=… W×H in W×H`
    - The DHU's `screenshot` command shows the result. Taps by a person on the DHU window work as normal.
 6. **Or with the emulator's own controls:** open the emulator's **Extended controls (⋯) → Location → Routes**, plan a route (or load a GPX/KML under **Single points → Load GPX/KML**), set the playback speed, and press **Play route**. The phone's GPS then moves along it, so camera alerts work in **free drive**, without the Simulate button.
 

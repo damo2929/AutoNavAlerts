@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez views true      # log the car map window's views
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez overlays false  # hide our overlays (true shows)
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez search true  # the empty search screen
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --es banner "'Speed camera'"  # a test alert banner for 8 s
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez ev true --ez tolls true  # route options
  *   (add -p io.autonav.alerts: Android only delivers explicit broadcasts to manifest receivers)
  */
@@ -137,6 +138,15 @@ class BenchReceiver : BroadcastReceiver() {
                 val root = session.surface.overlayRoot ?: return@post
                 for (i in 1 until root.childCount) root.getChildAt(i).visibility = if (show) android.view.View.VISIBLE else android.view.View.GONE
                 Log.i(TAG, "Overlays ${if (show) "shown" else "hidden"}")
+            }
+            return
+        }
+        intent.getStringExtra("banner")?.let { text ->
+            // A test alert banner (DESIGN.md §12.1), to check its place and size without a camera nearby.
+            Handler(Looper.getMainLooper()).post {
+                val b = session.surface.alertBanner ?: run { Log.w(TAG, "No map window"); return@post }
+                b.show(-1L, null, text, "300 yd · 30 mph", 8_000)
+                b.post { Log.i(TAG, "Banner at x=${b.left} y=${b.top} ${b.width}x${b.height} in ${(b.parent as android.view.View).width}x${(b.parent as android.view.View).height}") }
             }
             return
         }
