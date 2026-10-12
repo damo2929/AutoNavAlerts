@@ -21,8 +21,11 @@ The phone app has four tabs along the bottom: **POIs · Cameras · Reports · Se
 | **Voice** | On / Off | On | Speaks POI alerts on the navigation audio channel. Off silences **all** POI speech, including the passing alert. Car-screen cards and notifications still appear. Google's own turn-by-turn voice isn't affected. |
 | **Chime before the passing alert** | On / Off | On | Plays a short beep just before the 100 yd passing alert. There's no chime before the 1st and 2nd alerts. |
 | **Over-limit warning** | **Slider, −5% to +20%** in 0.1% steps, plus **Reset to −0.1%** | **−0.1%** | When an alert fires and your speed is above the POI's (or the average-speed zone's) limit by more than this, "you are over the limit" is added to the spoken alert. **Negative values warn before the limit**: −0.1% warns just before (above 99.9% of it), −5% warns at 95% of it (28.5 mph in a 30). 0% warns as soon as you're over. Positive values allow a margin: +10% warns above 33 mph in a 30. The text under the slider explains the current value. In an average-speed zone, the warning can repeat at most every 15 s. |
+| **Alert lead time** | **Slider, 15–60 s** | **15 s** | How far ahead, in seconds at your current speed, the **1st alert** fires; the **2nd alert** fires at half that. The label reads "First alert: N s ahead · second alert at N/2 s", with the distances this gives at 30, 50 and 70 mph underneath (at the default: 242 m / 335 m / 469 m for the 1st, 142 m / 168 m / 235 m for the 2nd). The metre floors still apply: the 1st never fires closer than **242 m (265 yd)**, the 2nd never closer than **142 m (155 yd)**, and the 2nd is always at least 100 m inside the 1st. The slider sets the seconds for **every set in "seconds ahead" mode**; the set editor (§3.3) keeps the set's on/off, map, sound, mode and minimum-metres choices. Sets in **distance** mode are unaffected. |
+| **Announce speed limit changes ahead** | On / Off | On | As you approach a change in the road's speed limit, the new limit is spoken once per change ("Speed limit changes to thirty ahead", about 300 m or 12 s before it) and the speed panel shows a small **"→ 30" chevron** beside the limit ring until you're under the new limit. The limits come from the **OpenStreetMap data on the phone** (§1.4a), so it needs the limits download and nothing is sent anywhere. While navigating, the change is looked for along the route; in free drive, along the road you're on. It uses the Voice setting and the mute, and never talks over a camera passing alert. |
 
 - The over-limit setting applies to **POI and camera limits** (your imported data). The colour of the speed panel follows Google's speed-limit data separately (§1.3).
+- The lead-time slider changes **when** alerts fire, not whether: a camera facing the other way still never alerts (§3.3).
 
 ### 1.3 Speed and location source
 | Control | Options | Default | What it does |
@@ -95,7 +98,32 @@ This section isn't shown in release builds.
 - A value the app can't read (for example a hand-edited typo) is skipped and keeps its current setting. Sets in the file that aren't on this phone are skipped and counted in the message ("2 sets weren't found…"). A set's icon is only restored if that icon is on this phone; PGW icons come back with the camera download.
 - Details and the file's layout: DESIGN.md §13.4.
 
-### 1.8 About
+### 1.8 Diagnostics
+The app always keeps **two debug logs** on the phone, so a drive that goes wrong leaves evidence. There's nothing to switch on.
+
+| File | What it records |
+|---|---|
+| `debug-nav` | Routes, the map and navigation: destinations set, route status, guidance start and stop (and **who** stopped it: the action strip, the car, arrival), reroutes, map follow and rebuild decisions, the location feed (a sample every 5 s, car↔phone handovers, heading and speed sources, gaps), the speed panel's limit source. |
+| `alert-debug` | Alerts and camera details: the cameras loaded, each camera entering and leaving the lookahead, why one was **not** alerted (direction, off the road, not ahead, not moving, no heading, muted, quiet), each stage fired with its distance, speed, heading and the camera's bearing, every speech decision (queued, waited, replaced, spoken, dropped, interrupted), and **one `PASSED` line per camera** as you pass it, saying what was done: the stages that fired and spoke, or why it stayed silent. |
+
+- Lines are collected in memory and **written in 15-second blocks**, each headed with its time span and a fix summary. If the app is killed, up to the last 15 s is lost; the block headers show any gap.
+- Each file is capped at **1 MB** with one rotation (`*.1.log`), so the pair never takes more than about 4 MB. Entries are summarised by rate (no line per GPS fix), so a long drive fits.
+- Debug builds mirror the lines to logcat. On some phones (OPPO/ColorOS) logcat drops app lines altogether; the files are the record.
+
+| Control | What it does |
+|---|---|
+| Status line per file | Its size and the time of its oldest entry |
+| **Show last 200 lines** | Shows the end of each file on the phone (monospace, scrollable) |
+| **Save debug-nav… / Save alert-debug…** | Android's file picker, to save `autonavalerts-<name>-YYYY-MM-DD.log` wherever you choose |
+| **Share** | The Android share sheet, to send a file by email, chat or Drive |
+| **Clear** | Empties both files. The next block starts fresh. |
+| **Engine now** | Shows, and writes to `alert-debug`, a snapshot of the alert engine: the last fix, the location statistics, the cameras cached, route state, mutes, the 5 nearest cameras with their distance, bearing and verdict, and the speech queue |
+| **Drive recording** (switch, default **Off**) | Records **every GPS fix** the app receives (phone and car, with speed, bearing, accuracy and which one was used) to a CSV file, so a drive can be replayed on the bench exactly as the phone saw it. About 1–8 MB an hour; the newest 3 recordings are kept. It isn't included in the settings backup and is off again after a reinstall. |
+| **Save drive recording…** | Saves the latest `drive-YYYYMMDD-HHMM.csv` through the file picker |
+
+**Privacy.** The logs and recordings stay **on the phone only**, in private app storage, and are excluded from cloud backup. They contain **where you drove** (sampled positions, destination names) and **which cameras you passed**. Nothing is sent anywhere unless you press **Save** or **Share**; what you then do with the file is up to you. Uninstalling the app deletes them.
+
+### 1.9 About
 The app name and version, **by Damien Dye**, the **build** line (the git commit the app was built from, with `-dirty` if the tree had uncommitted changes, and "(debug)" for debug builds), and the source repository **github.com/damo2929/AutoNavAlerts** (tap to open it in the browser). Then the licence (Apache 2.0), the note that the code is AI-assisted, and the PGW icon credit. Nothing to set here.
 
 ---
@@ -111,7 +139,7 @@ These come above the settings in §1, in this order: **Google Maps API key**, **
 | **Google Maps API key** (field + **Save key**, **Remove**) | Stores **your own** Maps Platform key, encrypted on the phone, and applies it straight away to navigation, the map and search. No rebuild needed. | The key needs the **Navigation SDK** (Google must approve access) and **Places API (New)** enabled, restricted to the package `io.autonav.alerts` and your signing certificate. "✓ Your key is saved" shows when one is saved. **Remove** deletes it; there is **no built-in or fallback key**, so the map, search and navigation stop until a key is added again. |
 | **Permissions → Allow** | Asks for precise location, on Android 13+ notifications, the microphone, and **car speed** | Location is required. Notifications are needed for alerts while another app fills the car screen, and for camera-database update messages. The microphone is for spoken report comments. **Car speed** (Android Auto's `CAR_SPEED`) lets the speed panel show the car's own speedometer figure; without it the phone's GPS speed is used. |
 | **Permissions → Allow all the time** | Asks for background location (Android 10+) | Recommended. Keeps camera alerts working while music or another app is on the car screen. |
-| Contacts status, **Allow contacts** | Shows whether contacts permission is granted; the button asks for it | Optional, for driving to a contact's address: search a name on the car screen, or use **Contacts** in Search. Only the address you pick is sent to Google, to find it on the map. Without it, search works as before. |
+| Contacts status, **Allow contacts** | Shows whether contacts permission is granted; the button asks for it | Optional, for driving to a contact's address: search a name on the car screen, or open **Contacts** from the empty Search screen, which lists your contacts with addresses to pick from (recently used first, then A–Z; the last row, **Search contacts…**, opens a typed search for long address books). Only the address you pick is sent to Google, to find it on the map. Without it, search works as before. |
 | **Clear contact locations** | Forgets where contacts' addresses were found | Shown once contacts are allowed. Each address is looked up again the next time you pick it. Locations are kept for 90 days anyway. |
 | **Navigation terms → Review and accept** | Shows Google's Navigation SDK terms | **Required** before the car screen can navigate, and done on the phone. The button is greyed out, with "Add your Google Maps API key above first", until a key is saved: the Navigation SDK can't be used at all without one. **You only accept once:** the app records the acceptance (shown as "✓ Accepted on <date>") and never asks again, even if the SDK's own flag is lost. Uninstalling the app clears it. |
 | Permission lines (✓ / ✗) | Each permission's current state, refreshed whenever you return to the app | **Allow** only appears if something is missing. If Android stops showing the prompt, **Open app settings** appears instead. When everything is granted: "✓ All permissions allowed." |
@@ -169,14 +197,14 @@ Importing a file creates a **new** set. Each new set starts with the [defaults b
 ### 3.3 Editing a set
 | Section | Control | Default | What it does |
 |---|---|---|---|
-| Show and alert | **Show on map** | On | Draws this set's markers on the car map (at zoom 11 or closer; up to 200 markers, nearest first) |
+| Show and alert | **Show on map** | On | Draws this set's markers on the car map (at zoom 11 or closer; up to 200 markers, nearest first). A camera with a bearing in its data gets a small **direction arrow** beside its icon, pointing the way the camera is set to (one head for one-way cameras, two for both-ways; none when the data has no bearing). Cameras facing the **other way** on your road are drawn **dimmed** with their arrow, so you can see why they don't alert; they never alert. |
 | | **Alerts** | On, except **PGW pending mobile sites**, which is Off | Whether this set's POIs trigger alerts at all |
 | | **Sound** | On | Spoken alerts for this set. **While on, the 100 yd passing alert is compulsory.** Off gives cards and notifications only. |
 | Icon | (from the download) | PocketGPSWorld sets | Each PocketGPSWorld set uses **the icon supplied for its file** (e.g. a Gatso "30" sign). A sync updates it unless you've chosen your own. These icons are © GerryC, 2007 (non-commercial use with credit). The credit is shown here, and the full licence is in **Settings → About → Show icon licence**. |
 | Icon | **Choose** | Camera icon for PGW, pin for files | Picks from the built-in icons (camera types, red light, pending site, pin, hazard, school, fuel, EV, star) or icons you've added |
 | | **From file** | | Adds your own image (scaled to 256 px) and uses it for this set |
-| **1st alert** | **Distance / Seconds ahead** | Seconds ahead: **15 s, minimum 265 yd (242 m)** | When the first warning fires. "Seconds ahead" uses your **current speed** each moment (15 s at 70 mph ≈ 470 m, at 50 mph ≈ 335 m) but never fires closer than the minimum. The 1st alert can't be switched off (turn off the set's Alerts instead). |
-| **2nd alert** | **On**, Distance / Seconds ahead | On, seconds ahead: **7 s, minimum 155 yd (142 m)** | A second, closer warning (7 s at 70 mph ≈ 220 m). The minimum keeps it outside the 100 yd passing alert. Can be switched off. |
+| **1st alert** | **Distance / Seconds ahead**, minimum distance | Seconds ahead, **minimum 265 yd (242 m)** | When the first warning fires. "Seconds ahead" uses your **current speed** each moment, with the seconds **from the Alerts slider** (§1.2; 15 s by default: at 70 mph ≈ 470 m, at 50 mph ≈ 335 m), and never fires closer than the minimum. There's no seconds field here; the card says "from the Alerts slider". **Distance** fires at a fixed distance instead. The 1st alert can't be switched off (turn off the set's Alerts instead). |
+| **2nd alert** | **On**, Distance / Seconds ahead, minimum distance | On, seconds ahead, **minimum 155 yd (142 m)** | A second, closer warning at **half the slider's seconds** (7.5 s by default: at 70 mph ≈ 235 m). The minimum keeps it outside the 100 yd passing alert. Can be switched off. |
 | **Passing alert (100 yd)** | none | Always 100 yd | Fixed and compulsory while Sound is on. It also fires if a GPS jump skips past the 100 yd mark, it's never dropped by the 3 s spacing between alerts, and it plays at most 1 s after Google's voice. |
 | **Spoken text** | **1st alert**, **2nd alert**, **Passing** templates | `{category} ahead, {speed} limit` · `{category}, {distance}` · `{category} now` | What's said and shown. Each field has a live preview and a **Test speak** button. |
 | | **Save** | | Saves the set. It's disabled while a distance check fails (below). |
@@ -186,6 +214,7 @@ Importing a file creates a **new** set. Each new set starts with the [defaults b
 - The 2nd alert must be at least **155 yd (142 m)**, so it stays outside the passing alert.
 - The 1st alert must be at least **110 yd (100 m)** before the 2nd.
 - In seconds-ahead mode the same rules are applied while driving: if your speed would bring the stages too close together, the 2nd is held back.
+- Once a camera is in range, the 1st alert's distance **never shrinks**: braking towards it doesn't delay the warning.
 
 **Template placeholders**:
 
@@ -286,9 +315,14 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Item | What it does |
 |---|---|
 | **Mute alerts for 30 min / Unmute alerts** | Silences all POI speech for 30 minutes. Cards and notifications still show. While muted, the passing alert is silent too, because muting turns sound off. |
-| **POI layers** | Turns each set on or off, the same as the set switches on the phone's POIs and Cameras tabs |
-| **GPS** | Read-only: the requested GPS rate, the rate actually delivered, and your current speed |
+| **POI layers** | Turns each set on or off, the same as the set switches on the phone's POIs and Cameras tabs. Camera markers carry a direction arrow where the data gives a bearing; cameras facing the other way are drawn dimmed (§3.3). |
+| **GPS** | Read-only and **live** (it updates once a second while open): the requested GPS rate (always 10 Hz) and the rate actually delivered, the speed the alert engine is using and the speed on the dial with where each comes from (car or phone), and your heading with its source (GPS bearing, track, or none when parked) |
+| **Alerts** | Read-only and live: how many cameras are **ahead** and how many **facing away**, the **last stage** fired (which camera, distance, whether it was spoken) and the **last suppression** (which camera and why) |
 | **Mute 30 min** on an alert card | Silences that **one set** for 30 minutes |
+
+The action strip changes while navigating: **Stop navigation** takes the place of **Recents** (which is still under More), and after you arrive the same slot reads **Done**, which clears the arrived card. Google's own ETA card, header, recenter button, speedometer and trip progress bar are **not** shown on the car map; the turn card, our speed panel and our recenter button are the live ones.
+
+**Search** on the car screen, with the box empty, lists recent places and a **Contacts** row (once contacts are allowed, §2). Contacts is a **list to pick from**: your contacts that have an address, recently used first and then A–Z, within the number of rows the car allows, each as "Name — Home · 12 High St · 3.2 mi". Tapping one finds the address and opens the route preview. The last row, **Search contacts…**, opens the typed search for long address books. The **mic** on the search box takes a spoken destination (so does Assistant's "navigate to …"): you see "Searching…" and then results or "No results for …", never a silent empty list.
 
 ---
 
@@ -297,6 +331,7 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 - The **Maps API key, PocketGPSWorld login and session are encrypted** with a key held in the Android Keystore.
 - The POI database, settings and secrets are **excluded from Android cloud backup and device-to-device transfer**, as the PocketGPSWorld licence requires. After a reinstall or a new phone: restore your own settings backup (§1.7) or enter the key and login again, then sync.
 - The settings backup file (§1.7) is the only thing that takes your key and login out of the app, and only when you save it. It's **plain text**: keep it private.
+- The debug logs and drive recordings (§1.8) live in `files/diag`, which is **excluded from backup and transfer** too. They record where you drove and which cameras you passed, and leave the phone only when you Save or Share them.
 - Uninstalling the app deletes everything it stored.
 
 ## Defaults at a glance
@@ -305,6 +340,8 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Units | mph, miles, yards |
 | Voice / Chime | On / On |
 | Over-limit warning | **−0.1%** |
+| Alert lead time | First alert 15 s (second 7.5 s) |
+| Announce speed limit changes | On |
 | Speed and location source | Car when available |
 | Speed panel | On |
 | Satellite map in the car | Off |
@@ -314,6 +351,7 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Speed limits: download on Wi-Fi only | On |
 | GPS rate | Always 10 Hz |
 | Simulate speed (debug builds) | 1× |
+| Drive recording | Off |
 | PocketGPSWorld auto-update / Wi-Fi only | On / Off |
-| New set: 1st / 2nd / passing alert | 15 s ahead (min 265 yd) / 7 s ahead (min 155 yd) / 100 yd |
+| New set: 1st / 2nd / passing alert | Seconds ahead from the slider (min 265 yd) / on, half the slider (min 155 yd) / 100 yd |
 | New set: Show on map / Alerts / Sound | On / On / On (pending mobile sites: alerts Off) |

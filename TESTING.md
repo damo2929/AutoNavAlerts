@@ -142,19 +142,42 @@ The terminal the DHU runs in is also a console: type `help` there for its comman
    - **Running it in the background:** `nohup python3 -u tools/drive.py … > /tmp/autonav-bench/drive.log 2>&1 &` (the `-u` makes its one-line summary appear in the log straight away).
    - **Passing real cameras:** the camera database is in the app's private storage. On a debug build copy it out with `adb -e exec-out run-as io.autonav.alerts cat databases/poi.db > poi.db` (also `poi.db-wal` and `poi.db-shm`, or recent changes are missing), and keep it **out of the repo** (PGW data). For each chosen camera, add a waypoint about **120 m before it** (opposite its `bearing`) and one **on it**, so OSRM drives through it in the enforced direction; then check the route really passes them (within 25 m, heading within 45° of the bearing). A loop built this way on 2026-10-12 passed 21 London cameras: the Tower Bridge 20 mph SPECS pair, fixed, mobile, pending and red-light sites.
    - **Jumps:** starting a new route far from the last position makes the car "teleport". The car map used to stay stuck where it was; it now follows again on its own within about 5–10 s (DESIGN.md §8, follow watchdog). A jump of more than 1 km between fixes now ends any average-speed zone (DESIGN.md §11 step 8).
+   - **Realism options** (a clean centreline at a steady rate is the one thing a real phone never gives you):
+     - `--noise M`: position wander of about M metres, drifting slowly like a real receiver (AR(1)), not white jitter. `--noise 6` is a fair phone on a dashboard.
+     - `--speed-noise P`: the reported speed varies by ±P%.
+     - `--dropout S,EVERY`: no fixes for S seconds every EVERY seconds (a tunnel, a bridge).
+     - `--rate-jitter`: irregular fix spacing around `--hz`, as the fused provider delivers it.
+     - `--hold N`: sit at the start point for N seconds before moving (a parked car; add `--noise` for parked wander).
+     - `--stop-at "lon,lat" --for N`: stop at that point on the route for N seconds, then carry on.
+     - `--crawl-mph N --from "lon,lat" --to "lon,lat"`: crawl at N mph between those two points (queueing past a camera), the normal `--mph` elsewhere.
+     - `--car-speed` / `--car-location` (with the DHU started on the `default_sensors` profile, §6.4a): feeds the DHU's sensor console in lockstep with the emulator's GPS, so the app gets a real car feed and a real car↔phone handover. `--car-lag S` delays the car feed; `--car-noise M` gives it its own wander.
+     - `--record out.csv`: writes every fix sent, in the app's drive-recording layout.
+     - `--replay file.csv [--speed X]`: drives the emulator from a phone **drive recording** (Settings → Diagnostics, docs/SETTINGS.md §1.8) at real time or X×. Only position and speed can be injected; bearing and accuracy are covered by the JVM replay (G10).
+     - `--bearing` (**experimental**): tries to send a heading through the emulator's gRPC `setGps`; falls back to `geo fix` (no heading) if the image doesn't take it.
+   - **Scenarios:** `tools/scenario.sh <name>` runs a scripted drive with the options above and says what to look for in the logs (§7):
+     | Scenario | What it does | Pass when |
+     |---|---|---|
+     | `parked-then-go` | Parks 60 s with noise, routes somewhere (preview), presses Go (`--ez go true`), then drives | No `Guidance stop` in `debug-nav` for 5 minutes; `watchdog skip (preview)` then `skip (guiding)` |
+     | `bend-camera` | A 90° bend with a camera 80 m past the apex, at 30 then 50 mph, `--noise 5` | One `enter`, three stages, at most one verdict change per pass |
+     | `wrong-way` | A ONE_WAY camera driven against its bearing, then a BOTH camera | ONE_WAY: no stage, drawn dimmed with its arrow; BOTH: alerts |
+     | `crawl` | 3 mph and 6 mph past a camera (either side of the 2 m/s moving gate) | PASSING fires in both, once the camera was ahead and valid |
+     | `handover` | Car feed on, dropping out 5 s every 60 s | `Location source car→phone` within 2 s of each dropout, and back when it returns |
 5a. **Driving the car screen from adb (debug builds):** the DHU's window can't be clicked from a script and its `dpad`/`dpad rotate` commands don't move focus into the app's screens, so debug builds have a bench hook, `BenchReceiver` (in `app/src/debug`, so release builds don't have it; protected by the DUMP permission, which only adb's shell holds). Always add `-p io.autonav.alerts` (Android only delivers explicit broadcasts to manifest receivers):
    - `adb -e shell am broadcast -a io.autonav.alerts.BENCH -p io.autonav.alerts --es q "Mum"`: opens Search with "Mum" typed in (the same navigate intent Assistant sends)
    - `… --es geo "53.38,-1.47"`: route preview to that point
    - `… --es contact "Mum"`: as if the first matching contact row was tapped (locate, cache, route preview); logcat `Bench: Contact Mum (Home): Found(…)`
    - `… --es zoom -2`: like tapping − twice; logcat `Bench: Zoom now 15.5`
    - `… --es banner "'Speed camera'"`: a test alert banner for 8 s; logcat `Bench: Banner at x=… y=… W×H in W×H`
+   - `… --ez go true`: presses **Go** on the route preview that's showing (so a script can start guidance)
+   - `… --ez engine true`: writes the alert engine's snapshot to `alert-debug` and logcat (the same as Settings → Diagnostics → Engine now: last fix, stats, cache, route state, mutes, the 5 nearest POIs with their verdicts, the speech queue)
+   - `… --ez diag true`: prints the last 100 lines of each debug log to logcat
    - The DHU's `screenshot` command shows the result. Taps by a person on the DHU window work as normal.
 6. **Or with the emulator's own controls:** open the emulator's **Extended controls (⋯) → Location → Routes**, plan a route (or load a GPX/KML under **Single points → Load GPX/KML**), set the playback speed, and press **Play route**. The phone's GPS then moves along it, so camera alerts work in **free drive**, without the Simulate button.
 
 ---
 
 ## 4. Test data: getting POIs on your test route
-Alerts only fire for POIs that are **on the road you're driving** (within 40 m of your path in free drive, or 50 m of the route when navigating) and that **face your direction of travel**. Use one of these:
+Alerts only fire for POIs that are **on the road you're driving** (within 40 m of your path in free drive, widening to 12° off-axis beyond 192 m so bends don't lose the 1st alert, or 50 m of the route ahead when navigating) and that **face your direction of travel**. Use one of these:
 
 | Option | How | Notes |
 |---|---|---|
@@ -182,7 +205,7 @@ Alerts only fire for POIs that are **on the road you're driving** (within 40 m o
 2. On the DHU: **Search** (magnifier) → type a destination a few miles away → pick a result.
 3. On the route preview, press **Simulate** (top right) instead of **Go**.
 4. The car drives the route. The turn cards update, the voice speaks, markers update, and POI alerts fire as you pass them.
-5. Press **Stop** on the action strip to end the drive. On the DHU, Android Auto's own "auto drive" developer option also starts a simulation if a route is set.
+5. Press **Stop navigation** on the action strip to end the drive (it reads **Done** once you've arrived). On the DHU, Android Auto's own "auto drive" developer option also starts a simulation if a route is set.
 
 > While simulating, the alert engine uses the **simulated** position instead of the phone's GPS. The phone itself stays still.
 
@@ -216,7 +239,7 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | M5 | Pick a result → preview → **Go** | The preview shows the time, distance and traffic. After Go: a turn card with the manoeuvre icon, distance, road and next step, plus the ETA |
 | M6 | During guidance, open a media app (§6.5) | The turn info shows in Android Auto's rail/widget |
 | M7 | With the cluster config (§2.4) | The cluster shows the next turn |
-| M8 | Simulate to the end of the route | "You have arrived", with the destination name. **Stop** clears it. |
+| M8 | Simulate to the end of the route | "You have arrived", with the destination name. **Done** on the action strip clears it. |
 | M9 | **Recents** (clock icon) → the delete icon on a row (car API 6+) | The row is removed. On older hosts, tap the row → **Remove**. |
 | M10 | **Recents → Clear all → Yes** | All recents are removed; favourites stay |
 | M11 | Switch DHU day/night (DHU console `help` lists the command) | The map switches between day and night styles |
@@ -227,12 +250,22 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | M17 | Car → Search (empty) → **Contacts** → type a name | Contacts only, hint "Search your contacts", no Places results |
 | M18 | A contact address that matches several places with no postcode match (e.g. "High Street") | The list shows "Which address for <name>?" rows; picking one routes there and remembers it |
 | M19 | Revoke contacts in Android settings, then search | No contact rows and no Contacts entry; Places search as before |
-| M12 | During a free drive, restart `tools/drive.py` with a route a few km away | The car map catches up with the car within about 10 s ("Map is … m from the car: following again" in logcat) |
+| M12 | During a free drive, restart `tools/drive.py` with a route a few km away | The car map catches up with the car within about 10 s (`debug-nav`: `Map refollow d=…`, and `rebuild d=…` only on the third miss) |
+| M20 | Park (`tools/drive.py --hold 90 --noise 4`), Search → a destination → leave the preview showing for 15 s → **Go** → the car moves | The route **stays** for the whole drive. `debug-nav` shows `watchdog skip (preview)` while the preview is up, then `watchdog skip (guiding)` once moving, and `eco re-ask skip (grace)` (with EV routes on) in the first minute; no `Guidance stop` |
+| M21 | While guiding, start a route in **Google Maps** on the DHU (the host stops ours) | Toast "Navigation stopped by the car"; the action strip goes back to Search · Report · Recents · More; `debug-nav`: `Guidance stop caller=host.onStopNavigation` |
+| M22 | Route preview → **Back** without pressing Go | `debug-nav`: `preview abandoned`; no route is left drawn and there's no Stop navigation on the strip |
+| M23 | EV routes on with the Routes API on the key (debug: `--ez ev true --ez tworoutes true`), Go on the energy-efficient route, then drive off it | Within the first 60 s: `eco re-ask skip (grace)`; after the SDK's own reroute: `eco re-ask Ask … RouteStatus OK`. The route **never clears** during the re-ask. |
+| M24 | Arrive (M8), then **Done** | The arrived card clears, the strip goes back to Search · Report · Recents · More, `debug-nav`: `Guidance stop caller=home.done` |
+| M25 | Route → **Go** → **Stop navigation**, then open **Search** (empty) and **More → Recents** | Both list the destination you just went to; `debug-nav`: `Places remember "<title>"` before the preview closed |
+| M26 | **Voice destination:** tap the **mic** on the search box and say a town (or Assistant: "navigate to <town>") | "Searching…", then a results list or the route preview, or "No results for …". Never a silent empty list. `debug-nav`: `Search submitted/voice len=…` then `Places textSearch n=… status=…`, or `NavigateIntent …` for Assistant |
+| M27 | **Contacts list:** Search (empty) → **Contacts** | A pickable list of contacts with addresses, recently used first then A–Z, within the host's list limit, each row "Name — Home · 12 High St · 3.2 mi". Tapping one locates it and opens the route preview. The last row, **Search contacts…**, opens the typed search (M17). |
+
+Also check, on a DHU screenshot during guidance: **none of Google's five map controls** is drawn (no ETA card, header, recenter button, speedometer or trip progress bar; only the turn card, our speed panel and our Satellite/+/−/recenter column), and the **"Stop navigation"** title isn't truncated on the action strip at 1080p, 720p and 800×480.
 
 ### 6.3 POI alerts (simulate past test POIs from §4)
 | # | Steps | Expected |
 |---|---|---|
-| A1 | Drive towards a camera facing your direction | **1st alert** 15 s ahead at your current speed (at least 242 m / 265 yd; e.g. ~470 m at 70 mph), **2nd alert** 7 s ahead (at least 142 m / 155 yd; ~220 m at 70 mph), **passing alert** at 100 yd. logcat `AlertCoordinator: FIRST … at N m, S mph` shows the distance matching speed × seconds. Each is a card on the DHU and a spoken alert. |
+| A1 | Drive towards a camera facing your direction | **1st alert** 15 s ahead at your current speed (at least 242 m / 265 yd; e.g. ~470 m at 70 mph), **2nd alert** 7.5 s ahead (at least 142 m / 155 yd; ~235 m at 70 mph), **passing alert** at 100 yd. `alert-debug`: `stage FIRST poi=… d=… spd=… expectedD=…` with `d` matching speed × seconds, then `Tts … spoken`. Each is a card on the DHU and a spoken alert. |
 | A2 | Look at the alert | A banner at the **bottom centre** of the map, clear of the speed panel, that fades in without sliding: the POI icon, the text from the set's template, the distance and the limit, and a progress bar |
 | A2a | Let the 2nd and passing alerts fire for the same camera | The same banner updates in place; it goes after 8 s (5 s for passing) |
 | A2b | Tap the banner | It's dismissed |
@@ -248,11 +281,20 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | A9c | Inside a zone, restart `tools/drive.py` a few km away (a jump) | The zone ends silently; no more over-the-limit alerts |
 | A9d | Drive a southbound or westbound road on the emulator | Cameras still alert. The emulator's GPS reports bearing 0 on every fix; the app now uses the track instead (DESIGN.md §11). Before this fix, nothing alerted unless you were heading roughly north. |
 | A10 | Over-limit: with the default **−0.1%**, drive at or just over a camera's limit (higher simulate speed) | "…you are over the limit" is added to the spoken alert |
-| A11 | Settings → **Voice** off | Cards still show, with no speech |
-| A12 | DHU **More → Mute alerts for 30 min** | Silent cards. **Unmute** restores speech. |
+| A11 | Settings → **Voice** off | Cards still show, **including the passing card**, with no speech; `alert-debug` has the stages with `spoken=false reason=mute` |
+| A12 | DHU **More → Mute alerts for 30 min** | Silent cards, the passing card included. **Unmute** restores speech. |
 | A13 | Before the map has loaded (e.g. right after opening the app), an alert fires | Android Auto's own alert card is used instead, with **Dismiss** and **Mute 30 min**; **Mute 30 min** silences only that set |
 | A14 | **More → POI layers**: switch a set off | Its markers disappear and its alerts stop |
 | A15 | Tap Report, then keep driving past the spot | **No** "My reports now" alert on this pass (it's quiet until you're 300 m away); on a later pass it alerts normally |
+| A16 | `tools/scenario.sh parked-then-go` (60 s parked with noise, then drive past cameras) | While parked: `alert-debug` has no `stage` lines and no `suppressed reason=notMoving` for the cameras passed later; the engine speed stays under 0.5 m/s and the heading goes to none (`heading src=none`). Once moving, every camera gets its three stages. |
+| A17 | `tools/scenario.sh bend-camera` (camera 80 m past a 90° bend, 30 and 50 mph, `--noise 5`) | Per pass: one `enter`, three stages (FIRST not `late=true`), and **at most one** verdict change for that camera |
+| A18 | `tools/scenario.sh wrong-way` | ONE_WAY camera driven against its bearing: **no** alert, no `stage`, drawn **dimmed with its arrow** (DHU screenshot), `suppressed reason=direction` with the heading/bearing figures. The BOTH camera on the same road alerts both ways. |
+| A19 | `tools/scenario.sh crawl` (3 and 6 mph past a camera) | **PASSING fires in both** once the camera has been ahead-and-valid; the 1st and 2nd fire at their metre floors |
+| A20 | A straight road at 30 mph with `--noise 6` | All three stages still fire, and there's no `suppressed reason=direction` for a camera facing our way on a straight road |
+| A21 | Settings → Alerts → **Alert lead time** 30 s, drive at 50 mph | FIRST at about 30 s ahead (≈ 670 m, `expectedD` agrees), SECOND at about 15 s (≈ 335 m); back at 15 s, A1's distances return |
+| A22 | Two cameras facing our way **less than 200 m apart** | **Four** stage events (FIRST and SECOND for the second camera may be clamped together), all `spoken=true` within 8 s; nothing `dropped` or lost in `Tts` |
+| A23 | Mute (More → Mute, or Voice off), then pass a camera | The **passing card** still shows; nothing is spoken (`spoken=false reason=mute`) |
+| A24 | Markers on the DHU, zoomed in on a mix of cameras (screenshot) | Every camera **with a bearing** shows an arrow pointing the way the data file gives (ONE_WAY single-headed, BOTH double-headed, rotating with the map); cameras **without** a bearing have none |
 
 ### 6.4 Map extras
 | # | Steps | Expected |
@@ -287,6 +329,9 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | X17 | Drive a road where Google gives no limit and no camera is near | The panel shows the OSM limit with a grey dot; turning **Show OpenStreetMap limits** off removes it |
 | X15a | **Download on Wi-Fi only** off, then Download on mobile data only (emulator: `adb -e shell svc wifi disable`; debug: `--es osm download-any`) | It starts at once over mobile data; the note under the button warns about the allowance |
 | X18 | **Delete downloaded limits**; Cancel during a download | The file goes and the card offers Download again; Cancel stops the job and the old file (if any) is unchanged |
+| X33 | **More → GPS**, left open while `tools/drive.py` runs | The row **updates once a second** without reopening: requested/actual Hz, engine speed and dial speed with their sources, heading and its source |
+| X34 | `tools/drive.py --hz 5 --rate-jitter --dropout 3,45` | More → GPS "Actual" and the `debug-nav` `Location fix … hz=` samples agree with the real rate; each 3 s dropout gives a `Location gap ms=…` line of about 3000 |
+| X35 | Limit change ahead on the A61 drive (OSM limits downloaded, X15–X17; `--limits`) | `alert-debug`: `limitAhead new=… d=… via=road` about **300–400 m** before each change the panel later shows, the **"→ N" chevron** on the speed panel (DHU screenshot), then `limitChanged 50→30` when the panel flips, and "Speed limit changes to thirty ahead" spoken **once** per change. With a route set, the lines say `via=route`. |
 
 ### 6.4a Car speed and car GPS (start the DHU with `-c config/default_sensors.ini`)
 | # | Steps | Expected |
@@ -294,10 +339,12 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | C1 | DHU started with `default_sensors.ini`, no simulation running | **More → GPS** shows "Location from car · speed from car". The speed panel shows the speed the DHU reports. (Change the DHU's speed and location with its console; type `help` for the sensor commands.) |
 | C2 | Settings → **Speed and location source → Phone only** | **More → GPS** shows "Location from phone · speed from phone" |
 | C3 | DHU with the default config (no sensors) | Falls back: "Location from phone · speed from phone" |
-| C3a | With car GPS in use, look at the log (`adb logcat -s AdaptiveLocation`) | The phone stays at "Requested 10 Hz" as the backup. Quit the DHU sensor feed or switch to Phone only: within about 2 s phone fixes drive the alerts again. |
+| C3a | With car GPS in use, look at the log (`debug-nav` `Location …` lines, or `adb logcat -s AdaptiveLocation` on the emulator) | The phone stays at "Requested 10 Hz" as the backup. Quit the DHU sensor feed or switch to Phone only: within about 2 s phone fixes drive the alerts again (`Location source car→phone`, `track reset reason=handover`). |
 | C3b | Set the DHU's car location onto a road with a test camera, then move it along the road | Alerts fire from the car's position |
-| C4 | Car speed at 50+ mph (DHU sensor) | **More → GPS** "Requested" goes to 10 Hz within about 2 s, without waiting for GPS |
+| C4 | Car speed at 50+ mph (DHU sensor) | **More → GPS** shows "Requested 10 Hz" (it's always 10 Hz, whatever the speed) and "speed from car" matching the DHU's figure |
 | C5 | During a **Simulate** drive | The simulated speed is used (car speed is ignored), so alerts follow the simulated car |
+| C6 | Put the car's GPS **1 km from the phone's**: `tools/bench.sh dhu "location <lat> <lon> 5 20 0 0"` while `tools/drive.py` moves the emulator | **More → GPS** says location from car; the map keeps following the SDK's (phone) position with **no** refollow or rebuild: `debug-nav` `watchdog skip (sdk fix agrees)` |
+| C7 | `tools/scenario.sh handover` (car feed dropping 5 s every 60 s) | `Location source car→phone` within 2 s of each dropout and `phone→car` when it returns, each with a `track reset reason=handover`; the speed panel and alerts never stall |
 
 In a real car: compare the speed panel with your dashboard (they should match), and check **More → GPS** says "Speed from car".
 
@@ -366,20 +413,83 @@ tools/check-nav-sdk-features.sh --latest   # the newest published version
 ```
 It exits with code 10 and says so if `NavigationViewForAuto` has gained the reporting APIs. The same check runs **quarterly on GitHub** (Actions → "Navigation SDK feature watch", 1 Jan/Apr/Jul/Oct, or **Run workflow** to run it now). It opens an issue on the repo when support appears. The app then enables them automatically: Google's report button on the car map, and **More → Report to Google Maps** during navigation. Test those on the DHU. The log line `IncidentReporting: Incident reporting not supported on Android Auto…` confirms it's still off.
 
-## 7. Logs and diagnostics
-Live log, filtered to the app's components:
-```bash
-adb logcat -s AlertCoordinator AdaptiveLocation NavSession Guidance NavigatorHolder MapSurface PgwFeedCheck AndroidRuntime
-```
-- `AdaptiveLocation: Requested 10 Hz`: location started (it never changes rate now)
-- `AlertCoordinator: Cache: N POIs around cell …`: POIs loaded near the car (should be > 0 near your test POIs)
-- `NavigatorHolder: Navigator error N`: 1 = key not authorised, 2 = terms, 3 = network, 4 = location permission
+## 6.11 Diagnostics (G)
+The two debug logs are always on (docs/SETTINGS.md §1.8). `run-as` works on debug builds only; on a release build use Save or Share.
 
-To save logs for a bug report:
+| # | Steps | Expected |
+|---|---|---|
+| G1 | Car screen open, parked, for a minute; then `adb -e shell run-as io.autonav.alerts cat files/diag/debug-nav.log` and `… alert-debug.log` | Both files grow in **15 s blocks**: headers `--- HH:MM:SS–HH:MM:SS fixes=N src=phone hz=… ---` 15 s apart, each with its fix count; one `App start build=<commit> …` line per process in each file |
+| G2 | Phone Settings → **Diagnostics** | A status line per file (size, oldest entry); **Show last 200 lines** shows the end of each, matching the `run-as` output |
+| G3 | **Save debug-nav…** / **Save alert-debug…** to Downloads | `adb -e shell ls /sdcard/Download/` lists `autonavalerts-debug-nav-<date>.log` and `autonavalerts-alert-debug-<date>.log`, complete up to the last flushed block |
+| G4 | **Share** | The Android share sheet opens with the file attached (pick Drive or an email app and check it arrives) |
+| G5 | **Clear** | Both status lines go to 0 bytes; the next block written starts a fresh file (`App start` isn't repeated; the first new header follows within 15 s) |
+| G6 | During a drive: `adb -e shell am force-stop io.autonav.alerts`, reopen the app on the DHU | The files end at the last complete block (**at most 15 s** missing) and the next line is a new `App start`; nothing earlier is lost |
+| G7 | `adb -e shell am broadcast -a io.autonav.alerts.BENCH -p io.autonav.alerts --ez engine true` near cameras | logcat and `alert-debug` show the snapshot: last fix, stats, cache, route state, mutes, the **5 nearest POIs** with distance, bearing-to, off-axis, camera bearing and verdict, and the speech queue |
+| G8 | Settings → Diagnostics → **Drive recording** on, drive for a few minutes, then once more on another day | `files/diag/drive-YYYYMMDD-HHMM.csv` grows while driving (`t_ms,kind,src,used,lat,lon,…` rows for every fix, phone and car); only the newest **3** recordings are kept; **Save drive recording…** exports the latest |
+| G9 | Pull a recording and `tools/drive.py --replay drive-….csv --speed 2` | The emulator drives the recorded track; the app's alerts fire at the same cameras as on the recorded drive |
+| G10 | `DRIVE_CSV=/path/drive.csv DRIVE_POIS=/path/pois.csv ./gradlew :core:test --tests DriveReplayTest` | The test prints the verdict/stage timeline for the drive and **reproduces its stages** (same cameras, distances within the replay tolerance); without the env vars it's skipped |
+
+## 6.12 Real-car re-test (V)
+The bench can't produce a real receiver, a real head unit or Android Auto's audio handling, so each fix is only accepted after a drive in the car. Protocol:
+
+| # | Step |
+|---|---|
+| V0 | Install the build. Settings → Diagnostics → **Clear**, **Drive recording** on. Phone on the dash with a clear view of the sky. Note the phone's clock against the car's. Pick a route with **at least 10 cameras**, including **3 or more ONE_WAY cameras passed in both directions**, and a gentle bend. |
+| V1 | Drive it. At every anomaly (an alert that didn't speak, a marker that vanished, a route that cleared), **say the time aloud** or tap **Report**: Report taps land in the logs as timestamps you can find afterwards. |
+| V2 | Afterwards, with the car off: Settings → Diagnostics → **Save** both logs and **Save drive recording…**; `adb pull` them from Downloads. Keep them **out of the repo** (they contain your route and PGW camera ids). |
+| V3 | Build a POI CSV of the cameras you passed (from `poi.db`, §3 step 5, "Passing real cameras") and run **G10** with the recording; then read the logs against the table below. |
+
+Acceptance, per bug. "Lines" are in `alert-debug` unless they're navigation lines (`debug-nav`).
+
+| Bug | Lines to look for | Pass when |
+|---|---|---|
+| 1 Route cleared on drive-off | `debug-nav`: `Guidance stop caller=`, `Trip navigationEnded`, `App start`, `Session create/destroy`, `Location source` in the preceding 30 s, `watchdog …`, `eco re-ask …` | A 10-minute guided drive from parked shows **no** `Guidance stop` other than `caller=home.stop`; the watchdog only ever logs `skip (…)`; every `eco re-ask` is `skip` or `Ask … RouteStatus OK` |
+| 2 Google's dead controls | `debug-nav`: `Map tap x,y hit=`, `Session create api=` | No ETA card, header, recenter, speedometer or progress bar drawn by the SDK; **Stop navigation** and **Done** on the strip work and are logged with their caller |
+| 3 Alert timing | `stage FIRST/SECOND/PASSING poi= d= spd= expectedD= late=`, `Tts start waited=`, `Tts done` | For ≥ 90% of FIRST/SECOND, \|d − expectedD\| ≤ speed × 0.5 s + 10 m; FIRST ≥ 0.9 × (lead s × speed, floor 242 m), SECOND ≥ 0.9 × (half lead × speed, floor 142 m), PASSING ≤ 91 m; no `late=true` on a straight approach; PASSING `waited` ≤ 1 s; stage → speech ≤ 1.5 s; G10 reproduces the distances |
+| 4 Markers vanish | `hide/unhide` (dim) with `bearingDiff`/`headingAcc`, `suppressed reason=`, `verdict` changes, `debug-nav` `heading src=` | No camera drawn AHEAD within 300 m then dimmed or hidden without a stage unless its bearing mismatch is > 45°; heading accuracy ≤ 6° above 30 mph for ≥ 95% of fix samples; no heading-source flapping faster than 10 s; `track reset` only at handovers and gaps |
+| 5 Alerts not spoken | `Tts queued/start/done/replaced/dropped/interrupted/stuck/error`, `spoken=` on each stage, the `PASSED` line per camera | Every stage has `spoken=true` (except under mute); no `dropped`, `stuck` or `error`; every `PASSED` line for a camera facing our way lists all three stages spoken; two cameras < 200 m apart give four stage events all spoken within 8 s |
+| Direction HARD RULE | `PASSED … NOT ALERTED reason=direction(…)`, `stage` | Every ONE_WAY camera passed against its bearing: **zero** stage events, drawn dimmed with its arrow; the same camera passed the right way: three stages |
+| Parked / stopped | `heading src=`, `stage`, `suppressed reason=notMoving` while stopped | Parked ≥ 2 min and every stop > 30 s: engine speed < 0.5 m/s, heading goes to none, no `stage` and no `notMoving` suppression for a camera that alerts correctly later |
+| Speed sources | `debug-nav` `Location … speed src=`, More → GPS | Engine speed and dial speed within 5% of each other and of the dashboard |
+| Limit changes ahead (Part D) | `limitAhead new= d= via=`, `limitChanged` | For ≥ 80% of changes, `limitChanged` follows its `limitAhead` within the predicted distance ± 60 m; spoken once each; OSM data errors (a 30 where the sign says 20) are noted, not counted |
+| 7 Recents | `debug-nav` `Places remember "<title>"` | Every destination you went to is in Recents after the drive |
+
+Bug 1 is fixed only when the drive shows which candidate fired, or none; bug 5 only when every `PASSED` summary confirms all three stages for every camera facing our way.
+
+---
+
+## 7. Logs and diagnostics
+The record of what the app did is in **two files on the phone**, written in 15-second blocks (docs/SETTINGS.md §1.8):
+
+| File | Holds |
+|---|---|
+| `files/diag/debug-nav.log` | Session create/destroy and host stops; guidance (`setDestination`, `routeStatus=`, `start`, `stop caller=`, `rerouting`, `routeChanged`, `ecoReask status=`, `arrived`); the map (`ready`, `surface`, `tap x,y hit=`, `followOff`, `recenter`, `refollow d=`, `rebuild d=`, `watchdog …`); location (`Location request hz`, `source car↔phone`, `heading src= hdg=`, `speed src=`, a `fix` sample every 5 s, `gap ms=`, `track reset reason=`); car data; `Panel limit n src=`; search (`Search submitted/voice len=…`, `Places textSearch n=… status=…`, `Places remember "<title>"`, `NavigateIntent …`); `Bench <command>` |
+| `files/diag/alert-debug.log` | `Alerts cache n=`, mutes, quiet spots; the engine trace (`enter`/`leave`, `suppressed reason=direction\|offRoad\|notAhead\|notMoving\|noHeading\|muted\|quiet d= offAxis= hdg= camBrg=`, `stage KIND poi= set= d= spd= hdg= brg= expectedD= late= overspeed=`, `stateClear reason=`, `hide/unhide`, `zone enter/exit/overspeed`); `limitAhead`/`limitChanged`; `Dispatch shown via=`; `Tts queued / start waited= / done / replaced / dropped reason= / interrupted / error status= / stuck`; and the **`PASSED` line per camera** |
+
+Reading them:
 ```bash
-adb logcat -d > autonav-log.txt
-adb bugreport autonav-bugreport.zip      # full report, including battery/GPS history
+# debug builds (emulator or phone):
+adb shell run-as io.autonav.alerts cat files/diag/debug-nav.log
+adb shell run-as io.autonav.alerts cat files/diag/alert-debug.log
+# release builds: Settings → Diagnostics → Save (or Share), then
+adb pull /sdcard/Download/autonavalerts-debug-nav-<date>.log
 ```
+Each 15 s block starts with `--- HH:MM:SS–HH:MM:SS fixes=N src=car/phone hz=… ---`. A header gap means the app wasn't running (look for the next `App start build=… model=… android=… pid=`); up to the last 15 s before a hard kill is lost. The previous rotation is `*.1.log`.
+
+The line that answers "what happened at that camera" is the one `PASSED` line written as its state clears:
+```
+PASSED poi=206409 set="PGW fixed cameras · 30 mph" dir=ONE_WAY camBrg=90 ourHdg=92±5 approach: enter d=512 → FIRST d=466 spoken(+0.8 s) → SECOND d=218 spoken → PASSING d=88 spoken
+PASSED poi=15461 set="PGW pending mobile sites" dir=ONE_WAY camBrg=270 ourHdg=88±4 NOT ALERTED reason=direction(178°) dimmed at d=240
+```
+
+**logcat is only a mirror** of these lines (tag `AutoNav`, plus the older component tags), handy on the emulator bench; some phones, the OPPO among them, drop app log lines entirely, so never rely on it from a car drive:
+```bash
+adb logcat -s AutoNav AlertCoordinator AdaptiveLocation NavSession Guidance NavigatorHolder MapSurface PgwFeedCheck AndroidRuntime
+```
+- `NavigatorHolder: Navigator error N`: 1 = key not authorised, 2 = terms, 3 = network, 4 = location permission
+- `--ez diag true` (§3 step 5a) prints the last 100 lines of each file to logcat; `--ez engine true` writes the engine snapshot
+
+For a full bug report add `adb bugreport autonav-bugreport.zip` (battery and GPS history) to the two saved files.
 
 ## 8. Troubleshooting
 | Symptom | Fix |
@@ -394,13 +504,14 @@ adb bugreport autonav-bugreport.zip      # full report, including battery/GPS hi
 | Emulator shows "Welcome to Android Auto" / car screen stays on "Connect a vehicle" | First connection: tap **Continue**, allow Android Auto's notification access (§3 step 2), go back. |
 | Play Store says Android Auto "isn't compatible with your device" (emulator) | Expected on current emulator images: copy it from a phone (§3 step 2) |
 | Car screen: "AutoNavAlerts has encountered an unexpected error" | Read the cause with `adb -e logcat -b crash`. The host keeps showing this screen after a fix is installed: press **Exit** or restart the DHU. |
-| Car map frozen while the speed panel still changes | Before the follow watchdog (DESIGN.md §8) this happened after a big GPS jump. Now it should recover in 5–10 s; logcat shows `MapSurface: Map is … m from the car`. If it doesn't, restart the DHU and report it. |
+| Car map frozen while the speed panel still changes | Before the follow watchdog (DESIGN.md §8) this happened after a big GPS jump. Now it should recover in 5–10 s; `debug-nav` shows `Map refollow d=…` (and `rebuild d=…` on the third miss). If it doesn't, restart the DHU and report it with the log. |
+| No app lines in logcat at all (OPPO/ColorOS and some other phones) | The phone drops app log output. Use the files instead: `adb shell run-as io.autonav.alerts cat files/diag/debug-nav.log` on a debug build, or Settings → Diagnostics → Save/Share on release (§7). |
 | Speed panel shows 0 while the car moves | The GPS feed has no speed. `tools/drive.py` sends it; `adb emu geo fix <lon> <lat>` on its own doesn't. |
 | Host log: `The car app does not have the required permission: …CAR_SPEED` | Phone Settings → Permissions → **Allow** (car speed), or `pm grant` it on the emulator |
 | DHU shows "Finish setup on your phone" | Do what the message says in the setup sections of the phone's Settings tab (§2.3) |
 | No **Simulate** button | You installed a release build; use `app-debug.apk` |
 | The car moves but no alerts fire | Check that the set's **Alerts** are on, the POI is on the road and faces your direction (§4), and the log shows `Cache: N POIs` with N > 0. In free drive (no route) the phone's own GPS must be moving; use set-up B's route playback or a mock-location app. |
-| Alerts show but nothing is spoken | Settings → **Voice** on. More → Unmute. The set's **Sound** on. Phone media volume up. |
+| Alerts show but nothing is spoken | Settings → **Voice** on. More → Unmute. The set's **Sound** on. Phone media volume up. Then check `alert-debug` for the stage's `Tts` lines: `dropped reason=`, `stuck` or `error status=` say which part of the speech path failed. |
 | No turn cards (map only) | Make sure you pressed **Go** or **Simulate**, not just viewed the preview. Check the network connection. |
 | Sync says "Subscription required" | Your PocketGPSWorld subscription has lapsed |
 | Sync says "Site changed" | PocketGPSWorld changed their pages. Use **Open download page** and import by hand, and report it. |
