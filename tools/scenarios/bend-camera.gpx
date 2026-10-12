@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="bench-test">
+  <!-- tools/scenario.sh bend-camera (TESTING.md A17). One invented camera 80 m past the apex of the
+       left turn from the A61 southbound onto the B6014 Morton Road at Stretton (the road turns from
+       191° to 106° over about 120 m); course = the road's direction at the camera. -->
+  <wpt lat="53.14436" lon="-1.41403"><name>Test camera 40</name><course>139</course><type>Fixed</type></wpt>
+</gpx>

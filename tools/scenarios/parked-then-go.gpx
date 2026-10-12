@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="bench-test">
+  <!-- tools/scenario.sh parked-then-go (TESTING.md A16, M20). Invented cameras on the A61 southbound,
+       Clay Cross to Higham; course = direction of travel. Not real camera data. -->
+  <wpt lat="53.15850" lon="-1.41443"><name>Test camera 40</name><course>185</course><type>Fixed</type></wpt>
+  <wpt lat="53.14695" lon="-1.41440"><name>Test camera 50</name><course>183</course><type>Fixed</type></wpt>
+  <wpt lat="53.13133" lon="-1.41762"><name>Test camera 40</name><course>187</course><type>Fixed</type></wpt>
+</gpx>
