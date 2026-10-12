@@ -25,6 +25,9 @@ import javax.inject.Singleton
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
 const val DEFAULT_OVERSPEED = -0.001
+const val DEFAULT_ALERT_LEAD_SECONDS = 15
+const val MIN_ALERT_LEAD_SECONDS = 15
+const val MAX_ALERT_LEAD_SECONDS = 60
 
 /** Where speed comes from (DESIGN.md §10.6). */
 enum class SpeedSource { CAR_WHEN_AVAILABLE, PHONE_GPS }
@@ -35,6 +38,13 @@ data class AppSettings(
     val chimeOn: Boolean = true,
     /** Over-limit warning threshold as a fraction: −0.001 = warn above 99.9% of the limit. */
     val overspeedPct: Double = DEFAULT_OVERSPEED,
+    /**
+     * Seconds ahead at the current speed for the 1st alert of every set in TIME mode; the 2nd fires
+     * at half (DESIGN.md §11.1). 15–60.
+     */
+    val alertLeadSeconds: Int = DEFAULT_ALERT_LEAD_SECONDS,
+    /** Say the new limit once as the car approaches a change of limit (DESIGN.md §8.4a). */
+    val announceLimitChanges: Boolean = true,
     val rateCurve: RateCurve = RateCurve(),
     val pgwAutoSync: Boolean = true,
     val pgwWifiOnly: Boolean = false,
@@ -85,6 +95,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val voice = booleanPreferencesKey("voice")
         val chime = booleanPreferencesKey("chime")
         val overspeed = doublePreferencesKey("overspeed_pct")
+        val alertLead = intPreferencesKey("alert_lead_seconds")
+        val announceLimits = booleanPreferencesKey("announce_limit_changes")
         val gpsMinMph = doublePreferencesKey("gps_min_mph")
         val gpsMaxMph = doublePreferencesKey("gps_max_mph")
         val gpsMaxHz = intPreferencesKey("gps_max_hz")
@@ -127,6 +139,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             voiceOn = p[K.voice] ?: true,
             chimeOn = p[K.chime] ?: true,
             overspeedPct = (p[K.overspeed] ?: DEFAULT_OVERSPEED).coerceIn(-0.05, 0.20),
+            alertLeadSeconds = (p[K.alertLead] ?: DEFAULT_ALERT_LEAD_SECONDS).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
+            announceLimitChanges = p[K.announceLimits] ?: true,
             rateCurve = runCatching {
                 RateCurve(minMph = p[K.gpsMinMph] ?: 10.0, maxMph = p[K.gpsMaxMph] ?: 50.0, maxHz = p[K.gpsMaxHz] ?: 10)
             }.getOrDefault(RateCurve()),
@@ -164,6 +178,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.voice] = s.voiceOn
             p[K.chime] = s.chimeOn
             p[K.overspeed] = s.overspeedPct
+            p[K.alertLead] = s.alertLeadSeconds
+            p[K.announceLimits] = s.announceLimitChanges
             p[K.gpsMinMph] = s.rateCurve.minMph
             p[K.gpsMaxMph] = s.rateCurve.maxMph
             p[K.gpsMaxHz] = s.rateCurve.maxHz
