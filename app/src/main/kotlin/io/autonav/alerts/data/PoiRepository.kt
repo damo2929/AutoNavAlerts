@@ -44,7 +44,7 @@ data class ImportOutcome(
 )
 
 fun StageCols.toStage() = AlertStage(enabled, mode, metres, seconds)
-fun AlertStage.toCols() = StageCols(enabled, mode, metres, seconds)
+fun AlertStage.toCols() = StageCols(enabled, mode, metres, seconds?.let { kotlin.math.round(it).toInt() })
 
 /** POI storage, import pipeline with staging + atomic swap (DESIGN.md §4.4, §5). */
 @Singleton

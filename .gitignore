@@ -16,3 +16,4 @@ captures/
 pocketgps_*.txt
 pgpsw-speed-cams-*.zip
 __pycache__/
+.claude/
