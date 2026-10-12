@@ -19,7 +19,7 @@
   - a navigation heads-up card
   - the cluster
 - **Lives alongside media**: Android Auto's split-screen layout shows the media card next to our map, and our alerts and turn info still appear when media is full screen.
-- **Uses as little power as possible**, with the GPS rate following speed.
+- **Uses as little power as it can** while always reading the GPS at 10 Hz (the user's choice, §10.2).
 - **Navigate to contacts**: drive to any postal address saved in the phone's contacts (§8.3).
 - **Speed and speed limit on screen at all times**: your current speed next to the road's speed limit as Google Maps reports it. The display turns amber or red when you're over the limit (§8.4).
 - **People finder (Home Assistant)**: navigate to the live location of people tracked in your Home Assistant, such as a child or a relative living with dementia. The route updates as they move (§17).
@@ -42,10 +42,25 @@
 | Distribution | Sideload (ADB + Android Auto "Unknown sources") | Personal use |
 | Phone UI | Settings, import and editing only | All driving use happens on the car screen |
 | People finder | Home Assistant REST + WebSocket API, `person.*` / `device_tracker.*` entities, long-lived access token (v1) | HA already brings together the family's phone, tracker-tag and companion-app locations; no new tracking setup needed |
-| GPS rate | 1 Hz below 10 mph, rising in a straight line to 10 Hz at 50 mph, capped there | Alerts fire at accurate distances at speed while saving power when slow |
+| GPS rate | Always 10 Hz (§10.2) | Alerts fire at accurate distances and the map is always fresh; costs more battery when slow |
+| **Camera direction (hard rule)** | A camera alerts only when it faces your direction of travel (§11 step 3). Never dropped, loosened or defaulted to "any direction" when the data gives one | Alerts for the other carriageway are wrong and noisy; set by the owner, 2026-10-12 |
+| **Car-map buttons (hard rule)** | All our on-screen buttons on the car map are on the **right-hand side only** (§8) | One control column on the right; set by the owner, 2026-10-12 |
+| Speed limits | Google's when it gives one, else a camera's, else OpenStreetMap's from **one bulk download** (Geofabrik, the whole UK) kept on the phone (§8.4–8.4a). Never live OSM lookups | Google only gives apps the limit while you're speeding |
+| Memory | Big data is streamed from disk, never held whole in RAM: zip entries are read when used (§5.2), the speed-limit download spills to disk and lookups load only the tiles around the car (§8.4a) | The phone also runs the map, Android Auto and media |
 
 ### 1.4 Prerequisites
-1. Google Cloud project with billing; **Navigation SDK** (access approval required) and **Places API (New)** enabled. API key restricted to the app package and signing SHA-1. **Each user enters their own key in the phone app (Setup tab) after installing.** It's stored encrypted with the Keystore and applied at run time with `NavigationApi.setApiKey()` and `Places.initializeWithNewPlacesApiEnabled()`. A key in `local.properties` (`MAPS_API_KEY`) is optional, and is only a build-time fallback.
+1. Google Cloud project with billing; **Navigation SDK** (access approval required) and **Places API (New)** enabled. API key restricted to the app package and signing SHA-1. **Each user gets their own key in the phone app (Settings tab, setup sections) after installing: either the app creates it with the Google account on the phone (§13.1), or they paste one.** It's stored encrypted with the Keystore and applied at run time with `NavigationApi.setApiKey()` and `Places.initializeWithNewPlacesApiEnabled()`. **There is never a built-in or build-time key, and no fallback of any kind** (owner's rule): every user's Maps, Navigation and Places use is billed to their own Google account, never the maintainer's. The app works only once the user has their own key.
+   - **Where it lives:** `SettingsStore` keeps it as a Keystore-encrypted secret; `mapsApiKey()` returns it, or `null` when it's missing or blank. Nothing else is consulted: there's no `com.google.android.geo.API_KEY` in the manifest, no `local.properties` entry, and the Secrets Gradle plugin (which copied every `local.properties` entry into `BuildConfig`) has been removed.
+   - **No SDK call before the key:** without a manifest key, *any* Navigation SDK call made before `NavigationApi.setApiKey()` crashes the app on a background thread ("API key not found. Check that <meta-data android:name="com.google.android.geo.API_KEY" …/> is in the <application> element"). So every SDK entry point goes through `NavigatorHolder.applyApiKey()` first, and does nothing when it returns false:
+     | Call | Where | Guard |
+     |---|---|---|
+     | `NavigationApi.areTermsAccepted` | phone Settings, `termsAccepted()` | `NavigatorHolder.sdkTermsAccepted()` = `applyApiKey() && areTermsAccepted()`; the app's own record of acceptance is checked first |
+     | `NavigationApi.showTermsAndConditionsDialog` | phone Settings | button disabled until a key is saved ("Add your Google Maps API key above first") |
+     | `NavigationApi.getNavigator` / `getNavigatorNoToS` | `ensureNavigator()` | `applyApiKey()` first; no key → `NavUnavailable.NO_API_KEY` |
+     | `NavigationViewForAuto` (car map) | `MapSurface` | created only after `applyApiKey()` succeeds (§8) |
+     | Places client | `placesClient()` | `applyApiKey()` first |
+   - **Changing the key:** saving or removing it calls `NavigatorHolder.keyChanged()`, which forgets the applied key and cleans up the Navigator, so the next use re-applies the new one.
+   - **Who pays:** Maps use is billed to the Cloud project that owns the key. Each user's key is in their own project (§13.1), so the maintainer is never billed for anyone else. The app's own registration project (§13.3) has no billing at all.
 2. An active PocketGPSWorld subscription.
 3. A phone with Android Auto developer mode and "Unknown sources" enabled, and/or the Desktop Head Unit (DHU) on the dev machine.
 4. *(People finder, optional)* A Home Assistant instance the phone can reach away from home (Nabu Casa Cloud, or your own HTTPS domain or VPN), with the people to find set up as `person` entities fed by the HA Companion app or another tracker. You create a long-lived access token for a HA user who can read those entities.
@@ -82,7 +97,7 @@
 │                                ┌────────────────────┐   fixes   ┌──────┴─────────────┐   │
 │                                │ PoiGridCache       │◀──────────│ AdaptiveLocation   │   │
 │                                │ (in-memory cells)  │           │ Controller (FLP,   │   │
-│                                └─────────┬──────────┘           │ 1–10 Hz)           │   │
+│                                └─────────┬──────────┘           │ 10 Hz)             │   │
 │                                          ▼                      └────────────────────┘   │
 │                                ┌────────────────────┐                                    │
 │                                │ PoiAlertEngine     │──AlertEvent──┐                     │
@@ -193,7 +208,7 @@ app/src/main/kotlin/io/autonav/alerts/
   phone/
     MainActivity.kt + Compose screens (§13)
   settings/
-    SettingsStore.kt             DataStore (units, voice, thresholds, GPS rate curve)
+    SettingsStore.kt             DataStore (units, voice, thresholds, map and PGW options)
 ```
 
 ---
@@ -340,6 +355,8 @@ passing  = soundOn          // 100 yd passing alert: compulsory whenever sound i
 - `row = floor((lat + 90) / 0.01)`, `col = floor((lon + 180) / 0.01)`, `gridCell = row * 36_000 + col`. This fits in a Long and has no collisions.
 - **Viewport query**: list the cells covering the visible bounds. If there are more than 400 cells (zoomed out), skip the query; `minZoom` usually prevents this anyway. Then `SELECT … WHERE gridCell IN (:cells) AND setId IN (:enabledSets)`.
 - **Alert cache**: `PoiGridCache` holds the 5×5 block of cells around the vehicle (roughly ±2.5 km N–S and ±1.7 km E–W in the UK). It reloads only when the vehicle moves into a new cell, and the reload runs on IO in the background. The engine's per-fix work never touches Room.
+  - Fixes are handled one at a time with `conflate()` (a fix arriving meanwhile replaces any waiting one), never `collectLatest`: at 10 Hz the next fix would cancel a reload half-way. The cell is marked loaded only after the new POIs are in, so an interrupted reload is retried on the next fix.
+  - Per fix there's no DataStore read (the latest settings are kept by their collector) and no list copy: the engine's candidate list is built once per reload and only rebuilt per fix while a set is muted or a report is being kept quiet.
 
 ### 4.4 Staging and atomic swap
 1. Import creates a `PoiSet(state = STAGING, replacesSetId = old?)` and streams rows into it in batches of 2,000 in a single transaction per batch.
@@ -411,6 +428,7 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
   - Header `X,Y,Type,Speed,DirType,Direction`; matching ignores case.
   - Coordinates have 5 decimal places.
 - **Reading the zip**: PGW's zips must be read through the zip's **central directory** (`java.util.zip.ZipFile`, `ZipEntries.kt`). Java's streaming `ZipInputStream` stops after the first entry (`_Need_Help.htm`) and never sees the camera files. Found on the first real sync, 2026-10-11.
+- **Never all in memory**: `ZipEntries.read(file)` returns a closeable map whose values are read from the zip on disk **when used** and not kept, so icons, readmes and other camera files never sit in RAM together. A nested zip is streamed to a temp file. A file picked on the phone is streamed to a temp file first (not read into memory), and the import dialog's list of files in a zip comes from the zip's directory alone (`ZipEntries.names`), without inflating anything. Each entry is capped at 200 MB inflated.
 - **Watermark row**: the **last line** of each file is `0.72185,51.51508,Copyright PocketGPSWorld.com,,`. It's a copyright and watermark row with a non-numeric Type, and the importer **must skip it**. Generally, any row whose Type isn't an integer is skipped quietly; it isn't counted as an error.
 - **Empty fields are normal**. In `sc`, 163 rows (mostly mobile sites) have empty DirType/Direction, and some rows have an empty Speed. They're valid rows, not errors.
 
@@ -632,7 +650,7 @@ The user accepts this risk for personal use.
   - **1st**: `{category} ahead, {speed} limit`
   - **2nd**: `{category}, {distance}`
   - **Passing** (100 yd): `{category} now`
-- Zone enter/leave have their own templates: "Entering average speed zone, {speed} limit" and "Leaving average speed zone".
+- Zone enter/leave/over have their own templates: "Entering average speed zone, {speed} limit", "Leaving average speed zone" and "Average speed zone, {speed} limit, you are over the limit". {speed} is the zone's limit (§11 step 8).
 - The display text and the spoken text come from the same template. Display uses short units ("30 mph") and speech uses full words.
 
 ---
@@ -657,8 +675,10 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 | **Report** (one tap) | `MessageTemplate` "Listening…" with Done / Skip | One tap saves the report, then an optional spoken comment from the car mic; Undo alert (§8.5). No review or Send on the car. |
 | More | `ListTemplate` | Recents · POI layers · Mute alerts 30 min · Diagnostics (debug) |
 
-**Action strip** (up to 4): Search · **Report** · People · More. While navigating, People is replaced by Stop navigation, and People moves to More. Recents are also shown in Search's empty state, so they're still one tap away. Mute is also available directly from each alert's own **Mute** action (§12.1). The People action only appears when a HA server is set up.
-**Map action strip**: `Action.PAN` · zoom in · zoom out · recenter.
+**Action strip** (up to 4): Search · **Report** · People · More. While navigating, People is replaced by Stop navigation, and People moves to More. Recents are also shown in Search's empty state, so they're still one tap away. Mute is in More ("Mute alerts for 30 min"); the alert banner on the map has no buttons (§12.1). The People action only appears when a HA server is set up. **All its actions are persistent** (`Action.FLAG_IS_PERSISTENT`), so the host never fades them out: the user wants the four top-right buttons always on screen.
+**Hard rule: all our on-screen buttons are on the right-hand side only** (owner, 2026-10-12): the satellite toggle and the zoom/recenter column are anchored to the right edge (`Gravity.END`) from the moment they're added, under the action strip, and `applyPadding` only adjusts their right and top margins from the visible area. (Anchored from the left, they sat at the top-left until the host reported the visible area.) The speed panel is bottom-right; nothing of ours goes on the left.
+
+**Map buttons**: down the right edge of the map, under the satellite toggle (top right): **zoom in · zoom out · recenter**, 56 dp dark circles 10 dp apart (`MapButtonView`), drawn on our surface and tapped through `onClick` (car API 5+). The host's map action strip keeps only `Action.PAN`, which hosts show for rotary/touchpad cars. Below car API 5 (no `onClick`) our buttons aren't drawn and the host strip has Pan · zoom in · zoom out · recenter as before.
 
 **Visible and stable areas**: `MapPaddingController` reacts to `onVisibleAreaChanged` and `onStableAreaChanged` and turns the inset rectangles into `GoogleMap.setPadding`:
 - The stable area sets the camera target, so the car marker stays steady.
@@ -666,15 +686,38 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 
 This is what keeps the car marker and route clear of the turn card, the rail and the split-screen media panel.
 
+**Map surface set-up** (`MapSurface`, created by `NavSession.onCreateScreen` with `applyKey = { deps.navigator().applyApiKey() }`):
+- **Order of events:**
+  1. The host calls `onSurfaceAvailable(container)`. `MapSurface` cancels any set-up still running and starts a new one on its own main-thread scope (`Dispatchers.Main.immediate`).
+  2. The set-up waits for `applyKey()`. If there's no key it stops there: the surface stays empty and the home screen shows "Add your Google Maps API key in the phone app's Settings."
+  3. `attach(container)`: releases any old map, creates a `VirtualDisplay` (`VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`, the container's size and dpi) on the host's `Surface`, and a `Presentation` on that display.
+  4. The `Presentation`'s content is a plain `FrameLayout` with three children, in drawing order: `NavigationViewForAuto` (match parent), the speed panel (§8.4, bottom end) and the alert banner (§12.1, bottom, centred by `applyPadding`). `NavigationViewForAuto` doesn't accept child views ("Adding child views is not supported"), so nothing is ever added to it directly.
+  5. The view's `onCreate/onStart/onResume` run, the `Presentation` is shown, and `getMapAsync` turns on my-location, traffic and tilted follow, then calls `onMapReady` (markers and the camera-idle listener attach there).
+- **Why wait for the key:** there is no manifest key (§1.4), and Android Auto can start the car session in a **fresh process** (after an update, a crash, or the phone killing the app) before the phone UI has ever set the key. Creating `NavigationViewForAuto` first crashes with "API key not found".
+- **Tear-down:** `onSurfaceDestroyed` cancels the set-up and releases (view `onPause/onStop/onDestroy`, `Presentation.dismiss`, `VirtualDisplay.release`). `close()`, called from the session's `onDestroy`, also cancels the scope for good.
+- **Follow watchdog** (`keepFollowing(lat, lon)`, called by `NavSession` on every fix):
+  - **Why:** after a big jump in position (leaving a tunnel, a GPS glitch, or bench playback starting somewhere new) the SDK's map can stop following the car and stay where it was, while our speed panel and alerts carry on. Seen on the bench 2026-10-12 after a 3 km jump; the map stayed frozen until the car session restarted.
+  - **Check:** only while follow mode is on (the user hasn't panned). It measures from the map camera's **target** to the car. The target isn't exactly the car (the padding and tilt put the car low on the screen), so the threshold is generous: **500 m** (`LOST_METRES`).
+  - **Act**, at most every **5 s** (`REFOLLOW_INTERVAL_MS`): the first time, call `followMyLocation(TILTED)` again and log "Map is N m from the car: following again". If it's still lost at the next check, **rebuild the map** on the same surface (`attach` with the saved container) and log "Map still N m from the car: rebuilding it". The counter resets as soon as the map is within 500 m.
+  - Tested on the bench: a 4 km jump logged "Map is 3771 m from the car: following again" and the map caught up within about 5 s.
+
 **Gestures**:
 - `onScroll` pans and enters pan mode, which turns camera-follow off.
 - `onScale` zooms.
 - `onFling` gives a short animated pan.
-- `onClick` on a marker shows the POI's details in a short-lived `Message`.
+- `onClick` on the satellite toggle switches the map type; on the alert banner it dismisses the alert; on a marker it shows the POI's details in a short-lived `Message`.
 - Recenter turns camera-follow back on.
 
+**Traffic**: Google's live traffic layer is **always on** (the user's rule). It's turned on when the map is created and when the map type changes, and checked on every GPS fix (`keepFollowing`), so if guidance, a rebuild or the SDK ever turns it off it's back within one fix. There's no setting to turn it off.
+- **Zoom cap 17.5** (`MapSurface.MAX_ZOOM`, `setMaxZoomPreference`): the road map (`MAP_TYPE_NORMAL`) **stops drawing traffic above zoom 17.5**, while satellite/hybrid keeps it, and the follow camera's default zoom is 18, so the road map showed no traffic at all while following. Found on the bench, 2026-10-12, by stepping the zoom: 18 → none; 17.5, 17, 16.5, 16 → traffic. It isn't the 3D buildings (turning them off changed nothing) or the SDK's map style (an empty style changed nothing). With the cap, the follow camera and the + button stop at 17.5, and traffic looks the same on both map types.
+
+**Satellite view** (`satelliteMap` setting, default off):
+- A toggle sits in the **top-right corner of the map**, 16 px inside the visible area's top-right corner. The action strip is **persistent** (`Action.FLAG_IS_PERSISTENT` on all its actions), so it's always on screen and the column always sits **below** it: its top is the largest of the visible area's top, the stable area's top and 88 dp, plus 16 px. (The host sometimes reports a visible area that ignores the strip, right after the map starts; going by that alone put the toggle under the strip.) Each change is logged ("Visible area Rect(…)"). On the 1080p bench with the strips hidden the visible area is `Rect(12, 12 - 1180, 1044)`. It's a dark pill (150 × 52 dp) with the layers icon and the type a tap switches to: "Satellite" on the road map, "Map" on satellite.
+- Satellite uses `GoogleMap.MAP_TYPE_HYBRID` (imagery with road names and the route); off is `MAP_TYPE_NORMAL`. Traffic, markers, the speed panel and the alert banner draw the same on both.
+- The host decides where its map action strip goes (bottom right), so the toggle and the zoom/recenter column are our own views on the surface and their taps come through `onClick` (each tap is logged: "Tap at x,y"). For rotary-only cars, and in case a host doesn't pass taps through, the same switch is a **Satellite map** toggle row in More, and "Satellite map in the car" on the phone's Settings → Car screen. All three write the one setting, and the map follows the setting, so they always agree.
+
 ### 8.1 POI marker redraw (on every GPS update)
-`PoiMarkerLayer` redraws on **every fix** from `AdaptiveLocationController`, so it runs at the same speed-based 1–10 Hz rate. It also redraws on camera idle (the user panned or zoomed) and on `setsChanged`.
+`PoiMarkerLayer` redraws on **every fix** (cheaply: the on-screen POIs are picked without allocating, a distance sort runs only when more than 200 are on screen, and each marker image is handed to the map once and reused) from `AdaptiveLocationController`, so it runs at up to the 10 Hz GPS rate. It also redraws on camera idle (the user panned or zoomed) and on `setsChanged`.
 
 Each redraw:
 1. **Pick the POIs to show**: POIs from `PoiGridCache` (in-memory, with no Room access per fix) in sets with `showOnMap`, inside the current visible bounds plus a 10% margin, and at or above each set's `minZoom`. While the user is panning, the bounds come from the camera, and a Room viewport query fills in cells outside the cache once the camera goes idle.
@@ -727,30 +770,50 @@ Each redraw:
 - Home/Work/Favourites can't be removed from the recents action. Removing them needs Unfavourite or the phone app.
 
 ### 8.3 Navigating to contacts' addresses
-- **Permission**: `READ_CONTACTS`, asked for in onboarding as an optional step. Without it the feature is hidden.
-- **Source**: `ContactsContract.CommonDataKinds.StructuredPostal`. Each contact's postal addresses (type HOME/WORK/OTHER/custom label) come with their display name and photo thumbnail. Read-only; the app never changes your contacts.
-- **Geocoding**: an address is turned into a location the first time you pick it, never for the whole address book up front, using Places Text Search (or the Geocoding API) on the formatted address with location bias.
-  - The result `(placeId, lat, lon)` is cached in Room table `contact_geocode`, keyed by SHA-256(normalised address) so the address itself isn't stored twice. Entries older than 90 days are refreshed.
-  - If geocoding gives several matches or a poor-quality one, the matches are shown in a short list to choose from.
+- **Permission**: `READ_CONTACTS` (in the manifest), **optional**. Settings → Permissions has a "Contacts (optional)" line and its own **Allow contacts** button (the main **Allow** only asks for the needed permissions). Without it the contact rows and the Contacts entry are hidden, and search works as before.
+- **Source** (`ContactsSource`): `ContactsContract.CommonDataKinds.StructuredPostal` rows, read with the `ContentResolver`, each with its contact's `DISPLAY_NAME_PRIMARY`, the address type (HOME/WORK/OTHER or the custom label, via `StructuredPostal.getTypeLabel`) and `FORMATTED_ADDRESS`. Read-only; the app never changes your contacts. Addresses with a blank formatted address are skipped.
+- **Matching a name**: case-insensitive; a contact matches when its display name **starts with** the query or **any word** in it does ("mum" → "Mum", "smith" → "Dave Smith"). From **2 characters** (Places needs 3). At most **3** addresses above the Places results (car lists are short) and **6** in the contacts-only search; names that start with the query first, then by name. It's a local query, so it runs on every keystroke with no delay.
+- **Geocoding**: an address is turned into a location only when you pick it, never for the whole address book, using Places **Text Search** on the formatted address with a 50 km location bias.
+  - **Choosing the result**: if the address has a **UK postcode** and one result's address has the same postcode (spaces and case ignored), that one is used. Otherwise, one result is used directly; several results are shown in the search list under "Which address?" to pick from; none gives "Couldn't find <name>'s address".
+  - **Cache**: the chosen `(placeId, lat, lon, formatted address)` is stored in Room table **`contact_geocode`** (DB **v4**, migration `MIGRATION_3_4`), keyed by SHA-256 of the normalised address (lower case, single spaces), so the address text itself isn't stored. Entries older than **90 days** are looked up again. Settings → Permissions → **Clear contact locations** empties it. The table is in `poi.db`, so like everything else it's excluded from Android backup, and it isn't in the settings backup file (§13.4).
 - **Car UI**:
-  - **Search**: typing or speaking a name ("Mum", "Dave Smith") in the `SearchTemplate` shows matching contacts **above** Places results. A contact row shows its name, address type and distance, if the address has been located before.
-  - **Contacts**: a list in the Search screen's empty state (under Home/Work/favourites) with a "Contacts" row that opens a contact search. The full address book isn't listed, because of the car's list limits.
-  - Picking a contact address → geocode (if needed) → RoutePreview. Contacts with several addresses show one row per address.
-- **Assistant**: "Hey Google, navigate to Mum's house" usually reaches us as `ACTION_NAVIGATE` with an address that Assistant has already looked up (§9.1). If it only sends a name, we look it up against contacts first and then fall back to Places.
-- **Recents**: a contact destination is stored as a recent with its name, for example "Mum (Home)". It can be deleted like any other recent (§8.2).
-- **Privacy**: contact data is only read on the device, and only the address you picked is sent to Google for geocoding.
+  - **Search**: typing or speaking a name ("Mum", "Dave Smith") in the `SearchTemplate` shows matching contact addresses **above** the Places results. A contact row has the contact icon, the name as title, and "Home · 12 High Street, Sheffield" as text (plus the distance once the address has been located before).
+  - **Contacts**: the Search screen's empty state (under Home/Work/favourites/recents) has a **Contacts** row that opens a contacts-only search (the same screen, with Places results off and the hint "Search your contacts"). The full address book isn't listed, because of the car's list limits.
+  - Picking a contact address → geocode (cached or new) → RoutePreview. Contacts with several addresses show one row per address.
+- **Assistant**: "Hey Google, navigate to Mum's house" usually reaches us as `ACTION_NAVIGATE` with an address Assistant has already looked up (§9.1). If it only sends a name, it opens Search with that name, where matching contacts are listed first, then Places.
+- **Recents**: a contact destination is stored as a recent titled with the name and type, for example "Mum (Home)", with the formatted address. It can be deleted like any other recent (§8.2).
+- **Privacy**: contact data is only read on the device, when you search. Only the address you pick is sent to Google (Places Text Search, billed to your Maps key like any search). Names, phone numbers and other addresses never leave the phone.
 
 ### 8.4 Speed panel: current speed and the road's speed limit
-- **What it shows**: always on the map, in the corner of the stable area away from the turn card and media panel (bottom-left on landscape, bottom on portrait):
+- **What it shows**: always on the map, in the **bottom-right corner** of the visible area (16 px in), clear of the turn card and the media panel (the user asked for bottom right, 2026-10-12; it was bottom left). The map buttons are in a column at the top right, so nothing else uses that corner:
   - **Current speed** in your units (mph/km/h), from the smoothed speed in `AdaptiveLocationController` (§10.3). It updates on every fix, up to 10 Hz, with the number rounded and steadied to avoid flicker.
   - **Road speed limit as Google Maps reports it**, in a UK/EU-style red-ringed sign (or US style, chosen by region).
   - **Colour**: normal; **amber** when over the limit by the minor threshold; **red** when over by the major threshold. The thresholds default to 5% and 10% and are settings.
-- **Where the limit comes from**:
-  1. **Main source: the Navigation SDK's own speedometer and speed-limit control.** It's turned on with `setSpeedometerEnabled(true)` on the navigation view. The SDK's `SpeedAlertOptions` (minor/major percentages and the time before an alert) and `SpeedingListener.onSpeedingUpdated(percentageAboveLimit, severity)` drive the amber/red state, so the colours match Google Maps. This is Google's road speed-limit data, the same as Google Maps.
-  2. **To check in phase 2**: whether `NavigationViewForAuto` shows the speedometer in **free-drive** as well as during guidance, and whether the speed-limit number itself is available to us (the API surface varies by SDK version).
-     - If the SDK control works on Auto, we use it.
-     - If it only works during guidance, or not on Auto, we draw our own `SpeedPanel`, a View inside the `Presentation` overlaid on the map. Its limit comes from whatever value the SDK exposes, and its amber/red state still comes from `SpeedingListener` (which gives the percentage over the limit, so a limit can be worked out from it while you're over).
-  3. **Fallback when Google has no limit for the road**: if a POI set has an active average-speed zone or a nearby camera with a limit, that limit is shown with a small camera icon so it isn't mistaken for Google's figure. Otherwise only your speed is shown.
+- **Where the limit comes from**, in this order (the first that has one wins):
+  1. **Google**, while you're over its limit: `SpeedingListener.onSpeedingUpdated(percentageAboveLimit, severity)` gives the percentage over, so the limit is worked out (speed ÷ (1 + %), rounded to 5) and kept for 60 s. Google exposes no limit at all below it, and `NavigationViewForAuto` has no speed-limit icon option (SDK 8.0.0). No marker.
+  2. **Camera or zone**: the limit of the camera being alerted (last 20 s) or the average-speed zone you're in. Small **blue dot**.
+  3. **OpenStreetMap** (§8.4a): the posted `maxspeed` of the road you're on, from data downloaded to the phone. Small **grey dot**.
+  4. None: only your speed.
+- **Colour**: amber/red follow Google's `SpeedingListener` severity (5% / 10% over), as before. Being over a camera or OSM limit doesn't colour the panel.
+
+### 8.4a OpenStreetMap speed limits (one download for the UK)
+**Why**: Google gives apps the limit only while you're over it (§8.4); the Roads API speed limits are only for Asset Tracking licence holders. OpenStreetMap's `maxspeed` is free (ODbL) and well filled in on UK A and B roads.
+
+**One bulk download, never live lookups** (the user's rules: "not keep hitting the OpenStreetMap API"; "bulk downloaded as a zip"; "the whole of the UK"):
+- **Source**: Geofabrik's free shapefile extracts, rebuilt daily from OpenStreetMap: `https://download.geofabrik.de/europe/united-kingdom/{england,scotland,wales}-latest-free.shp.zip` for Great Britain, and `https://download.geofabrik.de/europe/ireland-and-northern-ireland-latest-free.shp.zip` for **Northern Ireland**. Geofabrik has no shapefile for the whole UK (that URL redirects to its home page) and none for Northern Ireland on its own.
+- **Northern Ireland from the Ireland file**: that file also has the Republic, whose limits are km/h (50 km/h would read as 31 mph). Only roads whose midpoint is **inside Northern Ireland's border** are kept: `NorthernIreland.contains` (in `:core`) tests against OSM's Northern Ireland boundary (relation 156393, including its coastal waters), simplified to 50 m (about 1,500 points) and built into the app. It was fetched once when writing the code; the app never looks it up. As a second check, a road there is kept only if its limit is a whole multiple of 5 mph (UK signs), which drops a stray Republic road the 50 m simplification lets in at the border.
+- **Only the roads are fetched**: each zip is 0.3–3 GB, but only its roads layer is needed. The app reads the zip's directory with HTTP range requests (Geofabrik supports them) and downloads just `gis_osm_roads_free_1.dbf` and `gis_osm_roads_free_1.shp`: about **1.07 GB** in all (England 49 + 646 MB, Scotland 6.5 + 112 MB, Wales 3.5 + 63 MB, Ireland and Northern Ireland 9 + 179 MB; October 2026).
+- **Processed as it streams**, with no temporary copy: the `.dbf` (road attributes) is read first and keeps one byte per road (its limit in mph, 0 if none); then the `.shp` (shapes) is inflated and read record by record, and only roads with a limit are kept. Their lines are simplified (Douglas-Peucker, 3 m), cut into the 0.1° tiles and written to one compact file.
+- **Result**: about **29 MB** in `files/osm/osm_limits.bin` (October 2026: 1,326,619 roads with a limit, 42,516 of them in Northern Ireland; Wales alone 81,000 roads, 1.8 MB). It's built as `osm_limits.tmp` with two temp files beside it (`.spill`, `.road_limits`), and renamed over the old file only when complete. It's excluded from Android backup with the other data (§6.4).
+- **Limits**: the shapefile's `maxspeed` is whole km/h converted from the OSM tag (30 mph → 48); it's converted back to mph and rounded (48 → 30, 32 → 20, 96 → 60, 112 → 70). Values under 5 mph are dropped. Direction-specific limits (`maxspeed:forward/backward`) aren't in the extract, so each limit applies both ways (rare in the UK).
+- **When**: only when the user presses **Download** (or **Update**) in Settings → Speed limits. It runs as a background job (WorkManager, with a progress notification and Cancel; **Wi-Fi only** by default, or over mobile data too if the user turns **Wi-Fi only** off), so it carries on with the app closed. Android refuses a foreground service when the job starts while the app is in the background (e.g. Wi-Fi came back later); it then runs as ordinary background work, with progress still in a notification, and WorkManager re-runs it if the system stops it. Cancel stops it within a fraction of a second (the progress callback checks `isStopped`, since the network reads block), and the old file is kept. It takes a few minutes on fast Wi-Fi. There's no automatic refresh; the card shows the data's date and suggests updating every few months. During an update the old file keeps working; the new one replaces it only when it's complete.
+- **File** (`OsmLimitFile`, in `:core`): magic `ANSL`, version 1, the Geofabrik data date, then a sorted index of tiles (tile key, offset, length), then each tile's roads: limit (mph, 1 byte), point count (2 bytes), first point (2 × 4-byte micro-degrees), then each next point as a difference (2 × 2 bytes; a road whose step doesn't fit is split). Reading one tile is a binary search and one read.
+- **Low memory by design**: the download never holds the country in RAM. Each road's limit goes to a temp file and is read back alongside the shapes; roads are spilled to a temp file as they arrive (only each tile's size is kept), and the final file is assembled in passes of at most 4 MB. On the bench the whole UK built with the app's Java heap peaking at about 13 MB.
+- **Finding the limit for a fix** (`LimitIndex`, in `:core`): only the tiles within 400 m of the car are read (usually one; up to four near a corner), again when the car comes within 60 m of a tile not in memory. They're held as plain arrays (ends in micro-degrees, the limit, and a sorted index of 0.002° cells), so a lookup at 10 Hz allocates nothing. The limit is the one on the **nearest road piece within 20 m** that runs **within 30° of your heading** (either way), so side roads at a junction don't count. No piece → no OSM limit (never a guess).
+- **Shown on**: the speed panel only (grey dot). Not used for alerts, the over-limit warning or reports, so OSM gaps or mistakes can't cause a wrong warning.
+- **Settings → Speed limits**: **Show OpenStreetMap limits** (on); **Download on Wi-Fi only** (on; off allows mobile data, with a note that it's about 1.1 GB); **Download speed limits for the UK (about 1.1 GB)**, or **Update** once downloaded; progress ("England: roads 412 of 646 MB"); status ("OpenStreetMap data from 11 Oct 2026 · 1.3 million roads · 27 MB"); **Delete**; and the attribution "Speed limits © OpenStreetMap contributors (ODbL), extract by Geofabrik" with a link to openstreetmap.org/copyright. The same attribution is in About.
+- **Replaced**: an earlier build fetched 0.1° tiles from the Overpass API as you drove (DB v5 tables `osm_limit`/`osm_tile`). It's gone; DB v6 drops those tables.
+
 - **Overspeed audio**: off by default. Google Maps doesn't speak speed warnings, and our POI overspeed warnings (§11 step 9) stay separate. There's an optional chime when you go into the red state.
 - **Power**: the panel only redraws when the shown speed or state changes, and it piggybacks on fixes that are already coming in.
 
@@ -765,6 +828,7 @@ Each redraw:
    - **speed limit**: Google's limit if it's known at that moment, otherwise the nearest camera's limit, otherwise none. The source is recorded as GOOGLE, CAMERA or NONE.
      - Google's limit is only exposed by the Navigation SDK **while you're over it** (`SpeedingListener` gives the percentage over the limit, §8.4), so it's often not available. It's confirmed or set at review.
    - **speed, time, road** and the nearest camera already in the database (for "not there" or "seen again")
+   - A "My reports" marker at that spot. It **doesn't alert while you're still there**: it's quiet until you're 300 m from it, then alerts normally on the next pass. (Without this, the app said "My reports now" seconds after the tap; bench, 2026-10-12.)
 2. A **voice comment** prompt appears: "Report saved. Say a comment after the tone." A tone plays, then:
    - **Recording**: up to **15 s** from the car's microphone with `CarAudioRecord` (car API 5+, `RECORD_AUDIO`). It stops after **2 s of silence**, or when you tap **Done**. **Skip** saves without a comment.
    - **No microphone** (car API < 5, or the permission isn't granted): the prompt is skipped. The report is still saved, and you can add a comment at review.
@@ -863,30 +927,13 @@ See §12.3. Media is **ducked, never paused**.
 
 Raw fixes are used for alerts because the SDK's road-snapped rate isn't under our control. The alert maths need a rate we choose so trigger distances are accurate.
 
-### 10.2 Rate formula
-```
-v = smoothed speed in mph
-if v < 10:           hz = 1
-elif v >= 50:        hz = 10
-else:                hz = 1 + 9 * (v - 10) / 40          // 10 mph → 1 Hz, 30 → 5.5, 50 → 10
-step      = clamp(round(hz), 1, 10)                       // whole-Hz steps
-intervalMs = 1000 / step                                  // 1000, 500, 333, 250, 200, 167, 143, 125, 111, 100
-```
-The `10`, `50` and `10 Hz` values are settings (`gpsMinMph`, `gpsMaxMph`, `gpsMaxHz`) with these defaults.
-
-### 10.3 Smoothing and changing the request
-- **Speed smoothing**: the median of the last 3 `Location.speed` values when `hasSpeed()`. Otherwise speed is worked out from distance over time between fixes, ignoring fixes with accuracy > 30 m.
-- **Changes are held**: the request is only re-sent when `step` differs from the current request's step **and** that new step has held continuously for **2 s**. Speeding up uses the same 2 s hold (there's no faster path) to keep things simple and predictable.
-- **Re-sending**: `removeLocationUpdates` then `requestLocationUpdates` with `LocationRequest.Builder(PRIORITY_HIGH_ACCURACY, intervalMs).setMinUpdateIntervalMillis(intervalMs).setMaxUpdateDelayMillis(0).setWaitForAccurateLocation(false)`. Fixes come in on the `alertScope` thread's Looper.
-- **Stopped or under 10 mph**: always 1 Hz. There's no lower rate.
-
-### 10.4 Chip limits
-- Many phone GPS chips cap at 1–5 Hz. If the requested rate is higher than the chip delivers, FLP just delivers what it can, and we accept that.
-- The controller measures the **actual** rate (a moving average of the time between fixes over 10 s) and shows it:
-  - in a debug overlay on the car screen in debug builds
-  - in a phone diagnostics screen
-- If the actual rate is below 50% of the requested rate for 60 s, the request is lowered to `ceil(actualHz)`. This saves FLP work, and the request is raised again if speed rises and another step change happens.
-- If the head unit offers car GPS (some projected setups), FLP may use it without us doing anything. We don't depend on this.
+### 10.2 Rate: always 10 Hz
+The phone's GPS is **always asked for 10 fixes a second** (`AdaptiveLocationSource.GPS_HZ`), at every speed, stopped or moving, and whether or not the car's GPS is in use. The user chose this on 2026-10-12 ("always ask for the GPS data at 10hz") over the earlier speed-based 1–10 Hz rate, to keep the car marker, alerts and the follow watchdog fresh at all times (a slow rate left the car map sitting at 0,0 after a restart until the next fix).
+- **Request**: `LocationRequest.Builder(PRIORITY_HIGH_ACCURACY, 100 ms).setMinUpdateIntervalMillis(100).setMaxUpdateDelayMillis(0).setWaitForAccurateLocation(false)`, sent once when location starts. Fixes come in on the `adaptive-location` thread's Looper.
+- **Chip limits**: many phone GPS chips deliver 1–5 Hz at most; FLP then delivers what it can and that's accepted. The rate actually delivered (a moving average of the time between fixes) is shown in the car's **More → GPS** row. The request is never lowered.
+- **Speed smoothing** (for speed and heading, not the rate): the median of the last 3 `Location.speed` values when `hasSpeed()`; otherwise distance over time between fixes, ignoring fixes with accuracy > 30 m.
+- **Power**: 10 Hz all the time costs more battery than the old adaptive rate, mostly when slow or parked with the car screen open (§14). The car is normally charging the phone.
+- The old rate curve (`RateCurve`, `AdaptiveRateController` in `:core`, and the stored `gpsMinMph`/`gpsMaxMph`/`gpsMaxHz` values) is no longer used by the app; the Settings controls for it are gone.
 
 ### 10.5 Lifecycle
 Runs while the foreground service is up (§9.3). It stops when the car session ends and there's no guidance, or when every set has alerts turned off. In that last case it does nothing until a set's alerts are turned back on.
@@ -894,7 +941,7 @@ Runs while the foreground service is up (§9.3). It stops when the car session e
 ---
 
 ### 10.6 Car speed from the head unit
-Android Auto can pass the **car's own speed** to the app. The Car App Library reads it through `CarHardwareManager.carInfo.addSpeedListener` (car API level 3+, permission `com.google.android.gms.permission.CAR_SPEED`). The `Speed` object it returns has:
+Android Auto can pass the **car's own speed** to the app. The Car App Library reads it through `CarHardwareManager.carInfo.addSpeedListener` (car API level 3+, permission `com.google.android.gms.permission.CAR_SPEED`). The permission is a **runtime** one, so declaring it in the manifest isn't enough: the phone's Settings → Permissions asks for it with the others (`PermState.CAR_SPEED`, shown as "Car speed (speed panel uses the car's own speed)"). Without it the host refuses the listener: the host's log shows `SecurityException: The car app does not have the required permission: com.google.android.gms.permission.CAR_SPEED` on each car session start, nothing crashes, and the phone's GPS speed is used. (Found on the bench 2026-10-12: before this the app never asked, so car speed never worked.) The `Speed` object it returns has:
 - **raw speed**: the car's measured road speed
 - **display speed**: what the car's own speedometer shows, usually a few percent high
 - **speedometer unit**: the car's mph/km/h setting
@@ -906,7 +953,6 @@ Android Auto can pass the **car's own speed** to the app. The Car App Library re
 |---|---|---|
 | Speed panel number | **Car display speed** | Matches the dashboard exactly |
 | Alert engine (TIME-mode trigger distance, over-limit check) | **Car raw speed** | Accurate in tunnels, under trees and at low speed, and doesn't lag |
-| Adaptive GPS rate (§10.2) | **Car raw speed**, applied as soon as each car update arrives | Reacts as the car speeds up, without waiting for GPS smoothing |
 | Position and heading | **Phone GPS**, unchanged | The car only gives speed. Car GPS (`CarSensors.addCarHardwareLocationListener`) is a possible later source |
 
 **Fallback:**
@@ -919,8 +965,8 @@ Android Auto can pass the **car's own speed** to the app. The Car App Library re
 The car's GPS position is read through `CarHardwareManager.carSensors.addCarHardwareLocationListener(UPDATE_RATE_FASTEST, …)` (car API 3+, uses the existing fine-location permission). It's controlled by the same setting as speed, renamed **Speed and location source**: **Car when available** (default) / **Phone only**.
 
 - **Primary feed:** while the car's location is **fresh** (a fix in the last 2 s, with status SUCCESS), car fixes feed the alert engine, the per-fix marker redraw, the report snapshot and the free-drive camera checks. Phone fixes are ignored during that time.
-- **Phone as backup:** while car GPS is fresh, the phone's fused-location request drops to **1 Hz** to save power. If the car stops reporting for 2 s, phone fixes take over straight away, and the adaptive 1–10 Hz rate (§10.2) is restored.
-- **Rate:** the car decides how often it reports. We ask for its fastest rate. The adaptive rate only applies to the phone.
+- **Phone as backup:** while car GPS is fresh, phone fixes are ignored for alerts (the phone keeps reading at 10 Hz, §10.2). If the car stops reporting for 2 s, phone fixes take over straight away.
+- **Rate:** the car decides how often it reports. We ask for its fastest rate. The 10 Hz request applies to the phone.
 - **Not changed:** the **map's** car marker and turn-by-turn routing come from the Navigation SDK, which uses the phone's location services. The SDK has no way to feed it the car's GPS. On many cars, Android Auto already passes the car's GPS into the phone's location services anyway.
 - **Diagnostics:** **More → GPS** shows "Location from car / phone" and "Speed from car / phone".
 - **Simulation:** during a debug Simulate drive, simulated positions are used and car GPS is ignored. The DHU provides car location with `config/default_sensors.ini`.
@@ -929,13 +975,13 @@ The car's GPS position is read through `CarHardwareManager.carSensors.addCarHard
 
 Inputs per fix: position *P*, smoothed speed *v* (m/s), heading *h*, plus the route polyline if one is set.
 
-- **Heading**: `Location.bearing` when `hasBearing()` and *v* > 2 m/s. Otherwise the bearing between the last two fixes more than 5 m apart. Below 2 m/s the last good heading is kept, and no **new** alerts start until the speed is over 2 m/s again.
+- **Heading**: the **track** is the bearing between the last two fixes more than 5 m apart. `Location.bearing` is used when `hasBearing()`, *v* > 2 m/s **and it's within 60° of the track**; otherwise the track is used. Some sources report a stale or fixed bearing: the emulator reports 0° (north) on every fix, which made every camera on a southbound road fail the direction check (found on the bench, A61 Sheffield → Derby, 2026-10-12). Below 2 m/s the last good heading is kept, and no **new** alerts start until the speed is over 2 m/s again.
 
 For each candidate *q* in the cached cells, with the set's and category's alerts on and not `hiddenByReport`:
 
 1. **Distance**: *d* = haversine(*P*, *q*). Skip if *d* > `maxLookahead`, which is the trigger distance + 200 m, capped at 3 km.
 2. **Ahead of you**: β = bearing(*P*→*q*). Keep if |angleDiff(β, *h*)| ≤ **30°**. Within 150 m this widens to 45° to cope with bends.
-3. **Direction check**:
+3. **Direction check** (**hard rule**, §1.3: never dropped or loosened; a camera with a bearing in its data is never treated as "any direction"; tests cover both facing and opposite):
    - ANY or no bearing: passes
    - ONE_WAY: passes if |angleDiff(*q*.bearing, *h*)| ≤ **45°**
    - BOTH: passes if that's ≤ 45° **or** |angleDiff(*q*.bearing + 180, *h*)| ≤ 45°
@@ -952,12 +998,15 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
      - While in the zone, the overspeed check runs on each fix.
      - A ZONE_END POI ends it with a "Leaving zone" alert.
    - **PGW (all SPECS points are type 4, with no start or end)**: zones are worked out from **chains of points**.
-     - When you pass a type-4 POI that passes the checks while you aren't in a zone, zone mode starts ("Entering average speed zone, {speed} limit"), using that POI's limit.
+     - **A zone is only real if it has a camera ahead.** When you pass a type-4 POI that passes the checks while you aren't in a zone, zone mode starts ("Entering average speed zone, {speed} limit") only if another type-4 POI **with the same limit** is ahead of you, facing your direction, within the gap (5 km). A lone SPECS point, or the last camera of a zone you joined part-way through, doesn't start a zone: there's nothing ahead to time you against.
      - Each later type-4 POI you pass (one that passes the direction check) keeps the zone going and updates the limit if it changes.
-     - The zone **ends** when no type-4 POI that passes the direction check is ahead within **5 km**, or none has been passed for **5 km** (SPECS points are usually ≤ 2–3 km apart). Then you hear "Leaving average speed zone".
+     - **Passing the last camera ends the zone.** When you pass a zone camera and no same-limit type-4 POI is ahead within the gap, you hear "Leaving average speed zone" there, not 5 km later.
+     - The zone also **ends** when no type-4 POI that passes the direction check is ahead within **5 km**, or none has been passed for **5 km** (SPECS points are usually ≤ 2–3 km apart). Then you hear "Leaving average speed zone". Only same-limit points count as "ahead", so a nearby zone with another limit (common in cities, where SPECS 20 and SPECS 30 zones touch) can't keep a finished zone open.
+     - **A jump ends the zone.** If two fixes in a row are more than 1 km apart (GPS lost in a tunnel, a bench `geo fix` jump), the zone ends with no alert: we can't know which road you're on now. Zone mode starts again at the next camera that passes the checks.
      - The 5 km gap is a setting.
      - Optional pre-processing at import: `ZoneChainer` groups type-4 points by nearest neighbour (≤ 5 km, bearing within ±30°) into `zoneId` chains and marks the ends of each chain. That improves the "entering" alert at the first camera, but the engine also works without it.
    - The zone also ends after 30 km or 30 min without an end POI.
+   - **What a zone alert shows.** Zone alerts (enter, over the limit, leave) belong to the zone camera you last passed: its id, its set's icon (for PGW that's the set for the limit, e.g. "SPECS 50", so the icon itself shows the limit) and its limit. The over-the-limit text names the limit: "Average speed zone, 50 mph limit, you are over the limit" (spoken "…50 miles per hour limit…"). The banner's subtitle also gives the limit. Before this, zone alerts had no POI, so they showed the generic average-speed icon and no limit.
 9. **Overspeed**: if the POI or zone has a limit and *v* > limit × (1 + `overspeedPct`). It's set with a **slider from −5% to +20% in 0.1% steps**, defaulting to **−0.1%** (so the warning triggers just below the limit, at 99.9% of it), the alert gets an "you are over the limit" suffix. In a zone, a repeat overspeed chime can play at most every 15 s.
 
 ### 11.1 Alert stages
@@ -993,19 +1042,28 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
 
 | State | Visual | Speech | Cluster |
 |---|---|---|---|
-| Our car screen in foreground | `AppManager.showAlert(Alert)` | NavTts | Trip update (if guiding) |
+| Our car screen in foreground | Alert banner on the map (§12.1) | NavTts | Trip update (if guiding) |
 | Car connected, another app full screen (e.g. media) | Nav heads-up notification | NavTts | Trip update (if guiding) |
 | Phone only (no car) | Phone heads-up notification | NavTts | — |
 
 Which state applies comes from the `Screen` lifecycle (STARTED = foreground) plus `CarConnection.type`.
 
-### 12.1 Car `Alert` (car-app API ≥ 5)
-- `Alert.Builder(alertId = poi.id.hashCode(), title = CarText(displayText), durationMillis = 8000)`
-- `.setIcon(carIcon)`
-- `.setSubtitle("0.4 mi · 30 mph")`
-- `.addAction(Dismiss)` and `.addAction(Mute this set 30 min)`. For camera POIs, **Mute** is swapped for **Report** (§8.5), and mute stays on the action strip (More).
-- `.setCallback`, which handles cancel and dismiss
-- The SECOND and PASSING alerts for the same POI replace the earlier one through the same `alertId`, using `AppManager.dismissAlert(id)` then show.
+### 12.1 Alert banner on the map
+The alert is drawn by us on the map surface, in the same `Presentation` as the speed panel (§8.4), not with Android Auto's `AppManager.showAlert`. The host places its alert card at the top beside the rail and slides it in from the side; the user wants it to **sit at the bottom**, steady.
+- **Where:** bottom centre of the visible area, clear of the speed panel (bottom right). It appears and goes in place (a short fade, no slide).
+- **What:** the set's icon, the alert text, a subtitle such as "140 yd · 20 mph", and a progress bar that runs for the alert's time (8 s, or 5 s when passing).
+- **Updates:** the SECOND and PASSING alerts for the same POI update the banner in place.
+- **Dismiss:** tap the banner (`SurfaceCallback.onClick`). There are no buttons on it: the map surface can't host them. **Mute** is in More on the action strip ("Mute alerts for 30 min").
+- **Size and look** (`AlertBannerView`):
+  - height **96 dp**; width up to **640 dp**, leaving **170 dp** clear on each side for the speed panel (two 64 dp boxes and their gaps), but never narrower than half the visible width
+  - placed by `MapSurface.applyPadding` from the **visible** area: centred across it, 16 px above its bottom edge, so it moves with the rail, the turn card and the split-screen media panel
+  - dark card (`#202124` at 92%), 16 dp corners; icon at the left (the set's icon, 128 px bitmap); title 26 dp white, ellipsised; subtitle 20 dp grey; progress bar 4 dp along the bottom (`#8AB4F8` on a dark track), redrawn every 100 ms while shown
+  - fade in and out over 150 ms; never slides
+- **Timing:** shown for 8 s, or 5 s for the passing alert; each new stage restarts the time. The banner hides itself when the time runs out, or at once when tapped.
+- **Identity:** the banner remembers the POI id it's showing. A new alert for the same POI (2nd stage, passing) updates the text in place with no fade; a different POI fades the new one in.
+- **Threading:** `AlertDispatcher` calls `NavSession.showCarAlert` on the alert thread; the banner update is posted to the banner's own (main) thread. The tap hit-test in `MapSurface.onClick` compares the tap with the banner's bounds on the surface.
+- **Tap delivery:** `SurfaceCallback.onClick` needs car API 5+ and a template that passes clicks to the surface. If a host doesn't deliver it, the banner still goes by itself after its time, and Mute is in More. **To confirm on the DHU** (TESTING.md A2b).
+- **Fallback:** if the map surface isn't ready, the host `Alert` is used as before (`Alert.Builder(alertId = poi.id, title, 8000)`, icon, subtitle, Dismiss and Mute 30 min actions; car-app API ≥ 5).
 - Template shortcut: the free-drive `Message` text is also updated to show the alert.
 
 ### 12.2 Navigation heads-up notification (background)
@@ -1045,14 +1103,16 @@ While guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s
 
 ## 13. Phone app screens (Compose, Material 3)
 
-1. **Onboarding / Setup tab** (first run, in order). Step 0 is the **Google Maps API key** field, which saves the key encrypted and re-initialises the Navigation SDK and Places:
+The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's no separate Setup tab: the setup steps are the first sections of Settings, and the app opens on Settings while setup is unfinished (no Maps key, or the navigation terms not accepted), otherwise on POIs.
+
+1. **Setup** (top of the Settings tab, in order). Step 0 is the **Google Maps API key**: **Create a key with my Google account** (§13.1), or a field to paste one. Either way the key is saved encrypted and the Navigation SDK and Places are re-initialised:
    1. Location (fine) → background location ("Allow all the time", with an explanation of why)
    2. Notifications
    3. Contacts (optional, for navigating to contacts' addresses)
    4. Navigation SDK Terms & Conditions dialog (`NavigationApi.showTermsAndConditionsDialog`)
    5. Android Auto setup checklist (developer mode, unknown sources), with deep links
 2. **Reports**: the end-of-drive review (§8.5). Per report: type (guessed from the comment), position nudges, speed limit with its source, direction (heading ± and One way / Both), comment transcript with Play recording, then Send / Send all / Save / Discard / Browser. Send is disabled while connected to the car or moving.
-3. **POI sets** (home): a card per set showing the name, source, count, last updated, and switches for map and alerts. FAB: Import file / Add PGW.
+3. **POI sets** (POIs tab): **only POI files you imported by hand** (source FILE). A card per set showing the name, source, count, last updated, and an on/off switch; swipe left to delete, tap to edit. Button: Import file. Camera sets never appear here.
 4. **Import flow**: pick file → auto-detect format (shown, can be overridden) → the CSV wizard if needed (§5.7) → name the set → choose the default icon and template → progress → result report.
 5. **Set detail**:
    - Default icon, and **Alerts** settings:
@@ -1070,13 +1130,21 @@ While guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s
    - text field with placeholder chips
    - live preview against a sample POI (display and spoken versions)
    - **Test speak**, which uses the real NavTts so the audio route can be checked
-8. **PGW account**: username and password, "Test login", auto-sync switch, last sync status, **Sync now**, and a terms-of-use risk note.
+8. **PGW account** (Cameras tab): username and password, "Test login", auto-sync switch, last sync status, **Sync now**, and a terms-of-use risk note.
+   - **Camera sets**: every camera set lives here, not on the POIs tab: the PGW sets (source PGW and PGW_PENDING) and **My reports** (REPORT).
+   - They're **batched by camera type**, taken from the set name before " · ": e.g. the OV2 download's "PGW fixed cameras · 20 mph", "· 30 mph"… form one **PGW fixed cameras** group. Groups are ordered by source (PGW, then PGW_PENDING, then REPORT) and by name within a source, so the PGW groups are alphabetical and pending mobile sites come last, then My reports. Sets inside a group are sorted by the number after "· " (20, 30 … 70 mph), then by name for those without one.
+   - Each group shows its total cameras and number of sets, a **group switch** (turns every set in the group on or off; on while any set in it is on) and an expand arrow. Expanded, it lists the sets as on the POIs tab: switch, tap to edit, swipe left to delete.
+   - A summary line above the groups gives the total, e.g. "19,826 cameras in 33 sets".
 9. **Settings**:
    - Units: mph/km/h and miles/km.
    - Alerts: voice on/off, chime on/off, overspeed %, and the default 1st and 2nd alert stages for new sets.
-   - GPS: the rate curve (min mph, max mph, max Hz).
-   - Speed panel: show/hide, sign style (UK/EU / US / automatic), the minor and major over-limit thresholds, and the red-state chime.
-   - TTS voice and locale.
+   - Over-limit warning: −5% to +20% slider, default −0.1%.
+   - Speed and location source: car when available / phone only (§10.6).
+   - Speed panel: show/hide; **Satellite map in the car**.
+   - **Speed limits (OpenStreetMap)** (§8.4a): show switch, **Download on Wi-Fi only**, Download/Update with progress and Cancel, the data's date, roads and size, Delete, and the attribution.
+   - Backup: save / restore the settings file (§13.4).
+   - Bench testing (debug builds): simulated-drive speed.
+   - There's no GPS card: the rate is always 10 Hz (§10.2).
 10. **Places**:
    - Home/Work, favourites and recents, each with its source. Delete by swiping, with undo.
    - **Import from Google Maps**: Takeout zip, or Timeline.json, with a months-back setting.
@@ -1086,16 +1154,136 @@ While guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s
    - **Contacts**: permission status; "Clear contact location cache".
 11. **Diagnostics**: requested vs actual GPS rate, current cell and number of cached POIs, the last 20 alert events, and an export-logs button.
 
+### 13.1 Creating the Maps API key with the phone's Google account
+The **Create a key with my Google account** button (Settings tab, Google Maps API key section) makes the user's own key in their own Google Cloud account, with no Cloud Console visit (except to add billing the first time).
+
+**Sign-in**: Google Identity Services `AuthorizationClient.authorize()` with the scope `https://www.googleapis.com/auth/cloud-platform`. Android shows its own account picker and consent screen for the Google accounts on the phone. Only a short-lived **access token** is used; it's kept in memory for this one run and never stored. No password or refresh token is kept.
+
+**Steps** (Google Cloud REST APIs over OkHttp, each shown as a progress line):
+1. **Project**: reuse the user's project labelled `autonavalerts=maps-key` (Resource Manager v3 `projects:search`), or create `autonavalerts-<6 random chars>` ("AutoNavAlerts") with that label, and wait for the operation.
+2. **Billing**: Maps Platform needs a billing account on the project. If the project already has billing, carry on. Otherwise list the user's **open** billing accounts (Cloud Billing API): one → link it; several → the user picks one; **none → stop** with "Add a billing account in Google Cloud, then press Try again" and a button that opens `console.cloud.google.com/billing/create`. **Billing accounts can't be created through the API**, because they need a payment method.
+3. **Enable APIs** (Service Usage `services:batchEnable`, then wait): the **Navigation SDK**, **Maps SDK for Android** (`maps-android-backend.googleapis.com`) and **Places API (New)** (`places.googleapis.com`). The Navigation SDK is `navigationsdk.googleapis.com` (checked with `gcloud services list --available` on 2026-10-12); if that name ever stops working, the app searches the project's available services for the title "Navigation SDK".
+4. **Key** (API Keys API v2): reuse a key in the project named "AutoNavAlerts · <package> · <first 11 characters of the SHA-1>" (e.g. "AutoNavAlerts · io.autonav.alerts · 6C:48:A1:E5"), skipping deleted keys, or create one, restricted to:
+   - **Android app**: package `io.autonav.alerts` and the SHA-1 of the certificate **this installed APK** is signed with (read from `PackageManager`), so a debug build and a release build each get a key that works for them
+   - **APIs**: only the three services above
+   
+   Then read the key string (`keys/…/keyString`).
+5. Save it like a pasted key (Keystore-encrypted, §1.4), re-initialise the Navigation SDK and Places, and show "✓ Key created in project <id>".
+
+**The calls**, in order (all with `Authorization: Bearer <token>`):
+
+| Step | Method and URL | Notes |
+|---|---|---|
+| Find project | `GET cloudresourcemanager.googleapis.com/v3/projects:search?query=labels.autonavalerts:maps-key` | first ACTIVE match |
+| Create project | `POST …/v3/projects` `{projectId, displayName: "AutoNavAlerts", labels}` | long-running; then `GET …/v3/projects/<id>` |
+| Billing on? | `GET cloudbilling.googleapis.com/v1/projects/<id>/billingInfo` | `billingEnabled` |
+| Billing accounts | `GET …/v1/billingAccounts` | only `open: true` ones count |
+| Link billing | `PUT …/v1/projects/<id>/billingInfo` `{billingAccountName}` | |
+| Navigation SDK name | `GET serviceusage.googleapis.com/v1/projects/<number>/services/navigationsdk.googleapis.com` | if that fails, page through `…/services?pageSize=200` for the title "Navigation SDK" |
+| Enable APIs | `POST …/v1/projects/<number>/services:batchEnable` `{serviceIds: [3]}` | long-running |
+| Find key | `GET apikeys.googleapis.com/v2/projects/<number>/locations/global/keys` | match on the display name |
+| Create key | `POST …/v2/projects/<number>/locations/global/keys` `{displayName, restrictions}` | long-running; the result's `response.name` is the key |
+| Key string | `GET …/v2/<key name>/keyString` | |
+
+**Long-running operations** are polled every 2 s, up to 60 times (about 2 minutes); an operation that finishes with an `error` stops the run with its message. **Error messages** come from Google's JSON error; if its `details` carry a help link (e.g. "enable this API", "accept the terms"), that link becomes the error's **Open** button.
+
+Before starting, a dialog says what will be made in the user's Google Cloud account (one project, three APIs, one restricted key, linked to their billing account) and that Google may charge for Maps use beyond its free allowance. Each step is safe to run again, so **Try again** after an error carries on from where it stopped.
+
+**Sign-in flow:** `Identity.getAuthorizationClient(activity).authorize(request)`. If Google needs the user (account picker, consent), the result has a `PendingIntent`, launched with `StartIntentSenderForResult`; the token is then read with `getAuthorizationResultFromIntent`. If the user already granted the scope, the token comes back straight away with no screens.
+
+**Errors**: the app's sign-in isn't registered (status `DEVELOPER_ERROR` (10), or a message containing `UNREGISTERED_ON_API_CONSOLE`, seen as status 8: no OAuth client for this package and SHA-1). The app says so, opens the guided set-up (§13.2), and **disables the Create button** for the rest of the visit instead of offering **Try again**: before this, every press showed the account picker again and failed the same way (the "it asks for the account multiple times" report). Other errors: the user cancelled sign-in; no billing account; billing is closed; an API needs Terms of Service accepted or access approved (shown with a button that opens that API's page in the Console for the project); network errors. Each one is shown in plain words, and pasting a key by hand is always still possible.
+
+**One-time maintainer set-up** (in the Google Cloud project that owns the app's OAuth client, not the user's):
+- an **OAuth client of type Android** for package `io.autonav.alerts` and the **shared signing key's SHA-1** (§13.3), so every build from every PC works with one client
+- the **OAuth consent screen** with the `cloud-platform` scope. Until Google verifies the app, it stays in **Testing**, and only the Google accounts added as test users (up to 100) can sign in. Google treats this scope as sensitive, so it has to be verified before the app is shared widely (§16).
+- **Cloud Resource Manager**, **Cloud Billing**, **Service Usage** and **API Keys** APIs enabled in that project, because API calls made with the app's OAuth token are counted against it
+
+### 13.2 Guided key set-up in the browser (no registration needed)
+Google only gives an access token to an app that's registered with an OAuth client, and there's no API to create that registration, so §13.1 only works once the maintainer has registered the app. The guided set-up works for **every** user without it: the user does the steps in Google Cloud themselves, in their browser and signed in to their own account, and the app does everything else it can.
+
+Shown under **Create a key with my Google account** as **Set it up yourself in Google Cloud (step by step)**, collapsed, and opened by itself when §13.1 reports that sign-in isn't registered. Each step has an **Open** button that opens the page in the browser. The Console applies each page to the project it last had open, so the steps run in order:
+1. **Create a project**: `console.cloud.google.com/projectcreate` (suggested name "AutoNavAlerts"). The Console switches to it.
+2. **Link billing**: `console.cloud.google.com/billing/linkedaccount` (add a billing account first if there's none).
+3. **Turn on the APIs**: one button each for the **Navigation SDK** (`apis/library/navigationsdk.googleapis.com`), **Maps SDK for Android** (`apis/library/maps-android-backend.googleapis.com`) and **Places API (New)** (`apis/library/places.googleapis.com`).
+4. **Create the key**: `apis/credentials` → Create credentials → API key. Restrict it to **Android apps** with this app's package and SHA-1 (each with a **Copy** button; the SHA-1 is read from the installed APK), and to the three APIs.
+5. **Copy the key** in the Console and press **Paste key from clipboard** in the app. The app checks it looks like a Google API key (`AIza` + 35 characters), saves it encrypted and re-initialises the Navigation SDK and Places (§1.4).
+
+### 13.3 One signing key for every build, and the one-time registration
+**Why**: Google matches the app's sign-in to its package name **and signing SHA-1**. Each PC's own debug key has a different SHA-1, so without a shared key every PC (and the release build) would need its own registration.
+
+**The key**:
+- One PKCS12 key, alias `autonavalerts`, RSA 4096, valid 30 years. SHA-1 **`6C:48:A1:E5:4D:22:D5:0E:D5:C5:6E:E4:86:9E:E5:FF:AC:9D:2C:0F`**.
+- It's kept in the **private** GitHub repo `damo2929/autonavalerts-signing`, cloned to `~/.config/autonavalerts` on each PC (`autonavalerts-signing.jks` + `signing.properties` with the passwords; `storeFile` is relative to that file). **Never in this public repo**: anyone holding it can sign apps that Google treats as AutoNavAlerts.
+- `app/build.gradle.kts` signs **debug and release** builds with it when `~/.config/autonavalerts/signing.properties` (or the file named by `AUTONAV_SIGNING`) exists, and otherwise falls back to the PC's own debug key. `signing.properties` holds `storeFile` (relative to the properties file, so the folder works wherever it's cloned), `storePassword`, `keyAlias` and `keyPassword`; Gradle loads it into a `signingConfigs.create("shared")`. The passwords are never in `local.properties` (which now holds only `sdk.dir`).
+- **A new PC:** `git clone git@github.com:damo2929/autonavalerts-signing.git ~/.config/autonavalerts`, then build as normal. **Check** a build is signed with it: `apksigner verify --print-certs app/build/outputs/apk/debug/app-debug.apk` must show SHA-1 `6c48a1e5…9d2c0f`. A different SHA-1 means the folder wasn't found and the PC's own debug key was used, so Google sign-in (§13.1) and the restricted Maps keys won't accept that build.
+- Changing an installed app's signing key needs an uninstall first (Android refuses the update), which clears its data: the Maps key, the navigation-terms record, the PGW login, the camera database and reports. On the bench that means re-entering the Maps key and PGW login after the switch.
+- **Maps keys and the signing key:** a key restricted to Android apps lists package + SHA-1 pairs. A key made by §13.1 lists the SHA-1 of the build that made it. The maintainer's own key (project `damien-maps-b17139`, see CHECKPOINT.md) lists both the shared SHA-1 and the old laptop debug SHA-1, so it worked across the switch. Remove the old one once no installed build uses it.
+
+**One-time registration by the maintainer** (Google Cloud, done once for the app, never by users):
+1. A Cloud project for the app: **`autonavalerts-app-6c5c7b`** ("AutoNavAlerts app", created 2026-10-12 with `gcloud`), with Cloud Resource Manager, Cloud Billing, Service Usage and API Keys enabled. It has no billing and needs none.
+2. **Console only** (no API for personal accounts): the OAuth consent screen (External, Testing, the `cloud-platform` scope, test users), then an **Android OAuth client** for `io.autonav.alerts` + the SHA-1 above.
+3. Beyond 100 users: Google's verification of the `cloud-platform` scope (needs a privacy policy page; can take weeks).
+
+After that, users never set anything up: they press **Create a key with my Google account** (§13.1). The only thing they may still meet is adding a billing account, if they've never had one.
+
 ---
+
+### 13.4 Settings backup file
+**Goal**: one tap saves everything you set up by hand into a single JSON file you keep yourself, so a new phone or a reinstall (which wipes the app's data, §13.3) doesn't mean finding your Maps key and PGW login again.
+
+**Where**: Settings tab → **Backup** card → **Save settings backup…** (and **Restore from backup…**, below). Android's file picker (`ActivityResultContracts.CreateDocument("application/json")`) opens with the name `autonavalerts-settings-YYYY-MM-DD.json`, so the user chooses where it goes (Downloads, Drive, a USB stick). The app never uploads it anywhere and keeps no copy. A toast says "Settings backup saved" or why it failed.
+
+**Plain text, with a warning**: the file holds the **Maps API key and the PocketGPSWorld username and password in plain text** (the user asked for a readable JSON file). The card says so before the button: "The file includes your Maps API key and PocketGPSWorld password in plain text. Keep it somewhere private." Inside the app the secrets stay encrypted (`SecretBox`); they're only decrypted to write this file.
+
+**What's in it** (`SettingsBackup.toJson`, format 1):
+```json
+{
+  "app": "AutoNavAlerts", "format": 1,
+  "createdAt": "2026-10-12T13:40:00Z", "appVersion": "0.1.0", "package": "io.autonav.alerts",
+  "settings": {
+    "units": "IMPERIAL", "voiceOn": true, "chimeOn": true, "overspeedPct": -0.001,
+    "speedSource": "CAR_WHEN_AVAILABLE", "speedPanelOn": true, "satelliteMap": false,
+    "osmLimitsOn": true, "osmWifiOnly": true,
+    "pgwAutoSync": true, "pgwWifiOnly": false, "pgwDownload": "TOMTOM_OV2"
+  },
+  "secrets": { "mapsApiKey": "AIza…", "pgwUsername": "…", "pgwPassword": "…" },
+  "navTermsAcceptedAt": "2026-10-12T09:12:44Z",
+  "poiSets": [
+    { "name": "PGW fixed cameras · 30 mph", "source": "PGW", "enabled": true, "showOnMap": true,
+      "alertsEnabled": true, "soundEnabled": true, "icon": "user:pgw_gatso_30", "minZoom": 11.0,
+      "templates": { "first": "{category} ahead, {speed} limit", "second": "{category}, {distance}", "passing": "{category} now" },
+      "firstAlert": { "enabled": true, "mode": "TIME", "metres": 457, "seconds": 30 },
+      "secondAlert": { "enabled": true, "mode": "FIXED", "metres": 274, "seconds": null } }
+  ]
+}
+```
+- `secrets` leaves out anything not set (no empty strings). `navTermsAcceptedAt` is null if the terms were never accepted in the app.
+- `poiSets` holds each **active** set's own settings (show, alerts, sound, icon, templates, alert stages, zoom), keyed by **name**, because set ids change when PGW data is downloaded again. It doesn't hold the POIs.
+- **Not included**: the camera data and imported POI files (PGW data is never copied out of the app; imports come from your own files), camera reports and their recordings, recents/home/work/favourites, the PGW session cookies and sync state, "mute until", and the debug simulator speed.
+
+**Restore**: Backup card → **Restore from backup…**.
+1. Android's file picker opens (`OpenDocument`, types `application/json`, `text/plain` and `application/octet-stream`, because some file stores label `.json` files as one of those).
+2. The file is read and checked: it must be JSON with `"app": "AutoNavAlerts"` and a `format` this version knows (1). Otherwise nothing changes and the card says why ("This isn't an AutoNavAlerts settings backup", "This backup was made by a newer version of the app").
+3. A **confirm dialog** shows what the file holds before anything is changed: when it was made and by which version, "Maps API key: included / not included", "PocketGPSWorld login: included (user name) / not included", "Camera set settings: N sets, M of them match sets on this phone". Buttons: **Restore** and **Cancel**.
+4. On **Restore**:
+   - **Settings**: each value in `settings` replaces the current one. A missing or unreadable value (unknown enum name, out-of-range number) keeps the current value, so a hand-edited or older file still restores what it can. Over-limit is clamped to −5%…+20% as usual.
+   - **Maps key**: saved if the file has one, and the Navigation SDK is told the key changed (`NavigatorHolder.keyChanged`, §1.4). A key in the file never removes the current one if the file has none.
+   - **PGW login**: saved if the file has one (this clears the PGW session cookies, so the next download logs in afresh).
+   - **Camera set settings**: matched to this phone's active sets **by name**. A match takes the file's show/alerts/sound switches, templates, alert stages and zoom, and its icon **if that icon exists on this phone** (a PGW icon comes back with the camera download; until then the set keeps its current icon). Sets in the file with no match are skipped.
+   - **Navigation terms are not restored**: Google's terms have to be accepted in the app on each install (§13), so `navTermsAcceptedAt` is information only.
+   - Mute-until, the debug simulator speed, PGW sync state and all data (cameras, imports, reports, places) are untouched.
+5. A summary: "Restored settings, Maps key, PGW login and 31 camera sets. 2 sets weren't found: download the cameras first, then restore again." Restoring twice is safe; it just applies the same values again.
+
+**Order on a new phone**: install → **Restore from backup** (key and PGW login come back) → accept the navigation terms → Cameras → download → **Restore from backup** again so the PGW sets get their alert settings.
 
 ## 14. Power budget
 
 | Consumer | Strategy | Expected impact |
 |---|---|---|
-| GPS (alerts) | Speed-based 1–10 Hz (§10); lowered to what the chip actually delivers | Main extra cost compared with Google Maps, mostly at motorway speeds |
+| GPS (alerts) | Always 10 Hz (§10.2), or what the chip actually delivers | Main extra cost compared with Google Maps, mostly at motorway speeds |
 | GPS (map) | Navigation SDK's own feed; no duplicate request from us | Same as Google Maps |
 | CPU (alerts) | Event-driven; in-memory 5×5 cell cache; no Room per fix | Negligible |
-| Map drawing | Navigation SDK; POI markers redrawn on **every GPS fix** (1–10 Hz, §8.1) as a diff, ≤ 200, existing markers changed rather than re-created, unchanged markers left alone | Small to moderate at 10 Hz; measured on its own in the power test |
+| Map drawing | Navigation SDK; POI markers redrawn on **every GPS fix** (up to 10 Hz, §8.1) as a diff, ≤ 200, existing markers changed rather than re-created, unchanged markers left alone | Small to moderate at 10 Hz; measured on its own in the power test |
 | Network | Places only on search; PGW: a daily conditional GET of the feed (usually a 304) plus about 220 KB per release (about weekly), on any network | Negligible |
 | TTS | Engine stays warm while connected; focus only while speaking | Negligible |
 | Startup | R8 code shrinking, Baseline Profile, Room DB opened in the background | Faster cold start |
@@ -1166,7 +1354,7 @@ While guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s
 
 ### 15.3 DHU end-to-end checklist
 
-> The full procedure is in [TESTING.md](TESTING.md). **Bench simulation:** while the debug **Simulate** drive is running, `AdaptiveLocationSource` ignores the phone's real GPS and takes positions from the Navigation SDK's `RoadSnappedLocationProvider` (the simulated car). So alerts, the GPS rate and the speed panel can all be tested at a desk. Free-drive tests need a moving phone GPS: use the emulator's route playback or a mock-location app.
+> The full procedure is in [TESTING.md](TESTING.md). **Bench simulation:** while the debug **Simulate** drive is running, `AdaptiveLocationSource` ignores the phone's real GPS and takes positions from the Navigation SDK's `RoadSnappedLocationProvider` (the simulated car). So alerts and the speed panel can be tested at a desk. Free-drive tests need a moving phone GPS: `tools/drive.py` (a road route from OSRM played through the emulator's GPS, with speed), the emulator's route playback, or a mock-location app.
 Setup: phone with Android Auto developer mode → "Start head unit server"; `adb forward tcp:5277 tcp:5277`; `desktop-head-unit` (with `--config` set to a split-screen 1920×720 profile and a portrait profile).
 
 1. Launch the app on the DHU: the map appears and the T&Cs were already accepted on the phone.
@@ -1220,6 +1408,9 @@ Setup: phone with Android Auto developer mode → "Start head unit server"; `adb
 | 18 | Speed limit on Auto | SDK speedometer may not show on `NavigationViewForAuto` or in free-drive; the limit number may not be exposed | Check in phase 2; fall back to our own `SpeedPanel` (§8.4) |
 | 19 | Submitting reports to PGW | Fields now known (§8.5); still open: the camera-ID lookup endpoint, the success text, and whether automated sending is allowed; it may change, have a captcha, or terms may not allow automated sending | Fields go in `PgwConfig` in phase 1; review-first by default; "Open in browser" fallback (§8.5) |
 | 20 | Electroverse data access | No public API; the web map's private GraphQL is behind bot protection | Don't use it. Ask Octopus for partner or API access; use Places + Open Charge Map, plus a hand-off to the Electroverse app, in the meantime (§18) |
+| 20a | Creating the Maps key from the app (§13.1) | Needs an OAuth client set up once by the maintainer; the `cloud-platform` scope is sensitive, so the app is limited to 100 test users until Google verifies it; billing accounts can't be created by API; the API may need its terms accepted in the Console | Pasting a key by hand always works; billing and terms errors open the right Console page; the service name is confirmed and also looked up at run time if it changes |
+| 20b | Android Auto on the emulator | Recent emulator images ship only a stub of Android Auto (`1.2.x-stub`, no head-unit server), and Play says the real one "isn't compatible". Without it the DHU has nothing to connect to. | Copy Android Auto from a real phone (`adb pull` its split APKs, `install-multiple` on the emulator; the emulator translates ARM code). Works with 17.9 on the API 36 image (2026-10-12). Never from third-party APK sites. TESTING.md §3. |
+| 20c | Driving the DHU from scripts | The DHU console has no tap command, and GNOME blocks desktop screenshots | `bench.sh` uses a touch + rotary profile so `dpad` commands work, and the DHU's own `screenshot` command; restarting the DHU reopens the last nav app |
 | 21 | Live incident reporting on Android Auto (crashes, congestion, police, roadworks…) | Google Maps has it, but the Navigation SDK doesn't offer it to apps on Android Auto: "real-time disruptions are not available on Android Auto". As of SDK 8.0.0 the APIs exist on `NavigationView` only, and Google fixed the panel "appearing in Android Auto projections" in Apr 2025. Open request: googlemaps/flutter-navigation-sdk#726. | **Watched.** `IncidentReporting.kt` looks the APIs up by reflection on `NavigationViewForAuto`. If a future SDK adds them, Google's report button appears on the car map, plus "Report to Google Maps" in More, with no code change. A **quarterly GitHub Actions workflow** (`.github/workflows/nav-sdk-feature-watch.yml`, 1 Jan/Apr/Jul/Oct) runs `tools/check-nav-sdk-features.sh --latest` and opens an issue when Android Auto gains the APIs. It can also be run by hand from the Actions tab, or locally. |
 
 ---
@@ -1376,18 +1567,37 @@ One `ChargerProvider` interface lets sources be added or turned off. Results are
   - Per-set icon (built-in or from a file), three templates with a live preview and Test speak, and 1st/2nd stage settings with validation.
   - PGW sets get type-based icons and SPECS zone points.
 - **Alerts**:
-  - Adaptive 1–10 Hz GPS, the 5×5 cell cache, and the full `AlertEngine`: 3 stages including the compulsory 100 yd passing alert, direction and parallel-road checks, missed-passing safety net, average-speed chains, overspeed.
-  - Car `Alert` with Dismiss/Mute, a navigation heads-up notification when the app is in the background, and TTS on the guidance channel with ducking and queueing behind SDK voice.
-- **Car speed and GPS** (§10.6–10.7): the speed panel uses the car's display speed, and the alert engine and GPS rate use its raw speed. Car GPS is the primary position feed for alerts, with the phone as a 1 Hz backup. Both fall back to the phone and can be switched off in Settings.
+  - 10 Hz GPS (adaptive 1–10 Hz until 2026-10-12), the 5×5 cell cache, and the full `AlertEngine`: 3 stages including the compulsory 100 yd passing alert, direction and parallel-road checks, missed-passing safety net, average-speed chains, overspeed.
+  - The alert banner at the bottom of the car map (§12.1; Android Auto's `Alert` card with Dismiss/Mute only before the map exists), a navigation heads-up notification when the app is in the background, and TTS on the guidance channel with ducking and queueing behind SDK voice.
+- **Car speed and GPS** (§10.6–10.7): the speed panel uses the car's display speed, and the alert engine uses its raw speed. Car GPS is the primary position feed for alerts, with the phone (still at 10 Hz) as the backup. Both fall back to the phone and can be switched off in Settings.
 - **Map extras**: markers redrawn as a diff on every fix (ACTIVE/AHEAD/OTHER), and the speed panel, which shows Google's limit worked out from `SpeedingListener` while speeding, or a camera limit.
 - **PGW**:
   - Encrypted login, the daily RSS conditional GET, an automatic download on a new release, a held swap during guidance, notifications, Sync now / Force re-download.
   - Report menu (type → speed → Undo), "My reports" set (mobiles expire after 24 h), "Not there" hide, and phone review with Send / Discard / Open in browser.
-- **Phone**: Setup (Maps key, permissions, Navigation terms, Android Auto help), POI sets, Cameras (PGW), Reports, Settings (units, voice, chime, overspeed %, speed panel, GPS curve).
-- **Tests**: 61 JVM unit tests in `:core`, plus the optional real-file check against a local PGW download.
+- **Phone**: four tabs (§13): POIs (manually imported files), Cameras (PGW and report sets, grouped by type), Reports, and Settings, which starts with setup (Maps key, created automatically or by the guided steps; permissions including car speed; Navigation terms; Android Auto help) followed by units, voice, chime, overspeed %, speed panel and GPS curve.
+
+**Updated 2026-10-12** (session 2, tested on the emulator + DHU with Android Auto copied from a phone):
+- No built-in or fallback Maps key (§1.4); every Navigation SDK call waits for the user's key, on the phone and the car.
+- Car map fixes: `FrameLayout` host for the map and overlays, map created only after the key is applied, and the follow watchdog (§8).
+- Alerts on the car moved to our own banner at the bottom of the map (§12.1). Seen working on the DHU; tap-to-dismiss not yet confirmed.
+- Heading: the GPS bearing is only used when it agrees with the track within 60° (§11). Found on the bench: the emulator's bearing is always 0, so nothing alerted on roads not heading north.
+- Real average-speed zones: start only with a same-limit camera ahead, end at the last camera, ignore a different-limit zone, end on a 1 km jump; zone alerts carry the zone camera's set icon and limit (§11 step 8). Unit-tested; bench run still to do.
+- A fresh report's own marker doesn't alert until you're 300 m away (§8.5).
+- Satellite / Map toggle at the top right of the car map, with zoom in, zoom out and recenter in a column under it as our own views; also More → Satellite map and a phone setting (§8). Placement seen on the DHU; taps not yet confirmed.
+- `tools/drive.py --limits`: follows OSM speed limits, under / at / over in turn (TESTING.md §3).
+- Contacts' addresses in car Search, with a contacts-only search, geocode cache (DB v4) and an optional permission button (§8.3). Built; not yet run on the emulator.
+- Settings backup and restore: a plain-text JSON file with the settings, Maps key, PGW login and each set's settings; restore checks it, previews it and asks first (§13.4). Built; not yet run on the emulator.
+- Bench: `tools/bench.sh car` keeps the DHU running with a touch + rotary profile, `bench.sh dhu screenshot|dpad …` drives it, and `tools/drive.py` plays a road route through the emulator's GPS (TESTING.md §3).
+- **Tests**: 83 JVM unit tests in `:core` (all pass), plus the optional real-file check against a local PGW download.
+
+**Updated 2026-10-12** (session 3):
+- OpenStreetMap speed limits for the whole UK from Geofabrik (§8.4a): the roads layers of England, Scotland, Wales and (kept to its border) the Ireland file, range-requested; Wi-Fi only by default with a switch for mobile data; DB v6 drops the earlier Overpass tables. Bench: the whole UK in 1–3 minutes, 29 MB; the grey-dot limit seen on the car panel.
+- RAM and CPU pass: disk-backed speed-limit download and compact tile index (§8.4a); alert fixes conflated and the cache-reload race fixed (§4.3); cheaper marker redraws with cached marker images (§8.1); lazy zip reading and streamed imports (§5.2).
+- Map buttons anchored to the right edge from the start (§8); the phone's GPS rate card removed.
+- **Tests**: 98 JVM unit tests in `:core` (all pass).
 
 **Not yet built** (later phases):
-- Home Assistant people finder (§17), contacts' addresses (§8.3), Google Maps history imports and the share receiver (§8.2), EV chargers (§18).
+- Home Assistant people finder (§17), Google Maps history imports and the share receiver (§8.2), EV chargers (§18).
 - Phone "Send to car" share target, a foreground service for background free-drive, and per-category overrides in the UI.
 - Saved CSV profiles, the RadarDroid/Nokia importers, `ZoneChainer` pre-processing, PGW camera-ID lookup and the region picker.
 - Instrumented tests, a Baseline Profile and power measurement.

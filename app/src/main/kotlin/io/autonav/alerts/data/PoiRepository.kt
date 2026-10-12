@@ -70,6 +70,7 @@ class PoiRepository @Inject constructor(
     suspend fun categories(): Map<Long, PoiCategoryEntity> = db.categories().all().associateBy { it.id }
 
     suspend fun updateSet(set: PoiSetEntity) { db.poiSets().update(set); notifyChanged() }
+    suspend fun updateSets(sets: List<PoiSetEntity>) { db.poiSets().updateAll(sets); notifyChanged() }
     suspend fun updateCategory(c: PoiCategoryEntity) { db.categories().update(c); notifyChanged() }
     suspend fun deleteSet(id: Long) { db.poiSets().delete(id); notifyChanged() }
 
@@ -88,17 +89,21 @@ class PoiRepository @Inject constructor(
         replaceSetId: Long? = null,
     ): ImportOutcome = withContext(Dispatchers.IO) {
         val name = displayName(uri)
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: return@withContext fail("Couldn't open the file")
         val entry: Pair<String, ByteArray> = if (name.endsWith(".zip", true)) {
-            val entries = ZipEntries.read(bytes)
-            val poiFiles = poiFilesIn(entries)
-            if (poiFiles.isEmpty()) return@withContext fail("No POI file found in the zip")
-            // Every file in the zip becomes its own set (never merged), with its own icon if supplied.
-            if (poiFiles.size > 1) return@withContext importZipFiles(name, entries, poiFiles, csvProfile)
-            poiFiles.entries.first().toPair()
+            // Copied to a temp file (streamed), then each file is read from it only when needed.
+            val tmp = copyToTemp(uri) ?: return@withContext fail("Couldn't open the file")
+            try {
+                ZipEntries.read(tmp).use { entries ->
+                    val poiFiles = poiFilesIn(entries)
+                    if (poiFiles.isEmpty()) return@withContext fail("No POI file found in the zip")
+                    // Every file in the zip becomes its own set (never merged), with its own icon if supplied.
+                    if (poiFiles.size > 1) return@withContext importZipFiles(name, entries, poiFiles, csvProfile)
+                    poiFiles.keys.first().let { it to poiFiles.getValue(it) }
+                }
+            } finally { tmp.delete() }
         } else {
-            name to bytes
+            name to (context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: return@withContext fail("Couldn't open the file"))
         }
         val (entryName, data) = entry
         val fmt = format ?: FormatSniffer.detect(entryName, data.copyOf(minOf(512, data.size)))
@@ -120,18 +125,29 @@ class PoiRepository @Inject constructor(
 
     /** First POI file in a picked zip (read via the central directory; see ZipEntries). */
     /** POI files in a zip (by extension), leaving out licence/readme files. */
-    private fun poiFilesIn(entries: Map<String, ByteArray>): LinkedHashMap<String, ByteArray> =
-        LinkedHashMap(entries.filter { (name, _) ->
-            val lower = name.lowercase()
-            listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } &&
-                listOf("licence", "license", "release", "readme").none { lower.contains(it) }
+    private fun poiFilesIn(entries: Map<String, ByteArray>): Map<String, ByteArray> =
+        io.autonav.alerts.core.poi.importers.LazyBytes(LinkedHashMap<String, () -> ByteArray>().apply {
+            for (name in poiFileNames(entries.keys)) put(name) { entries.getValue(name) }
         })
+
+    private fun poiFileNames(names: Collection<String>): List<String> = names.filter { name ->
+        val lower = name.lowercase()
+        listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } &&
+            listOf("licence", "license", "release", "readme").none { lower.contains(it) }
+    }
+
+    private fun copyToTemp(uri: Uri): java.io.File? {
+        val tmp = java.io.File.createTempFile("import", ".zip", context.cacheDir)
+        val ok = context.contentResolver.openInputStream(uri)?.use { i -> tmp.outputStream().use { i.copyTo(it) }; true } ?: false
+        return if (ok) tmp else { tmp.delete(); null }
+    }
 
     /** Names of the POI files in a picked zip (for the import dialog). */
     suspend fun zipPoiFileNames(uri: Uri): List<String> = withContext(Dispatchers.IO) {
         if (!displayName(uri).endsWith(".zip", true)) return@withContext emptyList()
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@withContext emptyList()
-        runCatching { poiFilesIn(ZipEntries.read(bytes)).keys.toList() }.getOrDefault(emptyList())
+        // Only the zip's directory is read; no file in it is inflated.
+        val tmp = copyToTemp(uri) ?: return@withContext emptyList()
+        try { runCatching { poiFileNames(ZipEntries.names(tmp)) }.getOrDefault(emptyList()) } finally { tmp.delete() }
     }
 
     /** "Croydon_Tramlink_Stop_PGPSW.ov2" → "Croydon Tramlink Stop". */
@@ -188,8 +204,11 @@ class PoiRepository @Inject constructor(
      * sets no longer in the download are removed (DESIGN.md §5.2).
      */
     suspend fun importPgwZip(zip: File, version: String): ImportOutcome = withContext(Dispatchers.IO) {
-        val entries = ZipEntries.read(zip)
-        android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.map { "${it.key} (${it.value.size})" }}")
+        ZipEntries.read(zip).use { entries -> importPgwEntries(zip, entries, version) }
+    }
+
+    private suspend fun importPgwEntries(zip: File, entries: Map<String, ByteArray>, version: String): ImportOutcome {
+        android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.keys}")
         // TomTom OV2 (PGW's own naming carries direction, type, id and speed) or iGO TXT, one set per family.
         val ov2 = io.autonav.alerts.core.poi.importers.PgwOv2.files(entries)
         val files: Map<String, () -> ImportResult> = if (ov2.isNotEmpty()) {
@@ -201,7 +220,7 @@ class PoiRepository @Inject constructor(
         val fileFormat = if (ov2.isNotEmpty()) PoiFormat.OV2.name else PoiFormat.IGO_TXT.name
         entries.entries.firstOrNull { it.key.equals(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_LICENCE_FILE, true) }
             ?.let { icons.savePgwIconLicence(it.value) }
-        if (files.isEmpty()) return@withContext ImportOutcome(null, 0, 0, emptyList(), true,
+        if (files.isEmpty()) return ImportOutcome(null, 0, 0, emptyList(), true,
             "No camera files in the download. The zip contained: " +
                 entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" })
         val keptFormats = HashSet<String>()
@@ -227,7 +246,7 @@ class PoiRepository @Inject constructor(
         // Remove PGW sets from an older package layout (e.g. the single combined set).
         db.poiSets().pgwSets().filter { it.format !in keptFormats }.forEach { db.poiSets().delete(it.id) }
         notifyChanged()
-        if (failures.size == files.size) ImportOutcome(null, 0, 0, failures, true, failures.joinToString("; "))
+        return if (failures.size == files.size) ImportOutcome(null, 0, 0, failures, true, failures.joinToString("; "))
         else ImportOutcome(firstId, total, 0, failures, false,
             "Imported $total cameras in ${files.size - failures.size} sets" + if (failures.isNotEmpty()) " (${failures.size} failed)" else "")
     }

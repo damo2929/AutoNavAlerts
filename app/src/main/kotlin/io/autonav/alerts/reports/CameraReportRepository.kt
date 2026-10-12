@@ -79,6 +79,9 @@ class CameraReportRepository @Inject constructor(
         )
     }
 
+    /** The marker POI a report put on the map, if it still has one. */
+    suspend fun localPoiOf(id: Long): Long? = db.reports().get(id)?.localPoiId
+
     /** Stores the recorded comment and transcribes it in the background. */
     suspend fun attachAudio(id: Long, pcm: File) {
         val r = db.reports().get(id) ?: return

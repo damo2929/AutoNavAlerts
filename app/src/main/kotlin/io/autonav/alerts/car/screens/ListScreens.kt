@@ -28,9 +28,15 @@ import kotlinx.coroutines.launch
 /** More: Recents, POI layers, mute, diagnostics (DESIGN.md §8). */
 class MoreScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var mutedUntil = 0L
+    private var satellite = false
 
     init {
-        lifecycleScope.launch { mutedUntil = session.deps.settings().current().mutedUntilMs; invalidate() }
+        lifecycleScope.launch {
+            val s = session.deps.settings().current()
+            mutedUntil = s.mutedUntilMs
+            satellite = s.satelliteMap
+            invalidate()
+        }
     }
 
     override fun onGetTemplate(): Template {
@@ -51,6 +57,12 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                         invalidate()
                     }
                 }.build())
+            .addItem(Row.Builder().setTitle("Satellite map")
+                .setImage(CarUi.icon(carContext, R.drawable.ic_action_layers))
+                .setToggle(Toggle.Builder { on ->
+                    lifecycleScope.launch { session.deps.settings().update { it.copy(satelliteMap = on) } }
+                }.setChecked(satellite).build())
+                .build())
             .apply {
                 // Only appears if the Navigation SDK ever supports reporting on Android Auto (§16 #21).
                 if (session.surface.incidentReportingSupported) addItem(

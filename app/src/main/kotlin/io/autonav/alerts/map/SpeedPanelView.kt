@@ -13,15 +13,16 @@ import android.view.View
 
 /**
  * Current speed next to the road's limit (DESIGN.md §8.4). Amber/red follow the Navigation SDK's
- * SpeedingListener severity. A limit taken from a camera (not Google) is drawn with a small dot so
- * it isn't mistaken for Google's figure.
+ * SpeedingListener severity. A limit that isn't Google's has a small dot so it isn't mistaken for
+ * Google's figure: blue for a camera or zone, grey for OpenStreetMap (§8.4a).
  */
 class SpeedPanelView(context: Context) : View(context) {
     enum class Severity { NONE, MINOR, MAJOR }
+    enum class Source { GOOGLE, CAMERA, OSM }
 
     private var speed: Int? = null
     private var limit: Int? = null
-    private var limitFromCamera = false
+    private var source = Source.GOOGLE
     private var severity = Severity.NONE
     private var unit = "mph"
 
@@ -32,15 +33,16 @@ class SpeedPanelView(context: Context) : View(context) {
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.rgb(220, 30, 30) }
     private val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val cameraDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(21, 101, 192) }
+    private val osmDot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(117, 117, 117) }
     private val rect = RectF()
 
     /** Updates the panel; only redraws when something shown changes. */
-    fun update(speed: Int?, limit: Int?, limitFromCamera: Boolean, severity: Severity, unit: String) {
-        if (speed == this.speed && limit == this.limit && limitFromCamera == this.limitFromCamera &&
+    fun update(speed: Int?, limit: Int?, source: Source, severity: Severity, unit: String) {
+        if (speed == this.speed && limit == this.limit && source == this.source &&
             severity == this.severity && unit == this.unit
         ) return
         val resize = (limit == null) != (this.limit == null)
-        this.speed = speed; this.limit = limit; this.limitFromCamera = limitFromCamera
+        this.speed = speed; this.limit = limit; this.source = source
         this.severity = severity; this.unit = unit
         if (resize) requestLayout()
         invalidate()
@@ -80,8 +82,10 @@ class SpeedPanelView(context: Context) : View(context) {
         text.color = Color.BLACK
         text.textSize = 24 * density
         canvas.drawText(l.toString(), cx, cy + 8 * density, text)
-        if (limitFromCamera) {
-            canvas.drawCircle(cx + box * 0.32f, cy - box * 0.32f, 5 * density, cameraDot)
+        when (source) {
+            Source.CAMERA -> canvas.drawCircle(cx + box * 0.32f, cy - box * 0.32f, 5 * density, cameraDot)
+            Source.OSM -> canvas.drawCircle(cx + box * 0.32f, cy - box * 0.32f, 5 * density, osmDot)
+            Source.GOOGLE -> Unit
         }
     }
 }

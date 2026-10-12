@@ -19,11 +19,13 @@ object CarUi {
     fun icon(ctx: CarContext, @DrawableRes res: Int): CarIcon =
         CarIcon.Builder(IconCompat.createWithResource(ctx, res)).build()
 
-    fun action(ctx: CarContext, @DrawableRes res: Int, title: String? = null, onClick: () -> Unit): Action =
-        Action.Builder().setIcon(icon(ctx, res)).apply { title?.let { setTitle(it) } }.setOnClickListener(onClick).build()
+    /** [persistent]: the host keeps it on screen instead of fading it out on the map (DESIGN.md §8). */
+    fun action(ctx: CarContext, @DrawableRes res: Int, title: String? = null, persistent: Boolean = false, onClick: () -> Unit): Action =
+        Action.Builder().setIcon(icon(ctx, res)).apply { title?.let { setTitle(it) } }
+            .apply { if (persistent) setFlags(Action.FLAG_IS_PERSISTENT) }.setOnClickListener(onClick).build()
 
-    fun textAction(title: String, onClick: () -> Unit): Action =
-        Action.Builder().setTitle(title).setOnClickListener(onClick).build()
+    fun textAction(title: String, persistent: Boolean = false, onClick: () -> Unit): Action =
+        Action.Builder().setTitle(title).apply { if (persistent) setFlags(Action.FLAG_IS_PERSISTENT) }.setOnClickListener(onClick).build()
 
     /** A UK-style speed limit sign as a car icon (used by the report speed grid). */
     fun speedSign(value: String, sizePx: Int = 128): CarIcon {

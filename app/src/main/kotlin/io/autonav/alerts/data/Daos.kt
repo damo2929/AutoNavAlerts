@@ -40,6 +40,9 @@ interface PoiSetDao {
     @Update
     suspend fun update(set: PoiSetEntity)
 
+    @Update
+    suspend fun updateAll(sets: List<PoiSetEntity>)
+
     @Query("DELETE FROM poi_set WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -149,3 +152,16 @@ interface CameraReportDao {
     @Query("DELETE FROM camera_report WHERE id = :id")
     suspend fun delete(id: Long)
 }
+
+@Dao
+interface ContactGeocodeDao {
+    @Query("SELECT * FROM contact_geocode WHERE `key` = :key")
+    suspend fun get(key: String): ContactGeocodeEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun put(e: ContactGeocodeEntity)
+
+    @Query("DELETE FROM contact_geocode")
+    suspend fun clear()
+}
+

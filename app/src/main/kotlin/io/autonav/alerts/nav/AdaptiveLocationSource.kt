@@ -47,11 +47,11 @@ class AdaptiveLocationSource @Inject constructor(
 ) {
     private val client = LocationServices.getFusedLocationProviderClient(context)
     private var thread: HandlerThread? = null
-    private var controller = AdaptiveRateController()
     private val smoother = SpeedSmoother()
     private var running = false
     private var lastFix: Location? = null
     private var headingFrom: Location? = null
+    private var movedHeading: Double? = null
     private var lastHeading: Double? = null
     private val intervals = ArrayDeque<Long>()
     private var lastArrivalMs = 0L
@@ -80,16 +80,12 @@ class AdaptiveLocationSource @Inject constructor(
             if (carData.carLocationFresh()) return
             if (usingCarLocation) {
                 usingCarLocation = false
-                request(controller.requestedHz) // car went quiet: restore the adaptive phone rate
+                request(GPS_HZ) // car went quiet: the phone takes over
             }
             result.locations.forEach { onLocation(it, fromCar = false) }
         }
     }
 
-    fun setCurve(curve: RateCurve) {
-        controller = AdaptiveRateController(curve)
-        if (running) request(controller.requestedHz)
-    }
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -99,13 +95,14 @@ class AdaptiveLocationSource @Inject constructor(
         carData.onSpeedUpdate = { cs -> if (!simulated) cs.rawMps?.let { onCarSpeed(it.toDouble()) } }
         carData.onLocation = { loc -> if (!simulated) onCarLocation(loc) }
         thread = HandlerThread("adaptive-location").also { it.start() }
-        request(controller.requestedHz)
+        request(GPS_HZ)
     }
 
     /** Bench testing: feed simulated positions (DESIGN.md §15.3). */
     fun setSimulated(on: Boolean) {
         simulated = on
         headingFrom = null
+        movedHeading = null
         lastFix = null
         smoother.reset()
         intervals.clear()
@@ -116,17 +113,12 @@ class AdaptiveLocationSource @Inject constructor(
     }
 
     private fun onCarLocation(loc: Location) {
-        if (!usingCarLocation) {
-            usingCarLocation = true
-            request(controller.requestedHz) // drops the phone to its 1 Hz backup rate
-        }
+        usingCarLocation = true
         onLocation(loc, fromCar = true)
     }
 
     @Synchronized
-    private fun onCarSpeed(mps: Double) {
-        controller.onSpeed(mps / Geo.MPS_PER_MPH, SystemClock.elapsedRealtime()).newHz?.let(::request)
-    }
+    private fun onCarSpeed(mps: Double) = Unit
 
     fun stop() {
         if (!running) return
@@ -143,7 +135,7 @@ class AdaptiveLocationSource @Inject constructor(
     @SuppressLint("MissingPermission")
     private fun request(wantedHz: Int) {
         val looper = thread?.looper ?: return
-        val hz = if (usingCarLocation && carData.carLocationFresh()) 1 else wantedHz
+        val hz = wantedHz
         if (hz == phoneHz) return
         phoneHz = hz
         val interval = RateCurve.intervalMs(hz)
@@ -177,35 +169,43 @@ class AdaptiveLocationSource @Inject constructor(
         // Car speed when the head unit provides it (DESIGN.md §10.6); simulated drives use their own.
         val car = if (simulated) null else carData.freshSpeed(arrival)
         val speed = car?.rawMps?.toDouble() ?: gpsSpeed
+        // Heading from the track we've actually moved along (needs > 5 m of movement)...
+        val from = headingFrom
+        val moved = if (from != null && Geo.distanceM(from.latitude, from.longitude, loc.latitude, loc.longitude) > 5.0) {
+            headingFrom = loc
+            Geo.bearingDeg(from.latitude, from.longitude, loc.latitude, loc.longitude)
+        } else {
+            if (from == null) headingFrom = loc
+            null
+        }
+        if (moved != null) movedHeading = moved
+        // ...and the GPS bearing when it agrees with it. Some sources report a stale or fixed bearing
+        // (the emulator's is always 0, north), which would fail every camera's direction check (§11).
+        val gpsBearing = loc.bearing.toDouble().takeIf { loc.hasBearing() && speed > 2.0 }
+        val track = movedHeading
         val heading = when {
-            loc.hasBearing() && speed > 2.0 -> loc.bearing.toDouble()
-            else -> {
-                val from = headingFrom
-                if (from != null && Geo.distanceM(from.latitude, from.longitude, loc.latitude, loc.longitude) > 5.0) {
-                    headingFrom = loc
-                    Geo.bearingDeg(from.latitude, from.longitude, loc.latitude, loc.longitude)
-                } else {
-                    if (from == null) headingFrom = loc
-                    lastHeading
-                }
-            }
+            gpsBearing != null && (track == null || Geo.absAngleDiffDeg(gpsBearing, track) <= BEARING_TRUST_DEG) -> gpsBearing
+            track != null -> track
+            else -> lastHeading
         }
         lastHeading = heading
         if (prev != null) { intervals.addLast(arrival - prevArrival); while (intervals.size > 20) intervals.removeFirst() }
         lastFix = loc
         _lastLocation.value = loc
 
-        val now = arrival
         val mph = speed / Geo.MPS_PER_MPH
-        controller.onSpeed(mph, now).newHz?.let(::request)
         val avg = intervals.filter { it > 0 }.average().takeIf { !it.isNaN() }
         val actualHz = avg?.let { 1000.0 / it } ?: 0.0
-        // The chip-capability check only applies to the phone's GPS; the car sets its own rate.
-        if (avg != null && !fromCar) controller.onMeasuredRate(actualHz, now).newHz?.let(::request)
-        _stats.value = LocationStats(controller.requestedHz, actualHz, mph, speedFromCar = car != null, locationFromCar = fromCar)
+        _stats.value = LocationStats(GPS_HZ, actualHz, mph, speedFromCar = car != null, locationFromCar = fromCar)
 
         _fixes.tryEmit(Fix(loc.latitude, loc.longitude, speed, heading, System.currentTimeMillis()))
     }
 
-    companion object { private const val TAG = "AdaptiveLocation" }
+    companion object {
+        private const val TAG = "AdaptiveLocation"
+        /** The phone's GPS is always asked for 10 fixes a second (DESIGN.md §10), whatever the speed. */
+        const val GPS_HZ = 10
+        /** A GPS bearing further than this from the track we've moved along isn't believed. */
+        private const val BEARING_TRUST_DEG = 60.0
+    }
 }

@@ -9,6 +9,10 @@ import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarText
 import androidx.car.app.model.Header
+import android.text.SpannableString
+import android.text.Spanned
+import androidx.car.app.model.DistanceSpan
+import androidx.car.app.model.DurationSpan
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.MessageTemplate
 import androidx.car.app.model.Row
@@ -57,14 +61,17 @@ class RoutePreviewScreen(
         val header = Header.Builder().setTitle(destination.title).setStartHeaderAction(Action.BACK).build()
         val b = RoutePreviewNavigationTemplate.Builder().setHeader(header)
         if (loading) return b.setLoading(true).build()
-        val r = route
+        val r = route ?: return MessageTemplate.Builder("Couldn't find a route there")
+            .setHeader(header)
+            .addAction(CarUi.textAction("Back") { screenManager.pop() })
+            .build()
+        // The host requires a duration or distance span on every route row (it throws otherwise).
+        val title = SpannableString("  ").apply { setSpan(DurationSpan.create(r.seconds.toLong()), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE) }
+        val text = SpannableString("  " + trafficText(r.delaySeverity)).apply {
+            setSpan(DistanceSpan.create(io.autonav.alerts.car.TripMapper(carContext, session.imperial).distance(r.meters)), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+        }
         val items = ItemList.Builder()
-        items.addItem(
-            Row.Builder()
-                .setTitle(r?.let { CarUi.formatDuration(it.seconds) } ?: "Route")
-                .addText(CarText.create(r?.let { CarUi.formatDistance(it.meters, session.imperial) + trafficText(it.delaySeverity) } ?: ""))
-                .build(),
-        )
+        items.addItem(Row.Builder().setTitle(CarText.create(title)).addText(CarText.create(text)).build())
         items.setOnSelectedListener { }
         items.setSelectedIndex(0)
         b.setItemList(items.build())
@@ -84,7 +91,7 @@ class RoutePreviewScreen(
     }
 
     private fun start(simulate: Boolean) {
-        lifecycleScope.launch { deps.places().remember(destination) }
+        lifecycleScope.launch { deps.places().remember(destination, destination.address) }
         deps.guidance().startGuidance(simulate)
         screenManager.popToRoot()
     }

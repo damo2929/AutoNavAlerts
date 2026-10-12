@@ -1,10 +1,26 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
-    alias(libs.plugins.secrets)
 }
+
+// One signing key for every build, so a single SHA-1 is registered with Google (DESIGN.md §13.3).
+// It lives outside this public repo, in the private repo damo2929/autonavalerts-signing cloned to
+// ~/.config/autonavalerts (or AUTONAV_SIGNING = a signing.properties path). Without it, builds use
+// the PC's own debug key.
+val sharedSigning: Properties? = (System.getenv("AUTONAV_SIGNING")
+    ?.let(::file) ?: file("${System.getProperty("user.home")}/.config/autonavalerts/signing.properties"))
+    .takeIf { it.isFile }
+    ?.let { f ->
+        Properties().apply {
+            f.inputStream().use { load(it) }
+            // storeFile is relative to signing.properties, so the folder works wherever it's cloned.
+            setProperty("storeFile", f.parentFile.resolve(getProperty("storeFile")).path)
+        }
+    }
 
 android {
     namespace = "io.autonav.alerts"
@@ -19,8 +35,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        sharedSigning?.let { p ->
+            create("shared") {
+                storeFile = file(p.getProperty("storeFile"))
+                storePassword = p.getProperty("storePassword")
+                keyAlias = p.getProperty("keyAlias")
+                keyPassword = p.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfigs.findByName("shared")?.let { signingConfig = it }
+        }
         release {
+            signingConfigs.findByName("shared")?.let { signingConfig = it }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -54,11 +85,6 @@ java {
     }
 }
 
-secrets {
-    propertiesFileName = "local.properties"
-    defaultPropertiesFileName = "local.defaults.properties"
-}
-
 dependencies {
     implementation(project(":core"))
 
@@ -68,6 +94,7 @@ dependencies {
     implementation(libs.androidx.car.app.projected)
     implementation(libs.google.navigation)
     implementation(libs.play.services.location)
+    implementation(libs.play.services.auth)
     // The Navigation SDK bundles its own Maps classes; Places must not pull in play-services-maps.
     implementation(libs.google.places) {
         exclude(group = "com.google.android.gms", module = "play-services-maps")

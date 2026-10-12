@@ -2,7 +2,7 @@
 
 Every setting in the app: where it is, what it does, its default, and what it affects. Settings are stored on the phone only. They're **not** cloud-backed-up, so a reinstall starts from the defaults (see [Storage and privacy](#storage-and-privacy)).
 
-The phone app has five tabs along the bottom: **Setup · POIs · Cameras · Reports · Settings**. A few settings are also on the car screen, under **More**.
+The phone app has four tabs along the bottom: **POIs · Cameras · Reports · Settings**. The setup steps (Maps key, permissions, navigation terms, Android Auto) are the first sections of **Settings** (§2), and the app opens on Settings until setup is done. A few settings are also on the car screen, under **More**.
 
 ---
 
@@ -32,11 +32,10 @@ The phone app has five tabs along the bottom: **Setup · POIs · Cameras · Repo
 What car speed is used for:
 - **Speed panel**: the car's **speedometer** figure, so it matches your dashboard. Cars usually read a few percent high.
 - **Alerts**: the car's **measured** road speed, for "seconds ahead" alert distances and the over-limit warning. It's more accurate than GPS in tunnels, under trees and at low speed.
-- **GPS rate** (§1.5): changes as soon as the car's speed changes.
 - **Position, from the car's GPS**: used for camera alerts, marker updates and report positions.
   - The car's GPS antenna is usually better placed than a phone in a pocket or door bin.
-  - While it's in use, the phone's GPS drops to a **1 Hz backup** to save battery, and takes over immediately if the car goes quiet.
-  - The car decides how often it reports, so the adaptive 1–10 Hz rate applies to the phone only.
+  - While it's in use, the phone's GPS keeps running at 10 Hz as a backup, and takes over immediately if the car goes quiet.
+  - The car decides how often it reports; the 10 Hz request applies to the phone.
 - **The map itself** (the car marker and route guidance) follows the **phone's** location services, because Google's Navigation SDK can't be fed the car's GPS. Many cars already pass their GPS to the phone through Android Auto.
 
 The car screen's **More → GPS** row shows where the location and speed are coming from ("Location from car · speed from car"). Not every car or head unit shares its speed or GPS. Some aftermarket units don't, and the app needs car API level 3 or higher.
@@ -44,7 +43,8 @@ The car screen's **More → GPS** row shows where the location and speed are com
 ### 1.4 Speed panel
 | Control | Options | Default | What it does |
 |---|---|---|---|
-| **Show speed and limit on the map** | On / Off | On | Shows your current speed, and a speed-limit sign next to it, in the bottom corner of the car map (kept clear of the turn card and the media panel). |
+| **Show speed and limit on the map** | On / Off | On | Shows your current speed, and a speed-limit sign next to it, in the bottom-right corner of the car map (kept clear of the turn card and the media panel). |
+| **Satellite map in the car** | On / Off | Off | The car map shows satellite imagery with road names, instead of the road map. The same switch is the **Satellite / Map** button at the top right of the car map, and **More → Satellite map** in the car; all three are one setting and always agree. |
 
 What the panel shows:
 - **Your speed**: the **car's speedometer reading** when the car shares it (§1.3), otherwise the phone's GPS. It updates on every fix, in your units.
@@ -54,47 +54,86 @@ What the panel shows:
   - If neither is known, only your speed is shown.
 - **Colour**: white normally, **amber** at 5% over Google's limit, **red** at 10% over. These thresholds match Google Maps and can't be changed.
 
+### 1.4a Speed limits (OpenStreetMap)
+Fills in the speed panel's limit, marked with a **grey dot**, when Google hasn't given one and no camera limit applies (DESIGN.md §8.4a).
+
+- **Show OpenStreetMap limits**: on by default. Off hides them; the download is kept.
+- **Download on Wi-Fi only**: on by default, so the download waits for Wi-Fi. Turn it off to let it use mobile data too (about 1.1 GB; mind your allowance).
+- **Download speed limits for the UK** (**Update speed limits** once there's data): fetches only the roads layer of Geofabrik's England, Scotland and Wales extracts, plus Northern Ireland from the Ireland and Northern Ireland extract (only roads inside Northern Ireland are kept): about 1.1 GB. It runs in the background with a notification (with Cancel) and shows `Region: step · X of Y MB` here. The result is one file of about 29 MB; the old one is kept until the new one is complete. On the bench it took under 3 minutes.
+- Status line: the data's date, the number of roads with a limit, and the file size. Geofabrik refreshes daily; update every few months to pick up new limits.
+- **Delete downloaded limits** removes the file.
+- Licence: © OpenStreetMap contributors (ODbL), extract by Geofabrik; the link opens openstreetmap.org/copyright.
+
 ### 1.5 GPS rate
-How often the phone's GPS is read for alerts. The map has its own location feed from the Navigation SDK.
+Nothing to set and no card on the phone: the GPS is **always asked for 10 positions a second**, at any speed (DESIGN.md §10.2). The map has its own location feed from the Navigation SDK.
 
-| Control | Options | Default | What it does |
-|---|---|---|---|
-| **Maximum rate** | max 5 Hz, **max 10 Hz**, max 15 Hz | 10 Hz | The fastest GPS rate, reached at the "full at" speed |
-| **Full rate at** | 40, **50**, 60 mph | 50 mph | The speed at which the maximum rate is reached |
-
-How the rate is worked out:
-- **Below 10 mph, always 1 Hz**, including when stopped. This 10 mph point is fixed.
-- **Between 10 mph and the "full at" speed**, the rate rises in a **straight line** from 1 Hz to the maximum. With the defaults: 20 mph ≈ 3 Hz, 30 mph ≈ 6 Hz, 40 mph ≈ 8 Hz.
-- **At and above the "full at" speed**, the maximum rate.
-- The rate changes in whole-Hz steps, and only after the new step has held for 2 s, so it doesn't flip back and forth when your speed hovers at a boundary.
-- Many phones' GPS can't deliver more than 1–5 Hz. If yours delivers under half the requested rate for 60 s, the app lowers the request to match, which saves power.
-- The car screen's **More → GPS** row shows the requested rate, the rate actually delivered, and your speed.
-
-Higher rates make alerts fire closer to the exact distance at speed (at 70 mph, 10 Hz is a fix every 3 m; 1 Hz is every 31 m), but use more battery.
+- Many phones' GPS can't deliver more than 1–5 Hz; the app takes what the phone gives. The car screen's **More → GPS** row shows the requested rate (10 Hz), the rate actually delivered, and your speed.
+- 10 Hz makes alerts fire close to the exact distance at speed (at 70 mph, a fix every 3 m) and keeps the car map fresh, but uses more battery than a slower rate, especially when parked with the car screen open.
 
 ### 1.6 Bench testing (debug builds only)
 | Control | Options | Default | What it does |
 |---|---|---|---|
-| **Simulate speed** | **1×**, 2×, 4× | 1× | Speed of the **Simulate** drive started from the car's route preview. 1× is real time. Alerts, the GPS rate and the speed panel all work during simulation. See [TESTING.md](../TESTING.md). |
+| **Simulate speed** | **1×**, 2×, 4× | 1× | Speed of the **Simulate** drive started from the car's route preview. 1× is real time. Alerts and the speed panel work during simulation. See [TESTING.md](../TESTING.md). |
 
 This section isn't shown in release builds.
 
-### 1.7 About
+### 1.7 Backup
+| Control | What it does |
+|---|---|
+| **Save settings backup…** | Opens Android's file picker to save `autonavalerts-settings-YYYY-MM-DD.json` wherever you choose (Downloads, Drive, a USB stick). It holds the settings on this tab, your **Maps API key**, your **PocketGPSWorld user name and password**, and each camera set's own settings (show, alerts, sound, icon, spoken text, alert distances), by set name. |
+| **Restore from backup…** | Pick a backup file. The app checks it's an AutoNavAlerts backup it understands, then shows what's in it (date, whether the key and PGW login are included, how many camera sets match this phone) and asks before changing anything. **Restore** puts back the settings, key and login, and the settings of every camera set with the same name. |
+
+- **The file is plain text.** Anyone who has it can use your Maps key (billed to you) and your PocketGPSWorld login. Keep it somewhere private, and don't share or commit it.
+- **Not in the file:** camera data and imported POIs (re-download or re-import them), camera reports, recents/home/work/favourites, and acceptance of Google's navigation terms (accept them again on each install).
+- **On a new phone or after a reinstall:** install → Restore (key and login come back) → accept the navigation terms → Cameras → download → **Restore again**, so the downloaded camera sets get their alert settings. Restoring twice is safe.
+- A value the app can't read (for example a hand-edited typo) is skipped and keeps its current setting. Sets in the file that aren't on this phone are skipped and counted in the message ("2 sets weren't found…"). A set's icon is only restored if that icon is on this phone; PGW icons come back with the camera download.
+- Details and the file's layout: DESIGN.md §13.4.
+
+### 1.8 About
 Licence (Apache 2.0) and the note that the code is AI-assisted. Nothing to set here.
 
 ---
 
-## 2. Setup tab
+## 2. Setup (the first sections of the Settings tab)
+These come above the settings in §1, in this order: **Google Maps API key**, **Permissions**, **Navigation terms**, **Android Auto**. Until the key is saved and the terms are accepted, the app opens on this tab (unless another tab was asked for, e.g. from a notification).
+
 
 | Item | What it does | Notes |
 |---|---|---|
-| **Google Maps API key** (field + **Save key**, **Remove**) | Stores **your own** Maps Platform key, encrypted on the phone, and applies it straight away to navigation, the map and search. No rebuild needed. | The key needs the **Navigation SDK** (Google must approve access) and **Places API (New)** enabled, restricted to the package `io.autonav.alerts` and your signing certificate. "A key is set" shows when one is saved, either yours or one built in at compile time. **Remove** deletes your key and goes back to the built-in one, if there is one. |
-| **Permissions → Allow** | Asks for precise location and, on Android 13+, notifications | Location is required. Notifications are needed for alerts while another app fills the car screen, and for camera-database update messages. |
+| **Create a key with my Google account** | Makes **your own** Maps key in **your own** Google Cloud account, using a Google account on the phone, and saves it. It creates (or reuses) a project called "AutoNavAlerts", links your billing account, turns on the Navigation SDK, Maps SDK for Android and Places API (New), and creates a key that only this app can use. You're told exactly what it will create before it starts. | Google Maps needs a **billing account**. If you don't have one, the app says so and opens Google Cloud to add one; press **Try again** afterwards. Google may charge for use beyond its free allowance. The app only keeps the key, never your Google sign-in. Until Google verifies the app, only Google accounts added as testers can use this button; others can paste a key instead. |
+| **Set it up yourself in Google Cloud (step by step)** | Five steps, each with an **Open** button that opens the right Google Cloud page in your browser: create a project, link billing, turn on the three APIs, create a key restricted to this app (the package name and SHA-1 have **Copy** buttons), then copy the key. **Paste key from clipboard** saves it. | Works for everyone, even when **Create a key with my Google account** isn't available for your copy of the app. It opens by itself if that button can't sign in. |
+| **Google Maps API key** (field + **Save key**, **Remove**) | Stores **your own** Maps Platform key, encrypted on the phone, and applies it straight away to navigation, the map and search. No rebuild needed. | The key needs the **Navigation SDK** (Google must approve access) and **Places API (New)** enabled, restricted to the package `io.autonav.alerts` and your signing certificate. "✓ Your key is saved" shows when one is saved. **Remove** deletes it; there is **no built-in or fallback key**, so the map, search and navigation stop until a key is added again. |
+| **Permissions → Allow** | Asks for precise location, on Android 13+ notifications, the microphone, and **car speed** | Location is required. Notifications are needed for alerts while another app fills the car screen, and for camera-database update messages. The microphone is for spoken report comments. **Car speed** (Android Auto's `CAR_SPEED`) lets the speed panel show the car's own speedometer figure; without it the phone's GPS speed is used. |
 | **Permissions → Allow all the time** | Asks for background location (Android 10+) | Recommended. Keeps camera alerts working while music or another app is on the car screen. |
-| Contacts status | Shows whether contacts permission is granted | Optional. It's for navigating to contacts' addresses, which isn't built yet. |
-| **Navigation terms → Review and accept** | Shows Google's Navigation SDK terms | **Required** before the car screen can navigate, and done on the phone. **You only accept once:** the app records the acceptance (shown as "✓ Accepted on <date>") and never asks again, even if the SDK's own flag is lost. Uninstalling the app clears it. |
+| Contacts status, **Allow contacts** | Shows whether contacts permission is granted; the button asks for it | Optional, for driving to a contact's address: search a name on the car screen, or use **Contacts** in Search. Only the address you pick is sent to Google, to find it on the map. Without it, search works as before. |
+| **Clear contact locations** | Forgets where contacts' addresses were found | Shown once contacts are allowed. Each address is looked up again the next time you pick it. Locations are kept for 90 days anyway. |
+| **Navigation terms → Review and accept** | Shows Google's Navigation SDK terms | **Required** before the car screen can navigate, and done on the phone. The button is greyed out, with "Add your Google Maps API key above first", until a key is saved: the Navigation SDK can't be used at all without one. **You only accept once:** the app records the acceptance (shown as "✓ Accepted on <date>") and never asks again, even if the SDK's own flag is lost. Uninstalling the app clears it. |
 | Permission lines (✓ / ✗) | Each permission's current state, refreshed whenever you return to the app | **Allow** only appears if something is missing. If Android stops showing the prompt, **Open app settings** appears instead. When everything is granted: "✓ All permissions allowed." |
 | **Android Auto → Open Android Auto settings** | Opens Android Auto's settings | Used to turn on developer mode and **Unknown sources** (needed because the app is sideloaded), and to choose this as your navigation app |
+
+### 2.1 What happens when you press "Create a key with my Google account"
+1. A dialog lists what will be made in your Google Cloud account. **Continue** or **Cancel**.
+2. Android's own Google screens: pick an account on the phone, then allow "See, edit, configure and delete your Google Cloud data" (the `cloud-platform` permission). If you've allowed it before, these are skipped.
+3. Progress lines appear under the button, one per step:
+   - "Finding or creating your AutoNavAlerts project…": reuses the project it made last time (it's labelled `autonavalerts=maps-key`), otherwise creates `autonavalerts-xxxxxx`.
+   - "Checking billing…": if the project has no billing and you have exactly one open billing account, it's linked; with several, you pick one from a list; with none, you're sent to Google Cloud to add one, then press **Try again**.
+   - "Turning on the Navigation SDK, Maps SDK for Android and Places API (New)…"
+   - "Creating a key only this app can use…": reuses the key it made before for this build, otherwise creates one restricted to `io.autonav.alerts` and this build's signing SHA-1, and to those three APIs.
+4. "✓ Key created in project <id>". The key is saved and used straight away.
+
+**If it stops:**
+| Message | What to do |
+|---|---|
+| "Automatic set-up isn't available for this copy of the app, because it isn't registered for Google sign-in…" | The button is greyed out and the step-by-step guide opens. Use the guide; the app's registration is a one-time job for the maintainer (DESIGN.md §13.3). |
+| "Google sign-in was cancelled." | Press the button again when ready |
+| "Google Maps needs a billing account…" + **Open** | Add a billing account (a card from your Google payments profile can be used), then **Try again**. Cards in Google Wallet alone aren't a Cloud billing account; a **closed** billing account doesn't count either. |
+| "Choose the billing account to use." | Pick one; the run carries on |
+| "The Navigation SDK isn't available to this Google account yet…" + **Open** | Open it in Google Cloud and request access or accept its terms, then **Try again** |
+| Any other Google message + **Open** | The button opens the page Google suggests (e.g. an API's terms) for your project |
+| "Google Cloud is taking too long…" | Wait a minute, then **Try again**: every step is safe to repeat and carries on from where it stopped |
+
+### 2.2 The Maps key and the signing certificate
+A key made for this app only works for builds signed with the certificate it lists. Every official build is signed with the same shared key (SHA-1 `6C:48:A1:E5:…:9D:2C:0F`), so one key works for all of them. If you build the app yourself without that key, your build has a different SHA-1: add it to your key's **Android apps** restriction in Google Cloud (the guide's **Copy SHA-1** button shows it), or make a new key with the button.
 
 If something here isn't done, the car screen shows **"Finish setup on your phone"** with the reason: no API key, terms not accepted, location permission missing, key not authorised, or no network.
 
@@ -103,12 +142,14 @@ If something here isn't done, the car screen shows **"Finish setup on your phone
 ## 3. POIs tab (POI sets)
 
 ### 3.1 Set list
+This tab lists **only the POI files you've imported yourself**. Camera sets (PocketGPSWorld and **My reports**) are on the **Cameras** tab (§4.1).
+
 | Control | What it does |
 |---|---|
 | **Import file** | Picks a POI file: iGO TXT, KML, GPX, TomTom OV2 or CSV, or a **zip** containing one. Free and third-party POI files are **only ever loaded by hand**; nothing is downloaded automatically except PocketGPSWorld (Cameras tab). |
 | Set card | Tap to edit the set (§3.3). It shows the icon, name, POI count, source and version. |
 | Switch on each card | Turns the whole set **on or off**: markers, alerts and speech. Same as the toggle on the car screen under **More → POI layers**. |
-| **Swipe left** on a card | Reveals **Delete**. A confirmation follows ("Delete <set>?"), and the card springs back if you cancel. Deleting a PocketGPSWorld set only removes the phone's copy: the next sync downloads it again unless automatic updates are off. You can also delete from the set's editor (**Delete set**). |
+| **Swipe left** on a card | Reveals **Delete**. A confirmation follows ("Delete <set>?"), and the card springs back if you cancel. You can also delete from the set's editor (**Delete set**). |
 
 ### 3.2 Import dialog
 | Field | What it does |
@@ -177,6 +218,17 @@ Your icon, text and switch choices are **kept across updates**.
 
 You get a notification when the database updates, when your login fails, or when your subscription has lapsed. Your PocketGPSWorld data stays in private app storage, isn't backed up, and is never shared.
 
+### 4.1 Camera sets
+All camera sets are listed here rather than on the POIs tab, **batched by camera type**.
+
+| Control | What it does |
+|---|---|
+| Summary line | The total, e.g. "19,826 cameras in 33 sets" |
+| Group row (e.g. **PGW fixed cameras**) | One row per camera type: its icon, the cameras and sets in it, and an expand arrow. The OV2 download's per-speed sets ("· 20 mph", "· 30 mph"…) are grouped under their type. Pending mobile sites come last, then **My reports**. |
+| **Group switch** | Turns **every set in the group** on or off. It shows on while any set in the group is on. |
+| Group order | The PocketGPSWorld groups in alphabetical order (average speed cameras (SPECS), fixed cameras, mobile camera sites, red light cameras), then **pending mobile sites (unverified)**, then **My reports**. Inside a group, sets are sorted by speed (20, 30 … 70 mph), then the ones without a number by name ("limit to be confirmed", "variable limit"). |
+| Expanded group | Lists its sets, each with its own switch. Tap a set to edit it (§3.3), or swipe it left to delete it. Deleting a PocketGPSWorld set only removes the phone's copy: the next sync downloads it again unless automatic updates are off. |
+
 ---
 
 ## 5. Reports tab
@@ -228,7 +280,7 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Item | What it does |
 |---|---|
 | **Mute alerts for 30 min / Unmute alerts** | Silences all POI speech for 30 minutes. Cards and notifications still show. While muted, the passing alert is silent too, because muting turns sound off. |
-| **POI layers** | Turns each set on or off, the same as the switch on the phone's POIs tab |
+| **POI layers** | Turns each set on or off, the same as the set switches on the phone's POIs and Cameras tabs |
 | **GPS** | Read-only: the requested GPS rate, the rate actually delivered, and your current speed |
 | **Mute 30 min** on an alert card | Silences that **one set** for 30 minutes |
 
@@ -237,7 +289,8 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 ## Storage and privacy
 - Settings are stored in app-private storage (DataStore).
 - The **Maps API key, PocketGPSWorld login and session are encrypted** with a key held in the Android Keystore.
-- The POI database, settings and secrets are **excluded from Android cloud backup and device-to-device transfer**, as the PocketGPSWorld licence requires. After a reinstall or a new phone: enter the key and login again, then sync.
+- The POI database, settings and secrets are **excluded from Android cloud backup and device-to-device transfer**, as the PocketGPSWorld licence requires. After a reinstall or a new phone: restore your own settings backup (§1.7) or enter the key and login again, then sync.
+- The settings backup file (§1.7) is the only thing that takes your key and login out of the app, and only when you save it. It's **plain text**: keep it private.
 - Uninstalling the app deletes everything it stored.
 
 ## Defaults at a glance
@@ -248,7 +301,10 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Over-limit warning | **−0.1%** |
 | Speed and location source | Car when available |
 | Speed panel | On |
-| GPS rate | 1 Hz below 10 mph, rising to 10 Hz at 50 mph |
+| Satellite map in the car | Off |
+| Show OpenStreetMap limits | On |
+| Speed limits: download on Wi-Fi only | On |
+| GPS rate | Always 10 Hz |
 | Simulate speed (debug builds) | 1× |
 | PocketGPSWorld auto-update / Wi-Fi only | On / Off |
 | New set: 1st / 2nd / passing alert | 30 s ahead (min 500 yd) / 300 yd / 100 yd |

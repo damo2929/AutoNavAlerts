@@ -37,6 +37,8 @@ interface CarDeps {
     fun settings(): SettingsStore
     fun carData(): io.autonav.alerts.nav.CarDataSource
     fun driving(): io.autonav.alerts.reports.DrivingState
+    fun contacts(): io.autonav.alerts.contacts.ContactsSource
+    fun speedLimits(): io.autonav.alerts.osm.SpeedLimitRepository
 
     companion object {
         fun from(context: Context): CarDeps = EntryPointAccessors.fromApplication(context.applicationContext, CarDeps::class.java)

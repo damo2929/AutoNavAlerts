@@ -5,6 +5,7 @@ package io.autonav.alerts.car.screens
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
+import androidx.car.app.versioning.CarAppApiLevels
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
 import androidx.car.app.CarToast
@@ -91,11 +92,17 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         val b = NavigationTemplate.Builder()
             .setActionStrip(actionStrip())
             .setMapActionStrip(
+                // From car API 5 the map gets taps (onClick), so zoom and recenter are our own buttons
+                // down the right under the satellite toggle (DESIGN.md §8); Pan stays for rotary cars.
                 ActionStrip.Builder()
                     .addAction(Action.PAN)
-                    .addAction(CarUi.action(carContext, R.drawable.ic_action_zoom_in) { session.surface.zoom(1f) })
-                    .addAction(CarUi.action(carContext, R.drawable.ic_action_zoom_out) { session.surface.zoom(-1f) })
-                    .addAction(CarUi.action(carContext, R.drawable.ic_action_recenter) { session.surface.recenter() })
+                    .apply {
+                        if (carContext.carAppApiLevel < CarAppApiLevels.LEVEL_5) {
+                            addAction(CarUi.action(carContext, R.drawable.ic_action_zoom_in) { session.surface.zoom(1f) })
+                            addAction(CarUi.action(carContext, R.drawable.ic_action_zoom_out) { session.surface.zoom(-1f) })
+                            addAction(CarUi.action(carContext, R.drawable.ic_action_recenter) { session.surface.recenter() })
+                        }
+                    }
                     .build(),
             )
             .setPanModeListener { }
@@ -135,25 +142,27 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         NavUnavailable.UNKNOWN -> "Navigation isn't available right now."
     }
 
+    // Every action here is persistent: the user wants the top-right buttons always on screen, not
+    // faded out after a few seconds (DESIGN.md §8).
     private fun actionStrip(): ActionStrip {
         val strip = ActionStrip.Builder()
         if (guiding || arrived) {
-            strip.addAction(CarUi.textAction(carContext.getString(R.string.car_stop)) {
+            strip.addAction(CarUi.textAction(carContext.getString(R.string.car_stop), persistent = true) {
                 deps.guidance().stopGuidance()
                 invalidate()
             })
         } else {
-            strip.addAction(CarUi.action(carContext, R.drawable.ic_action_search) {
+            strip.addAction(CarUi.action(carContext, R.drawable.ic_action_search, persistent = true) {
                 screenManager.push(SearchScreen(carContext, session))
             })
         }
-        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_report) { openReport() })
+        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_report, persistent = true) { openReport() })
         if (!guiding && !arrived) {
-            strip.addAction(CarUi.action(carContext, R.drawable.ic_action_recents) {
+            strip.addAction(CarUi.action(carContext, R.drawable.ic_action_recents, persistent = true) {
                 screenManager.push(RecentsScreen(carContext, session))
             })
         }
-        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_more) {
+        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_more, persistent = true) {
             screenManager.push(MoreScreen(carContext, session))
         })
         return strip.build()
@@ -176,6 +185,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
             ?: deps.reports().justPassed(fix, candidates)
         lifecycleScope.launch {
             val id = deps.reports().capture(snap, limit, source, related)
+            deps.reports().localPoiOf(id)?.let { deps.alerts().quietHere(it) }
             if (io.autonav.alerts.reports.CarVoiceRecorder.available(carContext)) {
                 screenManager.push(VoiceCommentScreen(carContext, session, id))
             } else {

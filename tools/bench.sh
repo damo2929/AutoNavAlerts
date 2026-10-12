@@ -7,8 +7,9 @@
 #   tools/bench.sh setup      # one-time: SDK packages + create the "auto-bench" emulator
 #   tools/bench.sh phone      # start the phone emulator and wait for it to boot
 #   tools/bench.sh install    # build (if needed) and install the debug APK on the emulator
-#   tools/bench.sh car [cfg]  # start the head unit (cfg: default_1080p, default_sensors, default, …)
+#   tools/bench.sh car [cfg]  # start the head unit (cfg: bench (default), default_1080p, default_sensors, …)
 #   tools/bench.sh all        # phone + install + car
+#   tools/bench.sh dhu <cmd>  # send a command to the head unit's console (screenshot <file>, dpad down/click/back, day, night…)
 #   tools/bench.sh stop       # stop the head unit and the emulator
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -73,14 +74,29 @@ install() {
 }
 
 car() {
-  cfg=${1:-default_1080p}
+  cfg=${1:-bench}
+  # "bench": the 1080p screen with touch AND a rotary controller, so "bench.sh dhu dpad …" can drive it.
+  if [ "$cfg" = bench ]; then
+    sed 's/^controller = false/controller = true/' "$DHU_DIR/config/default_1080p.ini" >"$DHU_DIR/config/bench.ini"
+  fi
   $ADB -s "$(serial)" forward tcp:5277 tcp:5277
   echo "Starting head unit with config/$cfg.ini (log: $LOGDIR/dhu.log). In Android Auto on the phone: ⋮ → Start head unit server first."
-  ( cd "$DHU_DIR" && nohup ./desktop-head-unit -c "config/$cfg.ini" >"$LOGDIR/dhu.log" 2>&1 & )
+  # The DHU's console exits on end of input, so feed it from a file that never ends (tail -f); lines
+  # appended by "bench.sh dhu <command>" reach the console. Its own process group lets stop() end both.
+  : >"$LOGDIR/dhu.in"
+  ( cd "$DHU_DIR" && setsid sh -c 'echo $$ >"$1"; tail -f "$2" | ./desktop-head-unit -c "config/$0.ini"' \
+      "$cfg" "$LOGDIR/dhu.pid" "$LOGDIR/dhu.in" >"$LOGDIR/dhu.log" 2>&1 </dev/null & )
+}
+
+# Send one command to the running DHU's console, e.g. "screenshot /tmp/car.png", "dpad down", "dpad click", "day".
+dhu() {
+  [ -f "$LOGDIR/dhu.in" ] || { echo "The head unit isn't running (tools/bench.sh car)."; exit 1; }
+  echo "$*" >>"$LOGDIR/dhu.in"
 }
 
 stop() {
   # Match the real binaries only (the [d]/[q] trick stops pkill matching this shell's own command line).
+  [ -f "$LOGDIR/dhu.pid" ] && { kill -- -"$(cat "$LOGDIR/dhu.pid")" 2>/dev/null || true; rm -f "$LOGDIR/dhu.pid"; }
   pkill -f '[d]esktop-head-unit -c' || true
   s=$(serial)
   [ -n "$s" ] && $ADB -s "$s" emu kill >/dev/null 2>&1 || true
@@ -96,5 +112,6 @@ case "${1:-}" in
   car) car "${2:-}" ;;
   all) phone; install; car "${2:-}" ;;
   stop) stop ;;
-  *) sed -n '5,12p' "$0"; exit 1 ;;
+  dhu) shift; dhu "$@" ;;
+  *) sed -n '5,13p' "$0"; exit 1 ;;
 esac

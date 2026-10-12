@@ -15,8 +15,8 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 @Database(
-    entities = [PoiSetEntity::class, PoiCategoryEntity::class, PoiEntity::class, PlaceEntity::class, CameraReportEntity::class],
-    version = 3,
+    entities = [PoiSetEntity::class, PoiCategoryEntity::class, PoiEntity::class, PlaceEntity::class, CameraReportEntity::class, ContactGeocodeEntity::class],
+    version = 6,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -25,6 +25,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pois(): PoiDao
     abstract fun places(): PlaceDao
     abstract fun reports(): CameraReportDao
+    abstract fun contactGeocodes(): ContactGeocodeDao
 
     companion object {
         /** File name is referenced by the backup exclusion rules (DESIGN.md §6.4). */
@@ -49,6 +50,39 @@ val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
     }
 }
 
+/** v4: where contacts' addresses were found (DESIGN.md §8.3). */
+val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `contact_geocode` (`key` TEXT NOT NULL, `placeId` TEXT, `lat` REAL NOT NULL, " +
+                "`lon` REAL NOT NULL, `formattedAddress` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`key`))",
+        )
+    }
+}
+
+/** v5: OpenStreetMap speed limits downloaded by tile (DESIGN.md §8.4a). */
+val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `osm_limit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `tile` INTEGER NOT NULL, " +
+                "`lat1` REAL NOT NULL, `lon1` REAL NOT NULL, `lat2` REAL NOT NULL, `lon2` REAL NOT NULL, `mph` REAL NOT NULL, `dir` INTEGER NOT NULL)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_osm_limit_tile` ON `osm_limit` (`tile`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `osm_tile` (`key` INTEGER NOT NULL, `fetchedAt` INTEGER NOT NULL, `ways` INTEGER NOT NULL, " +
+                "`segments` INTEGER NOT NULL, PRIMARY KEY(`key`))",
+        )
+    }
+}
+
+/** v6: the Overpass speed-limit tiles are replaced by one downloaded file (DESIGN.md §8.4a). */
+val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("DROP TABLE IF EXISTS `osm_limit`")
+        db.execSQL("DROP TABLE IF EXISTS `osm_tile`")
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
@@ -56,7 +90,7 @@ object DatabaseModule {
     @Singleton
     fun db(@ApplicationContext context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, AppDatabase.NAME)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
 }

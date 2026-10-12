@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: the bench hook for driving the car screen from adb (TESTING.md §3). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- DUMP is held by adb's shell, not by apps, so only the bench can send this. -->
+        <receiver
+            android:name=".bench.BenchReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="io.autonav.alerts.BENCH" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

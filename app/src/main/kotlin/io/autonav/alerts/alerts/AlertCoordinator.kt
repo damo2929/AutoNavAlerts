@@ -26,7 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -78,7 +78,12 @@ class AlertCoordinator @Inject constructor(
     private var job: Job? = null
 
     @Volatile private var cacheCentre: Long = Long.MIN_VALUE
+    private val quiet: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     @Volatile private var cache: List<ResolvedPoi> = emptyList()
+    /** The cache's alerting POIs as the engine takes them, built once per reload, not per fix. */
+    @Volatile private var alertable: List<AlertPoi> = emptyList()
+    /** The latest settings, kept by the collector so a fix doesn't re-read DataStore (10 Hz). */
+    @Volatile private var latest: io.autonav.alerts.settings.AppSettings? = null
 
     private val _nearby = MutableStateFlow<List<ResolvedPoi>>(emptyList())
     /** POIs in the cache (for markers). Updated when the cell changes or data changes. */
@@ -91,7 +96,7 @@ class AlertCoordinator @Inject constructor(
     val lastFix: StateFlow<Fix?> = _lastFix
 
     /** Sets muted from the car alert's action, until the given time. */
-    private val setMutes = HashMap<Long, Long>()
+    private val setMutes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
     fun start(scope: CoroutineScope) {
         if (job != null) return
@@ -100,7 +105,7 @@ class AlertCoordinator @Inject constructor(
             launch { repo.changes.collect { cacheCentre = Long.MIN_VALUE } }
             launch {
                 settings.settings.collect {
-                    location.setCurve(it.rateCurve)
+                    latest = it
                     guidance.simulationSpeed = it.simulationSpeed
                     carData.enabled = it.speedSource == io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE
                     if (it.overspeedPct != engineOverspeed) {
@@ -109,7 +114,9 @@ class AlertCoordinator @Inject constructor(
                     }
                 }
             }
-            location.fixes.collectLatest { fix -> onFix(fix) }
+            // One fix at a time; fixes that arrive meanwhile are dropped except the newest, so a
+            // reload (Room queries) is never cancelled half-way by the next fix at 10 Hz.
+            location.fixes.conflate().collect { fix -> onFix(fix) }
         }
     }
 
@@ -120,6 +127,14 @@ class AlertCoordinator @Inject constructor(
         engine.reset()
     }
 
+    /**
+     * A report just made here (DESIGN.md §8.5): don't alert on its own marker while we're still
+     * at it. It's quiet until we're [QUIET_UNTIL_M] away, so it alerts normally on the next pass.
+     */
+    fun quietHere(poiId: Long) {
+        quiet += poiId
+    }
+
     fun muteSet(setId: Long, minutes: Int = 30) {
         setMutes[setId] = System.currentTimeMillis() + minutes * 60_000L
     }
@@ -128,13 +143,18 @@ class AlertCoordinator @Inject constructor(
         _lastFix.value = fix
         val cell = Grid.cellOf(fix.lat, fix.lon)
         if (cell != cacheCentre) reload(cell)
-        val s = settings.current()
+        val s = latest ?: settings.current().also { latest = it }
         val now = System.currentTimeMillis()
         val globallyMuted = s.mutedUntilMs > now || !s.voiceOn
-        val candidates = cache.asSequence().filter { it.alertsOn }.map { r ->
-            val muted = globallyMuted || (setMutes[r.set.id] ?: 0) > now
-            if (muted) r.alert.copy(soundOn = false) else r.alert
-        }.toList()
+        if (quiet.isNotEmpty()) cache.forEach { r ->
+            if (r.poi.id in quiet && Geo.distanceM(fix.lat, fix.lon, r.poi.lat, r.poi.lon) > QUIET_UNTIL_M) quiet.remove(r.poi.id)
+        }
+        val anyMuted = globallyMuted || setMutes.values.any { it > now }
+        val candidates = if (!anyMuted && quiet.isEmpty()) alertable else
+            cache.asSequence().filter { it.alertsOn && it.poi.id !in quiet }.map { r ->
+                val muted = globallyMuted || (setMutes[r.set.id] ?: 0) > now
+                if (muted) r.alert.copy(soundOn = false) else r.alert
+            }.toList()
         val events = runCatching { engine.onFix(fix, candidates, guidance.routeMatcher) }
             .onFailure { Log.e(TAG, "engine", it) }.getOrDefault(emptyList())
         if (events.isEmpty()) {
@@ -147,6 +167,7 @@ class AlertCoordinator @Inject constructor(
             val r = byId[e.poiId]
             val alert = render(renderer, e, r, fix) ?: continue
             _active.value = alert
+            Log.i(TAG, "${e.kind} poi=${e.poiId} at ${e.distanceM.toInt()} m, ${(fix.speedMps / Geo.MPS_PER_MPH).toInt()} mph: ${alert.display}")
             val speak = r?.let { it.alert.soundOn && !globallyMuted && (setMutes[it.set.id] ?: 0) <= now } ?: !globallyMuted
             dispatcher.dispatch(alert, e, speak = speak, chime = s.chimeOn)
         }
@@ -160,7 +181,7 @@ class AlertCoordinator @Inject constructor(
             AlertKind.PASSING -> r?.passingTemplate
             AlertKind.ZONE_ENTER -> AlertTemplateRenderer.ZONE_ENTER
             AlertKind.ZONE_EXIT -> AlertTemplateRenderer.ZONE_EXIT
-            AlertKind.OVERSPEED -> "Average speed zone, " + AlertTemplateRenderer.OVERSPEED_SUFFIX
+            AlertKind.OVERSPEED -> AlertTemplateRenderer.ZONE_OVERSPEED
         } ?: return null
         val values = TemplateValues(
             category = r?.categoryName, setName = r?.set?.name,
@@ -190,17 +211,20 @@ class AlertCoordinator @Inject constructor(
     }
 
     private suspend fun reload(cell: Long) {
-        cacheCentre = cell
         val pois = repo.poisInCells(Grid.neighbourhood(cell, 2))
         val sets = repo.sets()
         val cats = repo.categories()
         cache = pois.mapNotNull { p -> resolve(p, sets[p.setId] ?: return@mapNotNull null, p.categoryId?.let { cats[it] }) }
+        alertable = cache.filter { it.alertsOn }.map { it.alert }
+        // Only now: if this is interrupted, the next fix reloads again.
+        cacheCentre = cell
         _nearby.value = cache
         Log.d(TAG, "Cache: ${cache.size} POIs around cell $cell")
     }
 
     companion object {
         private const val TAG = "AlertCoordinator"
+        private const val QUIET_UNTIL_M = 300.0
 
         fun resolve(p: PoiEntity, set: PoiSetEntity, cat: PoiCategoryEntity?): ResolvedPoi {
             val soundOn = cat?.soundEnabled ?: set.soundEnabled

@@ -7,4 +7,5 @@
     <exclude domain="sharedpref" path="." />
     <exclude domain="file" path="datastore" />
     <exclude domain="file" path="pgw" />
+    <exclude domain="file" path="osm" />
 </full-backup-content>

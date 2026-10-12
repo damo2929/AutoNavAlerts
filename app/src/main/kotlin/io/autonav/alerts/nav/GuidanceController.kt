@@ -23,7 +23,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
-data class Destination(val title: String, val lat: Double, val lon: Double, val placeId: String? = null)
+/** Where to go. [address] is kept with the recent (e.g. a contact's address, DESIGN.md §8.3). */
+data class Destination(val title: String, val lat: Double, val lon: Double, val placeId: String? = null, val address: String? = null)
 
 /** Route alternative shown in the preview (DESIGN.md §8). */
 data class RouteOption(val index: Int, val seconds: Int, val meters: Int, val delaySeverity: Int)

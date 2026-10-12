@@ -158,6 +158,43 @@ class AlertEngineTest {
     }
 
     @Test
+    fun averageSpeedZoneEndsAtTheLastCamera() {
+        val pois = (0 until 3).map { i -> camera(id = 10L + i, northM = 1_000.0 + i * 2_000.0, zone = ZoneRole.ZONE_POINT, limitMph = 50) }
+        val events = drive(AlertEngine(), pois, toM = 6_000.0, mph = 50.0, stepMs = 500)
+        val exit = events.single { it.kind == AlertKind.ZONE_EXIT }
+        assertEquals(12L, exit.poiId)
+    }
+
+    @Test
+    fun loneAverageSpeedCameraIsNotAZone() {
+        val pois = listOf(camera(id = 10, northM = 1_000.0, zone = ZoneRole.ZONE_POINT, limitMph = 50))
+        val kinds = drive(AlertEngine(), pois, toM = 3_000.0, mph = 70.0, stepMs = 500).map { it.kind }
+        assertTrue(AlertKind.ZONE_ENTER !in kinds && AlertKind.OVERSPEED !in kinds)
+    }
+
+    @Test
+    fun zoneWithADifferentLimitAheadIsNotOurZone() {
+        val pois = listOf(
+            camera(id = 10, northM = 1_000.0, zone = ZoneRole.ZONE_POINT, limitMph = 50),
+            camera(id = 11, northM = 3_000.0, zone = ZoneRole.ZONE_POINT, limitMph = 30),
+        )
+        val kinds = drive(AlertEngine(), pois, toM = 4_000.0, mph = 40.0, stepMs = 500).map { it.kind }
+        assertTrue(AlertKind.ZONE_ENTER !in kinds)
+    }
+
+    @Test
+    fun zoneOverspeedCarriesTheZoneCameraAndAJumpEndsTheZone() {
+        val engine = AlertEngine()
+        val pois = (0 until 3).map { i -> camera(id = 10L + i, northM = 1_000.0 + i * 3_000.0, zone = ZoneRole.ZONE_POINT, limitMph = 30) }
+        val events = drive(engine, pois, toM = 2_500.0, mph = 45.0, stepMs = 500)
+        assertEquals(10L, events.first { it.kind == AlertKind.OVERSPEED }.poiId)
+        assertTrue(engine.isInZone)
+        // 20 km away in one fix: the zone is dropped and nothing more is said about it.
+        val after = engine.onFix(Fix(latAt(22_500.0), 0.0, 45 * Geo.MPS_PER_MPH, 0.0, 1_000_000), pois)
+        assertTrue(!engine.isInZone && after.none { it.kind == AlertKind.OVERSPEED })
+    }
+
+    @Test
     fun overspeedFlaggedOnAlert() {
         val first = drive(AlertEngine(), listOf(camera(limitMph = 30)), mph = 40.0).first()
         assertTrue(first.overspeed)

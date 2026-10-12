@@ -19,7 +19,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -38,7 +40,7 @@ import io.autonav.alerts.reports.CameraReportRepository
 import io.autonav.alerts.settings.SettingsStore
 import javax.inject.Inject
 
-/** Phone UI host (DESIGN.md §13): setup, POI sets, camera database, reports and settings. */
+/** Phone UI host (DESIGN.md §13): POI sets, camera database, reports, and settings (which include setup). */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject lateinit var settings: SettingsStore
@@ -51,15 +53,27 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var tts: NavTts
     @Inject lateinit var places: PlacesSearch
     @Inject lateinit var driving: io.autonav.alerts.reports.DrivingState
+    @Inject lateinit var keyCreator: io.autonav.alerts.settings.MapsKeyCreator
+    @Inject lateinit var backup: io.autonav.alerts.settings.SettingsBackup
+    @Inject lateinit var contacts: io.autonav.alerts.contacts.ContactsSource
+    @Inject lateinit var speedLimits: io.autonav.alerts.osm.SpeedLimitRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving)
-        val startTab = intent?.getIntExtra(EXTRA_TAB, 0) ?: 0
+        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving, keyCreator, backup, contacts, speedLimits)
+        val requestedTab = intent?.getIntExtra(EXTRA_TAB, -1) ?: -1
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-                var tab by rememberSaveable { mutableIntStateOf(startTab) }
+                var tab by rememberSaveable { mutableIntStateOf(requestedTab.coerceAtLeast(TAB_POIS)) }
+                var chosen by rememberSaveable { mutableStateOf(requestedTab >= 0) }
+                // With no tab asked for, open Settings while setup is unfinished (no key or terms), else POIs.
+                LaunchedEffect(Unit) {
+                    if (!chosen) {
+                        if (settings.mapsApiKey() == null || !navigator.termsAccepted()) tab = TAB_SETTINGS
+                        chosen = true
+                    }
+                }
                 Scaffold(
                     bottomBar = {
                         NavigationBar {
@@ -75,11 +89,10 @@ class MainActivity : ComponentActivity() {
                 ) { pad ->
                     Box(Modifier.fillMaxSize().padding(pad)) {
                         when (tab) {
-                            0 -> SetupScreen(this@MainActivity, deps)
-                            1 -> PoiSetsScreen(deps)
-                            2 -> CameraDbScreen(deps)
-                            3 -> ReportsScreen(this@MainActivity, deps)
-                            else -> SettingsScreen(deps)
+                            TAB_POIS -> PoiSetsScreen(deps)
+                            TAB_CAMERAS -> CameraDbScreen(deps)
+                            TAB_REPORTS -> ReportsScreen(this@MainActivity, deps)
+                            else -> SettingsScreen(this@MainActivity, deps)
                         }
                     }
                 }
@@ -89,9 +102,11 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TAB = "tab"
-        const val TAB_REPORTS = 3
+        const val TAB_POIS = 0
+        const val TAB_CAMERAS = 1
+        const val TAB_REPORTS = 2
+        const val TAB_SETTINGS = 3
         private val TABS = listOf(
-            "Setup" to R.drawable.ic_action_navigate,
             "POIs" to R.drawable.ic_action_layers,
             "Cameras" to R.drawable.ic_action_report,
             "Reports" to R.drawable.ic_action_place,
@@ -111,4 +126,8 @@ class PhoneDeps(
     val tts: NavTts,
     val places: PlacesSearch,
     val driving: io.autonav.alerts.reports.DrivingState,
+    val keyCreator: io.autonav.alerts.settings.MapsKeyCreator,
+    val backup: io.autonav.alerts.settings.SettingsBackup,
+    val contacts: io.autonav.alerts.contacts.ContactsSource,
+    val speedLimits: io.autonav.alerts.osm.SpeedLimitRepository,
 )

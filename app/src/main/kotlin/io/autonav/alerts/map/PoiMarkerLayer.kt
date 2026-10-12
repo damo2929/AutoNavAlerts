@@ -6,6 +6,7 @@ package io.autonav.alerts.map
 import android.os.Handler
 import android.os.Looper
 import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.Marker
@@ -34,9 +35,11 @@ class PoiMarkerLayer(
     private val shown = HashMap<Long, Shown>()
     private val pending = AtomicBoolean(false)
     @Volatile private var latest: Triple<List<ResolvedPoi>, Fix?, ActiveAlert?>? = null
+    /** Marker images handed to the map once and reused, keyed by icon, limit and emphasis. */
+    private val descriptors = HashMap<String, BitmapDescriptor>()
     var map: GoogleMap? = null
         set(value) {
-            if (field !== value) shown.clear()
+            if (field !== value) { shown.clear(); descriptors.clear() }
             field = value
         }
 
@@ -51,12 +54,21 @@ class PoiMarkerLayer(
         val (pois, fix, active) = latest ?: return
         val zoom = m.cameraPosition.zoom
         val bounds = runCatching { m.projection.visibleRegion.latLngBounds }.getOrNull() ?: return
-        val visible = pois.asSequence()
-            .filter { it.set.showOnMap && it.set.enabled && zoom >= it.set.minZoom }
-            .filter { bounds.contains(LatLng(it.poi.lat, it.poi.lon)) }
-            .sortedBy { if (fix == null) 0.0 else Geo.distanceM(fix.lat, fix.lon, it.poi.lat, it.poi.lon) }
-            .take(MAX_MARKERS)
-            .toList()
+        val south = bounds.southwest.latitude; val north = bounds.northeast.latitude
+        val west = bounds.southwest.longitude; val east = bounds.northeast.longitude
+        val onScreen = ArrayList<ResolvedPoi>()
+        for (r in pois) {
+            if (!r.set.showOnMap || !r.set.enabled || zoom < r.set.minZoom) continue
+            val lat = r.poi.lat; val lon = r.poi.lon
+            if (lat < south || lat > north) continue
+            if (if (west <= east) lon < west || lon > east else lon < west && lon > east) continue
+            onScreen += r
+        }
+        // Usually everything on screen fits; only past the cap, keep the nearest (each distance once).
+        val visible = if (onScreen.size <= MAX_MARKERS || fix == null) onScreen.take(MAX_MARKERS) else {
+            val d = DoubleArray(onScreen.size) { Geo.distanceM(fix.lat, fix.lon, onScreen[it].poi.lat, onScreen[it].poi.lon) }
+            onScreen.indices.sortedBy { d[it] }.take(MAX_MARKERS).map { onScreen[it] }
+        }
         val wanted = visible.associateBy { it.poi.id }
 
         // Remove markers no longer wanted.
@@ -77,17 +89,24 @@ class PoiMarkerLayer(
             if (existing == null) {
                 val marker = m.addMarker(
                     MarkerOptions().position(LatLng(r.poi.lat, r.poi.lon))
-                        .icon(BitmapDescriptorFactory.fromBitmap(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx)))
+                        .icon(descriptor(r, iconKey, emphasis))
                         .anchor(0.5f, 0.5f)
                         .zIndex(if (emphasis == Emphasis.ACTIVE) 10f else 1f)
                         .title(r.categoryName),
                 ) ?: continue
                 shown[r.poi.id] = Shown(marker, emphasis, iconKey)
             } else if (existing.emphasis != emphasis || existing.iconKey != iconKey) {
-                existing.marker.setIcon(BitmapDescriptorFactory.fromBitmap(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx)))
+                existing.marker.setIcon(descriptor(r, iconKey, emphasis))
                 existing.marker.zIndex = if (emphasis == Emphasis.ACTIVE) 10f else 1f
                 shown[r.poi.id] = existing.copy(emphasis = emphasis, iconKey = iconKey)
             }
+        }
+    }
+
+    private fun descriptor(r: ResolvedPoi, iconKey: String, emphasis: Emphasis): BitmapDescriptor {
+        if (descriptors.size > 256) descriptors.clear()
+        return descriptors.getOrPut("$iconKey:$emphasis") {
+            BitmapDescriptorFactory.fromBitmap(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx))
         }
     }
 

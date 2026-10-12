@@ -9,6 +9,7 @@
         <exclude domain="sharedpref" path="." />
         <exclude domain="file" path="datastore" />
         <exclude domain="file" path="pgw" />
+        <exclude domain="file" path="osm" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="poi.db" />
@@ -17,5 +18,6 @@
         <exclude domain="sharedpref" path="." />
         <exclude domain="file" path="datastore" />
         <exclude domain="file" path="pgw" />
+        <exclude domain="file" path="osm" />
     </device-transfer>
 </data-extraction-rules>

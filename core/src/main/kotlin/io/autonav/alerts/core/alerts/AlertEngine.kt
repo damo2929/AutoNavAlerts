@@ -97,6 +97,8 @@ class AlertEngine(
         val zoneMaxM: Double = 30_000.0,
         val zoneMaxMs: Long = 30 * 60_000L,
         val zoneOverspeedRepeatMs: Long = 15_000,
+        /** Two fixes further apart than this end the zone (§11 step 8). */
+        val zoneJumpM: Double = 1_000.0,
         /** Category codes treated as unmarked average-speed chains (PGW: "4"). */
         val chainZoneRole: ZoneRole = ZoneRole.ZONE_POINT,
     )
@@ -123,6 +125,13 @@ class AlertEngine(
     private var lastZonePointLat = 0.0
     private var lastZonePointLon = 0.0
     private var lastZoneOverspeedMs = Long.MIN_VALUE / 2
+    /** The zone camera last passed: zone alerts carry its id (icon and limit), or -1 if unknown. */
+    private var zonePoiId = -1L
+    private var prevLat = Double.NaN
+    private var prevLon = Double.NaN
+    // This fix's candidates and heading, for the zone checks in handleZonePass.
+    private var fixCandidates: Collection<AlertPoi> = emptyList()
+    private var fixHeading: Double? = null
 
     val isInZone: Boolean get() = inZone
 
@@ -130,6 +139,9 @@ class AlertEngine(
         states.clear()
         lastHeading = null
         inZone = false
+        zonePoiId = -1L
+        prevLat = Double.NaN
+        prevLon = Double.NaN
     }
 
     fun onFix(fix: Fix, candidates: Collection<AlertPoi>, route: RouteMatcher? = null): List<AlertEvent> {
@@ -139,6 +151,12 @@ class AlertEngine(
         }
         val moving = fix.speedMps > config.minMovingMps
         val out = ArrayList<AlertEvent>()
+        // A jump (GPS lost, or a bench geo fix) means we can't tell which road we're on: drop the zone.
+        if (!prevLat.isNaN() && Geo.distanceM(prevLat, prevLon, fix.lat, fix.lon) > config.zoneJumpM) inZone = false
+        prevLat = fix.lat
+        prevLon = fix.lon
+        fixCandidates = candidates
+        fixHeading = heading
 
         for (poi in candidates) {
             val d = Geo.distanceM(fix.lat, fix.lon, poi.lat, poi.lon)
@@ -253,16 +271,33 @@ class AlertEngine(
 
     private fun handleZonePass(poi: AlertPoi, fix: Fix, out: MutableList<AlertEvent>) {
         when (poi.zoneRole) {
-            ZoneRole.ZONE_START, ZoneRole.ZONE_POINT -> {
+            ZoneRole.ZONE_START -> {
                 if (!inZone) {
-                    inZone = true
-                    zoneStartLat = fix.lat; zoneStartLon = fix.lon; zoneStartMs = fix.timeMs
-                    zoneLimitMps = poi.speedLimitMps
+                    startZone(poi, fix)
                     out += AlertEvent(poi.id, AlertKind.ZONE_ENTER, 0.0, false, 60)
-                } else if (poi.speedLimitMps != null) {
+                } else {
                     zoneLimitMps = poi.speedLimitMps
                 }
+                zonePoiId = poi.id
                 lastZonePointLat = poi.lat; lastZonePointLon = poi.lon
+            }
+            ZoneRole.ZONE_POINT -> {
+                // A real zone has another camera ahead with the same limit to time you against (§11 step 8).
+                val ahead = zonePointAhead(fix, poi.speedLimitMps, exclude = poi.id)
+                if (!inZone) {
+                    if (!ahead) return
+                    startZone(poi, fix)
+                    out += AlertEvent(poi.id, AlertKind.ZONE_ENTER, 0.0, false, 60)
+                } else {
+                    zoneLimitMps = poi.speedLimitMps
+                }
+                zonePoiId = poi.id
+                lastZonePointLat = poi.lat; lastZonePointLon = poi.lon
+                if (!ahead) {
+                    // The last camera of the zone.
+                    inZone = false
+                    out += AlertEvent(poi.id, AlertKind.ZONE_EXIT, 0.0, false, 60)
+                }
             }
             ZoneRole.ZONE_END -> if (inZone) {
                 inZone = false
@@ -272,27 +307,41 @@ class AlertEngine(
         }
     }
 
+    private fun startZone(poi: AlertPoi, fix: Fix) {
+        inZone = true
+        zoneStartLat = fix.lat; zoneStartLon = fix.lon; zoneStartMs = fix.timeMs
+        zoneLimitMps = poi.speedLimitMps
+    }
+
+    /** Is a zone point with this limit ahead of us, facing our way, within the zone gap? */
+    private fun zonePointAhead(fix: Fix, limitMps: Double?, exclude: Long = -1): Boolean {
+        val heading = fixHeading ?: return false
+        return fixCandidates.any { p ->
+            p.id != exclude && p.zoneRole == ZoneRole.ZONE_POINT && sameLimit(p.speedLimitMps, limitMps) &&
+                Geo.distanceM(fix.lat, fix.lon, p.lat, p.lon).let { it > config.passingM && it <= config.zoneGapM } &&
+                Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, p.lat, p.lon), heading) <= 60.0 &&
+                directionMatches(p, heading)
+        }
+    }
+
+    private fun sameLimit(a: Double?, b: Double?) = a == null || b == null || abs(a - b) < 0.5
+
     private fun updateZone(fix: Fix, candidates: Collection<AlertPoi>, heading: Double?, out: MutableList<AlertEvent>) {
         if (!inZone) return
         val sinceLastPoint = Geo.distanceM(fix.lat, fix.lon, lastZonePointLat, lastZonePointLon)
         val fromStart = Geo.distanceM(fix.lat, fix.lon, zoneStartLat, zoneStartLon)
-        val chainAhead = heading != null && candidates.any { p ->
-            p.zoneRole == ZoneRole.ZONE_POINT &&
-                Geo.distanceM(fix.lat, fix.lon, p.lat, p.lon) <= config.zoneGapM &&
-                Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, p.lat, p.lon), heading) <= 60.0 &&
-                directionMatches(p, heading)
-        }
+        val chainAhead = zonePointAhead(fix, zoneLimitMps)
         val endByGap = sinceLastPoint > config.zoneGapM && !chainAhead
         val endByLimit = fromStart > config.zoneMaxM || fix.timeMs - zoneStartMs > config.zoneMaxMs
         if (endByGap || endByLimit) {
             inZone = false
-            out += AlertEvent(-1, AlertKind.ZONE_EXIT, 0.0, false, 60)
+            out += AlertEvent(zonePoiId, AlertKind.ZONE_EXIT, 0.0, false, 60)
             return
         }
         val limit = zoneLimitMps ?: return
         if (fix.speedMps > limit * (1 + config.overspeedPct) && fix.timeMs - lastZoneOverspeedMs >= config.zoneOverspeedRepeatMs) {
             lastZoneOverspeedMs = fix.timeMs
-            out += AlertEvent(-1, AlertKind.OVERSPEED, 0.0, true, 50)
+            out += AlertEvent(zonePoiId, AlertKind.OVERSPEED, 0.0, true, 50)
         }
     }
 

@@ -39,6 +39,12 @@ data class AppSettings(
     val pgwAutoSync: Boolean = true,
     val pgwWifiOnly: Boolean = false,
     val speedPanelOn: Boolean = true,
+    /** Car map shows satellite imagery (with road names) instead of the road map. */
+    val satelliteMap: Boolean = false,
+    /** OpenStreetMap limits on the speed panel (DESIGN.md §8.4a). */
+    val osmLimitsOn: Boolean = true,
+    /** The speed-limit download waits for Wi-Fi; off lets it use mobile data too. */
+    val osmWifiOnly: Boolean = true,
     val mutedUntilMs: Long = 0,
     /** Debug builds: Navigation SDK simulator speed multiplier for bench testing. */
     val simulationSpeed: Float = 1f,
@@ -79,6 +85,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val pgwAuto = booleanPreferencesKey("pgw_auto")
         val pgwWifi = booleanPreferencesKey("pgw_wifi_only")
         val speedPanel = booleanPreferencesKey("speed_panel")
+        val satellite = booleanPreferencesKey("satellite_map")
+        val osmLimits = booleanPreferencesKey("osm_limits")
+        val osmWifiOnly = booleanPreferencesKey("osm_wifi_only")
         val mutedUntil = longPreferencesKey("muted_until")
         val speedSource = stringPreferencesKey("speed_source")
         val pgwDownload = stringPreferencesKey("pgw_download")
@@ -115,6 +124,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             pgwAutoSync = p[K.pgwAuto] ?: true,
             pgwWifiOnly = p[K.pgwWifi] ?: false,
             speedPanelOn = p[K.speedPanel] ?: true,
+            satelliteMap = p[K.satellite] ?: false,
+            osmLimitsOn = p[K.osmLimits] ?: true,
+            osmWifiOnly = p[K.osmWifiOnly] ?: true,
             mutedUntilMs = p[K.mutedUntil] ?: 0,
             simulationSpeed = p[K.simSpeed] ?: 1f,
             pgwDownload = io.autonav.alerts.core.pgw.PgwDownload.fromName(p[K.pgwDownload]),
@@ -146,6 +158,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.pgwAuto] = s.pgwAutoSync
             p[K.pgwWifi] = s.pgwWifiOnly
             p[K.speedPanel] = s.speedPanelOn
+            p[K.satellite] = s.satelliteMap
+            p[K.osmLimits] = s.osmLimitsOn
+            p[K.osmWifiOnly] = s.osmWifiOnly
             p[K.mutedUntil] = s.mutedUntilMs
             p[K.simSpeed] = s.simulationSpeed
             p[K.speedSource] = s.speedSource.name
@@ -182,12 +197,11 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         ds.edit { p -> if (v.isNullOrEmpty()) p.remove(k) else p[k] = SecretBox.encrypt(v) }
     }
 
-    /** User-provided Maps key (Settings), falling back to a key baked in at build time, if any. */
-    suspend fun mapsApiKey(): String? =
-        getSecret(K.mapsKey)?.takeIf { it.isNotBlank() }
-            ?: BuildConfig.MAPS_API_KEY.takeIf { it.isNotBlank() && it != "DEFAULT_API_KEY" }
-
-    suspend fun hasUserMapsKey(): Boolean = getSecret(K.mapsKey)?.isNotBlank() == true
+    /**
+     * The user's own Maps key (created by the app or pasted). There's deliberately no built-in or
+     * build-time fallback: every user's Maps use is billed to their own Google account (DESIGN.md §1.4).
+     */
+    suspend fun mapsApiKey(): String? = getSecret(K.mapsKey)?.takeIf { it.isNotBlank() }
     suspend fun setMapsApiKey(key: String?) = putSecret(K.mapsKey, key?.trim())
 
     suspend fun pgwCredentials(): Pair<String, String>? {

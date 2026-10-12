@@ -56,14 +56,16 @@ class NavSession : Session(), DefaultLifecycleObserver {
     @Volatile var imperial = true
         private set
     @Volatile private var speedPanelOn = true
+    @Volatile private var osmLimitsOn = true
 
     init {
         lifecycle.addObserver(this)
     }
 
     override fun onCreateScreen(intent: Intent): Screen {
+        active = this
         deps = CarDeps.from(carContext)
-        surface = MapSurface(carContext)
+        surface = MapSurface(carContext) { deps.navigator().applyApiKey() }
         markers = PoiMarkerLayer(deps.icons(), (36 * carContext.resources.displayMetrics.density).toInt())
         surface.onMapReady = { m -> markers.map = m; m.setOnCameraIdleListener { redrawMarkers() } }
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(surface)
@@ -121,7 +123,15 @@ class NavSession : Session(), DefaultLifecycleObserver {
             deps.guidance().arrived.collect { if (it) deps.reports().remindIfDrafts() }
         }
         lifecycleScope.launch {
-            deps.settings().settings.collect { imperial = it.units == Units.IMPERIAL; speedPanelOn = it.speedPanelOn }
+            deps.settings().settings.collect {
+                imperial = it.units == Units.IMPERIAL
+                speedPanelOn = it.speedPanelOn
+                osmLimitsOn = it.osmLimitsOn
+                if (surface.satellite != it.satelliteMap) surface.satellite = it.satelliteMap
+            }
+        }
+        surface.onSatelliteToggle = { on ->
+            lifecycleScope.launch { deps.settings().update { it.copy(satelliteMap = on) } }
         }
         lifecycleScope.launch {
             val nav = deps.navigator().ensureNavigator() ?: return@launch
@@ -139,7 +149,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         lifecycleScope.launch {
             combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active) { f, n, a -> Triple(f, n, a) }
                 .collect { (fix, nearby, active) ->
-                    fix?.let { deps.driving().onSpeed(it.speedMps) }
+                    fix?.let { deps.driving().onSpeed(it.speedMps); surface.keepFollowing(it.lat, it.lon) }
                     markers.redraw(nearby, fix, active)
                     updateSpeedPanel(fix?.speedMps, active)
                 }
@@ -169,29 +179,45 @@ class NavSession : Session(), DefaultLifecycleObserver {
         }
         val google = derivedLimit?.takeIf { now - it.second < 60_000 }?.first
         val camera = active?.takeIf { now - it.timeMs < 20_000 && it.kind != AlertKind.ZONE_EXIT }?.speedLimit
-        val limit = google ?: camera
+        // OpenStreetMap last (DESIGN.md §8.4a): from the downloaded tiles, never a live lookup.
+        val osm = if (google == null && camera == null && osmLimitsOn) {
+            deps.alerts().lastFix.value?.let { f -> deps.speedLimits().limitAt(f.lat, f.lon, f.heading) }
+                ?.let { io.autonav.alerts.core.osm.OsmSpeedLimits.display(it, imperial) }
+        } else null
+        val (limit, source) = when {
+            google != null -> google to SpeedPanelView.Source.GOOGLE
+            camera != null -> camera to SpeedPanelView.Source.CAMERA
+            else -> osm to SpeedPanelView.Source.OSM
+        }
         val unit = if (imperial) "mph" else "km/h"
-        panel.post { panel.update(shown, limit, google == null && camera != null, speedingSeverity, unit) }
+        panel.post { panel.update(shown, limit, source, speedingSeverity, unit) }
     }
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
     /**
-     * Car-screen alert (car API ≥ 5), with Dismiss and Mute actions (DESIGN.md §12.1). Called from the
-     * alert thread; Car App Library calls are posted to the main thread.
+     * Car-screen alert (DESIGN.md §12.1): the banner at the bottom of our map, or, before the map
+     * exists, the host's alert card (car API ≥ 5) with Dismiss and Mute actions. Called from the
+     * alert thread; view and Car App Library calls are posted to the main thread.
      */
     private fun showCarAlert(alert: ActiveAlert): Boolean {
         if (lifecycle.currentState < androidx.lifecycle.Lifecycle.State.STARTED) return false
-        if (carContext.carAppApiLevel < CarAppApiLevels.LEVEL_5) return false
-        val icon = CarIcon.Builder(IconCompat.createWithBitmap(deps.icons().bitmap(alert.iconId, 128))).build()
+        val bitmap = deps.icons().bitmap(alert.iconId, 128)
         val subtitle = buildString {
             if (alert.distanceM > 0) append(AlertCoordinator.distanceLabel(alert.distanceM, imperial))
             alert.speedLimit?.let { if (isNotEmpty()) append(" · "); append(it).append(if (imperial) " mph" else " km/h") }
         }
+        val duration = if (alert.kind == AlertKind.PASSING) 5_000L else 8_000L
+        surface.alertBanner?.let { banner ->
+            banner.post { banner.show(alert.poiId, bitmap, alert.display, subtitle, duration) }
+            return true
+        }
+        if (carContext.carAppApiLevel < CarAppApiLevels.LEVEL_5) return false
+        val icon = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
         val id = (alert.poiId % 100_000).toInt()
         main.post {
             val am = carContext.getCarService(AppManager::class.java)
-            val builder = Alert.Builder(id, CarText.create(alert.display), if (alert.kind == AlertKind.PASSING) 5_000 else 8_000)
+            val builder = Alert.Builder(id, CarText.create(alert.display), duration)
                 .setIcon(icon)
                 .addAction(Action.Builder().setTitle("Dismiss").setOnClickListener { am.dismissAlert(id) }.build())
                 .addAction(Action.Builder().setTitle("Mute 30 min").setOnClickListener {
@@ -219,10 +245,15 @@ class NavSession : Session(), DefaultLifecycleObserver {
         deps.dispatcher().carSink = null
         deps.alerts().stop()
         markers.clear()
-        surface.release()
+        surface.close()
+        if (active === this) active = null
     }
 
     companion object {
+        /** The open car session, for the debug-build bench hook (TESTING.md §3); null when none. */
+        @Volatile var active: NavSession? = null
+            private set
+
         private const val TAG = "NavSession"
 
         /** Parses geo:lat,lon?q=... and google.navigation:q=... into coordinates and/or a query. */

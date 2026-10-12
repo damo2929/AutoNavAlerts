@@ -13,7 +13,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.Icon
@@ -48,6 +50,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -60,6 +63,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.google.android.gms.auth.api.identity.AuthorizationRequest
+import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.CommonStatusCodes
+import com.google.android.gms.common.api.Scope
 import com.google.android.libraries.navigation.NavigationApi
 import io.autonav.alerts.core.alerts.AlertTemplateRenderer
 import io.autonav.alerts.core.alerts.DistanceMode
@@ -74,12 +82,14 @@ import io.autonav.alerts.core.poi.importers.CsvProfile
 import io.autonav.alerts.data.CameraReportEntity
 import io.autonav.alerts.data.IconRepository
 import io.autonav.alerts.data.PoiSetEntity
+import io.autonav.alerts.data.PoiSourceType
 import io.autonav.alerts.data.ReportKind
 import io.autonav.alerts.data.ReportStatus
 import io.autonav.alerts.reports.Transcriber
 import io.autonav.alerts.data.StageCols
 import io.autonav.alerts.pgw.ReportSubmitWorker
 import io.autonav.alerts.reports.CameraReportRepository
+import io.autonav.alerts.settings.MapsKeyCreator
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -107,23 +117,25 @@ private fun granted(ctx: Context, p: String) = ContextCompat.checkSelfPermission
 
 // --- Setup -------------------------------------------------------------------------------------
 
+/**
+ * The setup steps (Maps key, permissions, navigation terms, Android Auto), shown at the top of the
+ * Settings tab (DESIGN.md §13). Emits its sections into the caller's scrolling column.
+ */
 @Composable
-fun SetupScreen(activity: Activity, deps: PhoneDeps) {
+private fun SetupSections(activity: Activity, deps: PhoneDeps) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var refresh by remember { mutableStateOf(0) }
     var keyText by remember { mutableStateOf("") }
     var hasKey by remember { mutableStateOf(false) }
-    var termsOk by remember { mutableStateOf(NavigationApi.areTermsAccepted(activity.application)) }
+    var termsOk by remember { mutableStateOf(false) }
     var termsAcceptedAt by remember { mutableStateOf<Long?>(null) }
     var termsMessage by remember { mutableStateOf<String?>(null) }
     var askedOnce by remember { mutableStateOf(false) }
-    var userKey by remember { mutableStateOf(false) }
     LaunchedEffect(refresh) {
         hasKey = deps.settings.mapsApiKey() != null
-        userKey = deps.settings.hasUserMapsKey()
         // An acceptance the SDK already remembers is copied into our own record, so it sticks.
-        if (NavigationApi.areTermsAccepted(activity.application)) deps.navigator.recordTermsAccepted()
+        if (deps.navigator.sdkTermsAccepted()) deps.navigator.recordTermsAccepted()
         termsOk = deps.navigator.termsAccepted()
         termsAcceptedAt = deps.settings.navTermsAcceptedAt()
     }
@@ -138,97 +150,230 @@ fun SetupScreen(activity: Activity, deps: PhoneDeps) {
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
     val bgLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
 
-    Column(Modifier.verticalScroll(rememberScrollState())) {
-        Text("AutoNavAlerts", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(16.dp))
-        Text("Navigation runs on your car screen. Set things up here first.", Modifier.padding(horizontal = 16.dp))
-
-        Section("1. Google Maps API key") {
-            if (hasKey) Text(if (userKey) "✓ Your key is saved." else "✓ Using the key built into this app.", color = MaterialTheme.colorScheme.primary)
-            else Text("No key yet: the map, search and navigation won't work until you add one. It needs the Navigation SDK and Places API (New) enabled.",
-                color = MaterialTheme.colorScheme.error)
-            OutlinedTextField(keyText, { keyText = it }, label = { Text("API key") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = keyText.isNotBlank(), onClick = {
-                    scope.launch { deps.settings.setMapsApiKey(keyText); deps.navigator.keyChanged(); keyText = ""; refresh++ }
-                }) { Text("Save key") }
-                if (hasKey) OutlinedButton(onClick = {
-                    scope.launch { deps.settings.setMapsApiKey(null); deps.navigator.keyChanged(); refresh++ }
-                }) { Text("Remove") }
-            }
+    Section("Google Maps API key") {
+        if (hasKey) Text("✓ Your key is saved.", color = MaterialTheme.colorScheme.primary)
+        else Text("No key yet: the map, search and navigation won't work until you add one.",
+            color = MaterialTheme.colorScheme.error)
+        CreateKeyWithGoogle(activity, deps, onCreated = { refresh++ })
+        HorizontalDivider()
+        Text("Or paste a key you already have. It needs the Navigation SDK and Places API (New) enabled.",
+            style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(keyText, { keyText = it }, label = { Text("API key") }, singleLine = true,
+            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(enabled = keyText.isNotBlank(), onClick = {
+                scope.launch { deps.settings.setMapsApiKey(keyText); deps.navigator.keyChanged(); keyText = ""; refresh++ }
+            }) { Text("Save key") }
+            if (hasKey) OutlinedButton(onClick = {
+                scope.launch { deps.settings.setMapsApiKey(null); deps.navigator.keyChanged(); refresh++ }
+            }) { Text("Remove") }
         }
+    }
 
-        Section("2. Permissions") {
-            // Re-read on every result and whenever the app comes back to the front (e.g. from Settings).
-            val st = remember(refresh) { PermState.read(ctx) }
-            PermLine("Location (needed)", st.fine)
-            PermLine("Location all the time (recommended)", st.background)
-            PermLine("Notifications (needed for alerts behind other apps)", st.notifications)
-            PermLine("Microphone (spoken report comments)", st.mic)
-            PermLine("Contacts (optional)", st.contacts)
-            val missing = st.missingForeground()
-            when {
-                missing.isNotEmpty() -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { askedOnce = true; permLauncher.launch(missing.toTypedArray()) }) { Text("Allow") }
-                    if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
-                }
-                !st.background -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        askedOnce = true
-                        if (Build.VERSION.SDK_INT >= 29) bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                    }) { Text("Allow all the time") }
-                    if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
-                }
-                else -> Text("✓ All permissions allowed.", color = MaterialTheme.colorScheme.primary)
+    Section("Permissions") {
+        // Re-read on every result and whenever the app comes back to the front (e.g. from Settings).
+        val st = remember(refresh) { PermState.read(ctx) }
+        PermLine("Location (needed)", st.fine)
+        PermLine("Location all the time (recommended)", st.background)
+        PermLine("Notifications (needed for alerts behind other apps)", st.notifications)
+        PermLine("Microphone (spoken report comments)", st.mic)
+        PermLine("Car speed (speed panel uses the car's own speed)", st.carSpeed)
+        PermLine("Contacts (optional: drive to a contact's address)", st.contacts)
+        val missing = st.missingForeground()
+        when {
+            missing.isNotEmpty() -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { askedOnce = true; permLauncher.launch(missing.toTypedArray()) }) { Text("Allow") }
+                if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
             }
-            if (askedOnce && (missing.isNotEmpty() || !st.background)) {
-                Text("If no prompt appears, Android has stopped asking. Use \"Open app settings\" → Permissions to allow them there.",
-                    style = MaterialTheme.typography.bodySmall)
+            !st.background -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    askedOnce = true
+                    if (Build.VERSION.SDK_INT >= 29) bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                }) { Text("Allow all the time") }
+                if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
             }
-            Text("\"All the time\" keeps camera alerts working while another app (like music) fills the car screen.",
+            else -> Text("✓ All permissions allowed.", color = MaterialTheme.colorScheme.primary)
+        }
+        // Contacts are optional, so they have their own button rather than being part of Allow (DESIGN.md §8.3).
+        if (!st.contacts) {
+            OutlinedButton(onClick = { permLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS)) }) { Text("Allow contacts") }
+        } else {
+            TextButton(onClick = {
+                scope.launch { deps.contacts.clearCache(); Toast.makeText(ctx, "Contact locations cleared", Toast.LENGTH_SHORT).show() }
+            }) { Text("Clear contact locations") }
+        }
+        if (askedOnce && (missing.isNotEmpty() || !st.background)) {
+            Text("If no prompt appears, Android has stopped asking. Use \"Open app settings\" → Permissions to allow them there.",
                 style = MaterialTheme.typography.bodySmall)
         }
+        Text("\"All the time\" keeps camera alerts working while another app (like music) fills the car screen.",
+            style = MaterialTheme.typography.bodySmall)
+    }
 
-        Section("3. Navigation terms") {
-            if (termsOk) {
-                Text("✓ Accepted" + (termsAcceptedAt?.let { " on " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it)) } ?: "") +
-                    ". You won't be asked again.", color = MaterialTheme.colorScheme.primary)
-            } else {
-                Text("Google's navigation terms must be accepted on the phone before using the car screen.")
-                termsMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Button(onClick = {
-                    termsMessage = null
-                    runCatching {
-                        NavigationApi.showTermsAndConditionsDialog(activity, "AutoNavAlerts") { accepted ->
-                            if (accepted) {
-                                // Record it ourselves too, so it's a one-time step.
-                                scope.launch { deps.navigator.recordTermsAccepted(); refresh++ }
-                                termsOk = true
-                            } else {
-                                termsMessage = "You declined the terms. Navigation can't start until they're accepted."
-                            }
+    Section("Navigation terms") {
+        if (termsOk) {
+            Text("✓ Accepted" + (termsAcceptedAt?.let { " on " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it)) } ?: "") +
+                ". You won't be asked again.", color = MaterialTheme.colorScheme.primary)
+        } else {
+            Text("Google's navigation terms must be accepted on the phone before using the car screen.")
+            termsMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (!hasKey) Text("Add your Google Maps API key above first.", style = MaterialTheme.typography.bodySmall)
+            Button(enabled = hasKey, onClick = {
+                termsMessage = null
+                runCatching {
+                    NavigationApi.showTermsAndConditionsDialog(activity, "AutoNavAlerts") { accepted ->
+                        if (accepted) {
+                            // Record it ourselves too, so it's a one-time step.
+                            scope.launch { deps.navigator.recordTermsAccepted(); refresh++ }
+                            termsOk = true
+                        } else {
+                            termsMessage = "You declined the terms. Navigation can't start until they're accepted."
                         }
-                    }.onFailure { termsMessage = "Couldn't open the terms: ${it.message}" }
-                }) { Text("Review and accept") }
-            }
+                    }
+                }.onFailure { termsMessage = "Couldn't open the terms: ${it.message}" }
+            }) { Text("Review and accept") }
         }
+    }
 
-        Section("4. Android Auto") {
-            Text("This app is sideloaded. In Android Auto settings, tap the version number repeatedly to enable developer mode, " +
-                "then turn on \"Unknown sources\" in developer settings. Choose AutoNavAlerts as your navigation app on the car screen.")
-            OutlinedButton(onClick = {
-                runCatching { ctx.startActivity(Intent("com.google.android.projection.gearhead.SETTINGS").setPackage("com.google.android.projection.gearhead")) }
-            }) { Text("Open Android Auto settings") }
-        }
+    Section("Android Auto") {
+        Text("This app is sideloaded. In Android Auto settings, tap the version number repeatedly to enable developer mode, " +
+            "then turn on \"Unknown sources\" in developer settings. Choose AutoNavAlerts as your navigation app on the car screen.")
+        OutlinedButton(onClick = {
+            runCatching { ctx.startActivity(Intent("com.google.android.projection.gearhead.SETTINGS").setPackage("com.google.android.projection.gearhead")) }
+        }) { Text("Open Android Auto settings") }
     }
 }
 
-/** Current runtime-permission state for the Setup screen. */
-private data class PermState(val fine: Boolean, val background: Boolean, val notifications: Boolean, val mic: Boolean, val contacts: Boolean) {
+/**
+ * "Create a key with my Google account" (DESIGN.md §13.1): asks for the cloud-platform scope with a
+ * Google account on the phone, then [MapsKeyCreator] makes the project, links billing, turns the APIs
+ * on and creates a restricted key. The access token is only kept in memory while this screen is open.
+ */
+@Composable
+private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val auth = remember { Identity.getAuthorizationClient(activity) }
+    var confirm by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf<String?>(null) }
+    var done by remember { mutableStateOf<String?>(null) }
+    var stop by remember { mutableStateOf<MapsKeyCreator.Stop?>(null) }
+    var token by remember { mutableStateOf<String?>(null) }
+
+    fun createWith(accessToken: String, billing: String? = null) {
+        token = accessToken
+        busy = true; stop = null; done = null
+        scope.launch {
+            try {
+                val c = deps.keyCreator.create(accessToken, billing) { progress = it }
+                deps.settings.setMapsApiKey(c.key)
+                deps.navigator.keyChanged()
+                done = "✓ Key created in your Google Cloud project ${c.projectId} and saved."
+                onCreated()
+            } catch (e: MapsKeyCreator.Stop) {
+                stop = e
+            } catch (e: Exception) {
+                stop = MapsKeyCreator.Stop.Refused("Couldn't create the key: ${e.message ?: e.javaClass.simpleName}", null)
+            } finally {
+                busy = false; progress = null
+            }
+        }
+    }
+
+    fun signInProblem(e: Exception): MapsKeyCreator.Stop {
+        val code = (e as? ApiException)?.statusCode
+        // An unregistered app comes back as DEVELOPER_ERROR, or as INTERNAL_ERROR with UNREGISTERED_ON_API_CONSOLE.
+        val unregistered = code == CommonStatusCodes.DEVELOPER_ERROR || e.message.orEmpty().contains("UNREGISTERED", ignoreCase = true)
+        return when {
+            unregistered -> MapsKeyCreator.Stop.NotSetUp()
+            code == CommonStatusCodes.CANCELED -> MapsKeyCreator.Stop.Refused("Google sign-in was cancelled.", null)
+            else -> MapsKeyCreator.Stop.Refused("Google sign-in failed${code?.let { " (code $it)" } ?: ""}: ${e.message.orEmpty()}", null)
+        }
+    }
+
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        runCatching { auth.getAuthorizationResultFromIntent(result.data) }
+            .onSuccess { r ->
+                val t = r.accessToken
+                if (t != null) createWith(t) else stop = MapsKeyCreator.Stop.Refused("Google didn't return access.", null)
+            }
+            .onFailure { stop = signInProblem(it as? Exception ?: Exception(it)) }
+    }
+
+    fun signIn() {
+        stop = null
+        val request = AuthorizationRequest.builder().setRequestedScopes(listOf(Scope(MapsKeyCreator.SCOPE))).build()
+        auth.authorize(request)
+            .addOnSuccessListener { r ->
+                val pending = r.pendingIntent
+                if (r.hasResolution() && pending != null) launcher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                else r.accessToken?.let { createWith(it) }
+            }
+            .addOnFailureListener { stop = signInProblem(it) }
+    }
+
+    Text("Let the app make your own key in your own Google Cloud account, using a Google account on this phone.",
+        style = MaterialTheme.typography.bodySmall)
+    Button(enabled = !busy && stop !is MapsKeyCreator.Stop.NotSetUp, onClick = { confirm = true }) {
+        Text(if (busy) "Creating key…" else "Create a key with my Google account")
+    }
+    progress?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    done?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+    stop?.let { s ->
+        Text(s.message.orEmpty(), color = MaterialTheme.colorScheme.error)
+        when (s) {
+            is MapsKeyCreator.Stop.ChooseBilling -> s.accounts.forEach { a ->
+                OutlinedButton(onClick = { token?.let { createWith(it, a.name) } ?: signIn() }) { Text(a.displayName) }
+            }
+            is MapsKeyCreator.Stop.NoBilling -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(MapsKeyCreator.BILLING_CREATE_URL))) }) {
+                    Text("Add billing account")
+                }
+                Button(onClick = { signIn() }) { Text("Try again") }
+            }
+            is MapsKeyCreator.Stop.NotSetUp -> Unit // the guided steps below open instead
+            is MapsKeyCreator.Stop.Refused -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                s.consoleUrl?.let { url ->
+                    OutlinedButton(onClick = { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }) { Text("Open in Google Cloud") }
+                }
+                Button(onClick = { signIn() }) { Text("Try again") }
+            }
+        }
+    }
+
+    var guided by remember { mutableStateOf(false) }
+    LaunchedEffect(stop) { if (stop is MapsKeyCreator.Stop.NotSetUp) guided = true }
+    TextButton(onClick = { guided = !guided }) {
+        Text((if (guided) "▲ " else "▼ ") + "Set it up yourself in Google Cloud (step by step)")
+    }
+    if (guided) GuidedKeySetup(activity, deps, onSaved = { done = "✓ Key saved."; stop = null; onCreated() })
+
+    if (confirm) AlertDialog(
+        onDismissRequest = { confirm = false },
+        title = { Text("Create your Maps key?") },
+        text = {
+            Text("After you choose a Google account, the app will, in that account's Google Cloud:\n\n" +
+                "• create a project called \"AutoNavAlerts\" (or reuse it)\n" +
+                "• link it to your billing account\n" +
+                "• turn on the Navigation SDK, Maps SDK for Android and Places API (New)\n" +
+                "• create a key that only this app can use\n\n" +
+                "Google Maps needs a billing account, and Google may charge for use beyond its free allowance. " +
+                "Only the key is kept on this phone, never your Google sign-in.")
+        },
+        confirmButton = { Button(onClick = { confirm = false; signIn() }) { Text("Continue") } },
+        dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+    )
+}
+
+/** Current runtime-permission state for the setup sections. */
+private data class PermState(
+    val fine: Boolean, val background: Boolean, val notifications: Boolean, val mic: Boolean, val contacts: Boolean, val carSpeed: Boolean,
+) {
     fun missingForeground(): List<String> = buildList {
         if (!fine) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
         if (!notifications && Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         if (!mic) add(Manifest.permission.RECORD_AUDIO)
+        if (!carSpeed) add(CAR_SPEED)
     }
 
     companion object {
@@ -238,7 +383,11 @@ private data class PermState(val fine: Boolean, val background: Boolean, val not
             notifications = Build.VERSION.SDK_INT < 33 || granted(ctx, Manifest.permission.POST_NOTIFICATIONS),
             mic = granted(ctx, Manifest.permission.RECORD_AUDIO),
             contacts = granted(ctx, Manifest.permission.READ_CONTACTS),
+            carSpeed = granted(ctx, CAR_SPEED),
         )
+
+        /** Android Auto's runtime permission for the car's speed (CarInfo speed listener). */
+        const val CAR_SPEED = "com.google.android.gms.permission.CAR_SPEED"
     }
 }
 
@@ -252,12 +401,73 @@ private fun openAppSettings(ctx: Context) {
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
+/**
+ * The guided set-up (DESIGN.md §13.2): the user does each step in Google Cloud in their browser,
+ * signed in to their own account, then pastes the key. Needs no registration of this app.
+ */
+@Composable
+private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val sha1 = remember { deps.keyCreator.signingSha1() }
+    var pasteMessage by remember { mutableStateOf<String?>(null) }
+    fun open(url: String) = activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    fun copy(label: String, text: String) =
+        activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
+
+    @Composable
+    fun Step(n: Int, text: String, buttons: @Composable () -> Unit) {
+        Text("$n. $text", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { buttons() }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Each Open button shows the page in your browser, signed in to your Google account. Do the steps in order: " +
+            "Google Cloud applies each page to the project you created in step 1.", style = MaterialTheme.typography.bodySmall)
+        Step(1, "Create a project, for example \"AutoNavAlerts\".") {
+            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_PROJECT_CREATE) }) { Text("Open") }
+        }
+        Step(2, "Link a billing account to it (add one first if you have none). Google Maps needs billing.") {
+            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_BILLING) }) { Text("Open") }
+        }
+        Step(3, "Turn on these three APIs: press Enable on each page.") {
+            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_NAVIGATION) }) { Text("Navigation SDK") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_MAPS_ANDROID) }) { Text("Maps SDK for Android") }
+            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_PLACES) }) { Text("Places API (New)") }
+        }
+        Step(4, "Create credentials → API key. Then edit the key: under Application restrictions pick Android apps and add this " +
+            "app's package name and SHA-1; under API restrictions pick the three APIs from step 3.") {
+            OutlinedButton(onClick = { open(MapsKeyCreator.CREDENTIALS_URL) }) { Text("Open") }
+        }
+        Text("Package: ${activity.packageName}", style = MaterialTheme.typography.bodySmall)
+        Text("SHA-1: $sha1", style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { copy("Package name", activity.packageName) }) { Text("Copy package") }
+            OutlinedButton(onClick = { copy("SHA-1", sha1) }) { Text("Copy SHA-1") }
+        }
+        Step(5, "Copy the key in Google Cloud, then come back here.") {
+            Button(onClick = {
+                val clip = activity.getSystemService(ClipboardManager::class.java).primaryClip
+                val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(activity)?.toString()?.trim().orEmpty()
+                if (MapsKeyCreator.looksLikeKey(text)) {
+                    scope.launch { deps.settings.setMapsApiKey(text); deps.navigator.keyChanged(); pasteMessage = null; onSaved() }
+                } else {
+                    pasteMessage = "The clipboard doesn't hold a Google API key (they start with \"AIza\"). Copy the key in Google Cloud first."
+                }
+            }) { Text("Paste key from clipboard") }
+        }
+        pasteMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    }
+}
+
 // --- POI sets ----------------------------------------------------------------------------------
 
 @Composable
 fun PoiSetsScreen(deps: PhoneDeps) {
+    // Only files imported by hand; camera sets live on the Cameras tab (DESIGN.md §13).
     val sets by deps.pois.activeSets.collectAsState(initial = emptyList())
-    val scope = rememberCoroutineScope()
+    val fileSets = sets.filter { it.source == PoiSourceType.FILE }
     var importUri by remember { mutableStateOf<Uri?>(null) }
     var editing by remember { mutableStateOf<PoiSetEntity?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -271,73 +481,84 @@ fun PoiSetsScreen(deps: PhoneDeps) {
             Text("POI sets", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
             Button(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Import file") }
         }
-        Text("Free and other POI files are loaded by hand. PocketGPSWorld syncs on its own (Cameras tab).",
+        Text("POI files you've imported yourself. Camera sets are on the Cameras tab.",
             Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
         message?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.primary) }
+        if (fileSets.isEmpty()) Text("No POI files imported yet. Use Import file to add one.", Modifier.padding(16.dp))
         LazyColumn {
-            items(sets, key = { it.id }) { set ->
-                // Swipe left to delete (with confirmation); the swipe springs back if cancelled.
-                val swipe = androidx.compose.material3.rememberSwipeToDismissBoxState()
-                LaunchedEffect(swipe.currentValue) {
-                    if (swipe.currentValue == androidx.compose.material3.SwipeToDismissBoxValue.EndToStart) {
-                        confirmDelete = set
-                        swipe.reset()
-                    }
-                }
-                androidx.compose.material3.SwipeToDismissBox(
-                    state = swipe,
-                    enableDismissFromStartToEnd = false,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                    backgroundContent = {
-                        Row(
-                            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, MaterialTheme.shapes.medium).padding(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(painterResource(io.autonav.alerts.R.drawable.ic_action_delete), null, tint = MaterialTheme.colorScheme.onErrorContainer)
-                            Spacer(Modifier.size(8.dp))
-                            Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleMedium)
-                        }
-                    },
-                ) {
-                    Card(Modifier.fillMaxWidth().clickable { editing = set }) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Image(deps.icons.bitmap(set.defaultIconId, 96).asImageBitmap(), null, Modifier.size(40.dp))
-                            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                                Text(set.name, style = MaterialTheme.typography.titleMedium)
-                                Text("${set.poiCount} POIs · ${set.source.name.lowercase().replace('_', ' ')}" +
-                                    (set.version?.let { " · v$it" } ?: ""), style = MaterialTheme.typography.bodySmall)
-                            }
-                            Switch(checked = set.enabled, onCheckedChange = { on -> scope.launch { deps.pois.updateSet(set.copy(enabled = on)) } })
-                        }
-                    }
-                }
+            items(fileSets, key = { it.id }) { set ->
+                SetCard(deps, set, onEdit = { editing = set }, onDelete = { confirmDelete = set })
             }
         }
-        if (sets.isNotEmpty()) Text("Tip: swipe a set left to delete it.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
+        if (fileSets.isNotEmpty()) Text("Tip: swipe a set left to delete it.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
     }
 
-    confirmDelete?.let { set ->
-        val pgw = set.source == io.autonav.alerts.data.PoiSourceType.PGW || set.source == io.autonav.alerts.data.PoiSourceType.PGW_PENDING
-        AlertDialog(
-            onDismissRequest = { confirmDelete = null },
-            title = { Text("Delete ${set.name}?") },
-            text = {
-                Text("Its ${set.poiCount} POIs will be removed from this phone." +
-                    if (pgw) " The next PocketGPSWorld sync will download them again. To stop that, turn off automatic updates on the Cameras tab." else "")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    scope.launch { deps.pois.deleteSet(set.id); message = "Deleted ${set.name}" }
-                    confirmDelete = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
-        )
-    }
+    confirmDelete?.let { set -> DeleteSetDialog(deps, set, onClose = { msg -> confirmDelete = null; msg?.let { message = it } }) }
 
     importUri?.let { uri ->
         ImportDialog(deps, uri, onClose = { msg -> importUri = null; message = msg })
     }
+}
+
+/** A set's card: tap to edit, switch to turn it on or off, swipe left to delete (springs back until confirmed). */
+@Composable
+private fun SetCard(deps: PhoneDeps, set: PoiSetEntity, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val swipe = androidx.compose.material3.rememberSwipeToDismissBoxState()
+    LaunchedEffect(swipe.currentValue) {
+        if (swipe.currentValue == androidx.compose.material3.SwipeToDismissBoxValue.EndToStart) {
+            onDelete()
+            swipe.reset()
+        }
+    }
+    androidx.compose.material3.SwipeToDismissBox(
+        state = swipe,
+        enableDismissFromStartToEnd = false,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        backgroundContent = {
+            Row(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer, MaterialTheme.shapes.medium).padding(horizontal = 20.dp),
+                horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(painterResource(io.autonav.alerts.R.drawable.ic_action_delete), null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                Spacer(Modifier.size(8.dp))
+                Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleMedium)
+            }
+        },
+    ) {
+        Card(Modifier.fillMaxWidth().clickable(onClick = onEdit)) {
+            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Image(deps.icons.bitmap(set.defaultIconId, 96).asImageBitmap(), null, Modifier.size(40.dp))
+                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text(set.name, style = MaterialTheme.typography.titleMedium)
+                    Text("${set.poiCount} POIs · ${set.source.name.lowercase().replace('_', ' ')}" +
+                        (set.version?.let { " · v$it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = set.enabled, onCheckedChange = { on -> scope.launch { deps.pois.updateSet(set.copy(enabled = on)) } })
+            }
+        }
+    }
+}
+
+/** Confirms deleting a set; [onClose] gets a message when it was deleted, or null when cancelled. */
+@Composable
+private fun DeleteSetDialog(deps: PhoneDeps, set: PoiSetEntity, onClose: (String?) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val pgw = set.source == PoiSourceType.PGW || set.source == PoiSourceType.PGW_PENDING
+    AlertDialog(
+        onDismissRequest = { onClose(null) },
+        title = { Text("Delete ${set.name}?") },
+        text = {
+            Text("Its ${set.poiCount} POIs will be removed from this phone." +
+                if (pgw) " The next PocketGPSWorld sync will download them again. To stop that, turn off automatic updates on the Cameras tab." else "")
+        },
+        confirmButton = {
+            Button(onClick = {
+                scope.launch { deps.pois.deleteSet(set.id); onClose("Deleted ${set.name}") }
+            }) { Text("Delete") }
+        },
+        dismissButton = { TextButton(onClick = { onClose(null) }) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -549,6 +770,12 @@ fun CameraDbScreen(deps: PhoneDeps) {
     var refresh by remember { mutableStateOf(0) }
     LaunchedEffect(refresh) { hasLogin = deps.settings.pgwCredentials() != null }
     val df = remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
+    val sets by deps.pois.activeSets.collectAsState(initial = emptyList())
+    var editing by remember { mutableStateOf<PoiSetEntity?>(null) }
+    var confirmDelete by remember { mutableStateOf<PoiSetEntity?>(null) }
+    var setMessage by remember { mutableStateOf<String?>(null) }
+
+    editing?.let { set -> SetEditor(deps, set, onDone = { editing = null }); return }
 
     Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("PocketGPSWorld", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
@@ -606,6 +833,7 @@ fun CameraDbScreen(deps: PhoneDeps) {
             }
             SwitchRow("Wi-Fi only", settings.pgwWifiOnly) { on -> scope.launch { deps.settings.update { it.copy(pgwWifiOnly = on) } } }
         }
+        CameraSets(deps, cameraGroups(sets), setMessage, onEdit = { editing = it }, onDelete = { confirmDelete = it })
         Section("Manual import") {
             Text("You can also download the iGO file yourself and import it on the POIs tab.", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PgwConfig.BASE + PgwConfig.CAMERAS_PATH))) }) {
@@ -613,6 +841,71 @@ fun CameraDbScreen(deps: PhoneDeps) {
             }
         }
     }
+
+    confirmDelete?.let { set -> DeleteSetDialog(deps, set, onClose = { msg -> confirmDelete = null; msg?.let { setMessage = it } }) }
+}
+
+/** One camera type's sets, batched together on the Cameras tab (DESIGN.md §13). */
+private data class CameraGroup(val name: String, val sets: List<PoiSetEntity>) {
+    val cameras get() = sets.sumOf { it.poiCount }
+    val anyOn get() = sets.any { it.enabled }
+}
+
+/**
+ * Camera sets (PGW, pending and My reports) grouped by type: the part of the name before " · ",
+ * so the OV2 download's per-speed sets share one group. Pending sites come last, then My reports.
+ */
+private fun cameraGroups(sets: List<PoiSetEntity>): List<CameraGroup> {
+    val order = listOf(PoiSourceType.PGW, PoiSourceType.PGW_PENDING, PoiSourceType.REPORT)
+    return sets.filter { it.source in order }
+        .groupBy { it.name.substringBefore(" · ") }
+        .map { (name, members) -> CameraGroup(name, members.sortedWith(compareBy({ speedOrder(it.name) }, { it.name }))) }
+        .sortedWith(compareBy({ order.indexOf(it.sets.first().source) }, { it.name }))
+}
+
+/** Sorts "· 20 mph" before "· 100 mph"; sets without a number keep name order after them. */
+private fun speedOrder(name: String): Int =
+    Regex("""· (\d+)""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: Int.MAX_VALUE
+
+@Composable
+private fun CameraSets(
+    deps: PhoneDeps, groups: List<CameraGroup>, message: String?,
+    onEdit: (PoiSetEntity) -> Unit, onDelete: (PoiSetEntity) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var expanded by remember { mutableStateOf(setOf<String>()) }
+    val total = groups.sumOf { it.cameras }
+    val setCount = groups.sumOf { it.sets.size }
+    Text("Camera sets", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp))
+    Text(
+        if (groups.isEmpty()) "None yet. Log in and press Sync now to download your cameras."
+        else "%,d cameras in %d %s. Tap a type to see its sets.".format(total, setCount, if (setCount == 1) "set" else "sets"),
+        Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall,
+    )
+    message?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.primary) }
+    groups.forEach { g ->
+        val open = g.name in expanded
+        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+            .clickable { expanded = if (open) expanded - g.name else expanded + g.name }) {
+            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Image(deps.icons.bitmap(g.sets.first().defaultIconId, 96).asImageBitmap(), null, Modifier.size(40.dp))
+                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text(g.name, style = MaterialTheme.typography.titleMedium)
+                    Text("%,d cameras · %d %s".format(g.cameras, g.sets.size, if (g.sets.size == 1) "set" else "sets"),
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                Text(if (open) "▲" else "▼", Modifier.padding(end = 8.dp))
+                Switch(checked = g.anyOn, onCheckedChange = { on ->
+                    scope.launch { deps.pois.updateSets(g.sets.map { it.copy(enabled = on) }) }
+                })
+            }
+        }
+        if (open) Column(Modifier.padding(start = 16.dp)) {
+            g.sets.forEach { set -> key(set.id) { SetCard(deps, set, onEdit = { onEdit(set) }, onDelete = { onDelete(set) }) } }
+        }
+    }
+    if (groups.isNotEmpty()) Text("Tip: swipe a set left to delete it.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        style = MaterialTheme.typography.bodySmall)
 }
 
 // --- Reports (final review and submission happen only here, never on the car screen) ----------
@@ -760,12 +1053,13 @@ private fun compass(deg: Int): String = listOf("N", "NE", "E", "SE", "S", "SW", 
 // --- Settings ----------------------------------------------------------------------------------
 
 @Composable
-fun SettingsScreen(deps: PhoneDeps) {
+fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
     val s by deps.settings.settings.collectAsState(initial = io.autonav.alerts.settings.AppSettings())
     val scope = rememberCoroutineScope()
     fun set(block: (io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) = scope.launch { deps.settings.update(block) }
     Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
+        SetupSections(activity, deps)
         Section("Units") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(s.units == Units.IMPERIAL, { set { it.copy(units = Units.IMPERIAL) } }, label = { Text("mph, miles, yards") })
@@ -789,22 +1083,79 @@ fun SettingsScreen(deps: PhoneDeps) {
         }
         Section("Speed panel") {
             SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
+            SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
         }
-        Section("GPS rate") {
-            val c = s.rateCurve
-            Text("1 Hz below ${c.minMph.roundToInt()} mph, rising to ${c.maxHz} Hz at ${c.maxMph.roundToInt()} mph.")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(5, 10, 15).forEach { v -> FilterChip(c.maxHz == v, { set { it.copy(rateCurve = RateCurve(c.minMph, c.maxMph, 1, v)) } }, label = { Text("max $v Hz") }) }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(40.0, 50.0, 60.0).forEach { v -> FilterChip(c.maxMph == v, { set { it.copy(rateCurve = RateCurve(c.minMph, v, 1, c.maxHz)) } }, label = { Text("full at ${v.roundToInt()}") }) }
-            }
-        }
+        Section("Speed limits (OpenStreetMap)") { OsmLimitsSection(activity, deps, s) { b -> set(b) } }
         if (io.autonav.alerts.BuildConfig.DEBUG) Section("Bench testing (debug builds)") {
             Text("Speed of the Simulate drive on the car screen. 1× is real time; alerts are tested at the speed shown.",
                 style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(1f, 2f, 4f).forEach { v -> FilterChip(s.simulationSpeed == v, { set { it.copy(simulationSpeed = v) } }, label = { Text("${v.roundToInt()}×") }) }
+            }
+        }
+        Section("Backup") {
+            val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+                if (uri != null) scope.launch {
+                    val msg = runCatching { deps.backup.writeTo(activity, uri) }
+                        .fold({ "Settings backup saved" }, { "Couldn't save the backup: ${it.message}" })
+                    Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+            Text("Saves your settings, your Maps API key, your PocketGPSWorld login and each camera set's alert settings to a JSON file you choose, and restores them from one. Camera data, reports and places aren't included.",
+                style = MaterialTheme.typography.bodySmall)
+            Text("The file includes your Maps API key and PocketGPSWorld password in plain text. Keep it somewhere private.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            Button(onClick = { saver.launch(io.autonav.alerts.settings.SettingsBackup.fileName()) }) { Text("Save settings backup…") }
+
+            // Restore: read and check the file, show what's in it, then apply on confirm (DESIGN.md §13.4).
+            var preview by remember { mutableStateOf<io.autonav.alerts.settings.SettingsBackup.Preview?>(null) }
+            var restoreMessage by remember { mutableStateOf<String?>(null) }
+            val opener = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) scope.launch {
+                    runCatching { deps.backup.preview(deps.backup.readText(activity, uri)) }
+                        .onSuccess { preview = it; restoreMessage = null }
+                        .onFailure { restoreMessage = it.message ?: "Couldn't read the file" }
+                }
+            }
+            OutlinedButton(onClick = { opener.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }) {
+                Text("Restore from backup…")
+            }
+            restoreMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            preview?.let { p ->
+                AlertDialog(
+                    onDismissRequest = { preview = null },
+                    title = { Text("Restore settings?") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Backup made ${p.createdAt?.take(16)?.replace('T', ' ') ?: "(no date)"}" + (p.appVersion?.let { " by version $it" } ?: ""))
+                            Text("Maps API key: " + if (p.hasMapsKey) "included" else "not included")
+                            Text("PocketGPSWorld login: " + (p.pgwUser?.let { "included ($it)" } ?: "not included"))
+                            Text("Camera set settings: ${p.sets} sets, ${p.matchingSets} of them match sets on this phone")
+                            Text("This replaces your current settings. Navigation terms still need accepting on this phone.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            val text = p.text
+                            preview = null
+                            scope.launch {
+                                restoreMessage = runCatching { deps.backup.restore(text) }.fold({ r ->
+                                    if (r.mapsKey) deps.navigator.keyChanged()
+                                    val parts = buildList {
+                                        if (r.settings) add("settings")
+                                        if (r.mapsKey) add("Maps key")
+                                        if (r.pgwLogin) add("PGW login")
+                                        add("${r.sets} camera sets")
+                                    }
+                                    "Restored " + parts.joinToString(", ").replace(Regex(", ([^,]+)$"), " and $1") + "." +
+                                        (if (r.setsNotFound > 0) " ${r.setsNotFound} sets weren't found: download the cameras first, then restore again." else "")
+                                }, { "Couldn't restore: ${it.message}" })
+                            }
+                        }) { Text("Restore") }
+                    },
+                    dismissButton = { TextButton(onClick = { preview = null }) { Text("Cancel") } },
+                )
             }
         }
         Section("About") {
@@ -819,6 +1170,46 @@ fun SettingsScreen(deps: PhoneDeps) {
             }
         }
     }
+}
+
+/**
+ * OpenStreetMap limits for the UK (DESIGN.md §8.4a): one Wi-Fi download from Geofabrik,
+ * progress, what's on the phone, Delete, and the attribution the licence asks for.
+ */
+@Composable
+private fun OsmLimitsSection(
+    activity: Activity, deps: PhoneDeps, s: io.autonav.alerts.settings.AppSettings,
+    set: ((io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) -> Unit,
+) {
+    val progress by deps.speedLimits.progress.collectAsState()
+    var stats by remember { mutableStateOf<io.autonav.alerts.osm.SpeedLimitRepository.Stats?>(null) }
+    LaunchedEffect(progress?.finished) { stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { deps.speedLimits.stats() } }
+
+    Text("Shows the road's posted limit on the car's speed panel (grey dot) when Google hasn't given one. The UK's limits are downloaded once to the phone; nothing is looked up online while driving.",
+        style = MaterialTheme.typography.bodySmall)
+    SwitchRow("Show OpenStreetMap limits", s.osmLimitsOn) { v -> set { it.copy(osmLimitsOn = v) } }
+    val p = progress
+    if (p != null && !p.finished) {
+        Text(if (p.total > 0) "${p.region}: ${p.step} · ${p.done / 1_000_000} of ${p.total / 1_000_000} MB" else p.step)
+        if (p.total > 0) androidx.compose.material3.LinearProgressIndicator(progress = { p.done.toFloat() / p.total }, modifier = Modifier.fillMaxWidth())
+        OutlinedButton(onClick = { deps.speedLimits.cancel() }) { Text("Cancel") }
+    } else {
+        p?.error?.let { Text("The last download failed: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        SwitchRow("Download on Wi-Fi only", s.osmWifiOnly) { v -> set { it.copy(osmWifiOnly = v) } }
+        Button(onClick = { deps.speedLimits.download(s.osmWifiOnly) }) {
+            Text(if (stats == null) "Download speed limits for the UK" else "Update speed limits")
+        }
+        Text((if (s.osmWifiOnly) "About 1.1 GB, on Wi-Fi only." else "About 1.1 GB, over mobile data too: check your allowance.") + " It carries on in the background with a notification; the result on the phone is about 30 MB.",
+            style = MaterialTheme.typography.bodySmall)
+    }
+    stats?.let { st ->
+        Text("OpenStreetMap data from ${st.dataDate} · ${"%,d".format(st.roads)} roads · ${st.bytes / 1_000_000} MB. Update every few months for new limits.",
+            style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = { deps.speedLimits.delete(); stats = null }) { Text("Delete downloaded limits") }
+    }
+    TextButton(onClick = {
+        activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org/copyright")))
+    }) { Text("Speed limits © OpenStreetMap contributors (ODbL), extract by Geofabrik") }
 }
 
 /** Over-limit warning threshold: −5% to +20% in 0.1% steps (DESIGN.md §11 step 9). */

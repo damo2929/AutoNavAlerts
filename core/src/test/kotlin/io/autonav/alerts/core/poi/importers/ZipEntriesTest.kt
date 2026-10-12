@@ -20,6 +20,21 @@ class ZipEntriesTest {
         return bos.toByteArray()
     }
 
+    /** Zips are read from a file on disk; the tests build theirs in memory. */
+    private fun ZipEntries.read(bytes: ByteArray) =
+        read(java.io.File.createTempFile("test", ".zip").apply { writeBytes(bytes); deleteOnExit() })
+
+    @Test
+    fun valuesAreReadWhenUsedAndNamesNeedNoInflating() {
+        val f = java.io.File.createTempFile("test", ".zip").apply { writeBytes(zip("a.txt" to igo, "b.bmp" to ByteArray(10))); deleteOnExit() }
+        assertEquals(listOf("a.txt", "b.bmp"), ZipEntries.names(f))
+        ZipEntries.read(f).use { e ->
+            assertEquals(igo.toList(), e["a.txt"]!!.toList())
+            assertEquals(10, e.getValue("b.bmp").size)
+            assertEquals(null, e["c.txt"])
+        }
+    }
+
     private val igo = "X,Y,Type,Speed,DirType,Direction\n-1.5,53.8,1,30,1,90\n".toByteArray()
 
     @Test

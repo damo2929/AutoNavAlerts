@@ -59,7 +59,14 @@ class NavigatorHolder @Inject constructor(
      * True once the user has accepted Google's terms: either the SDK remembers it, or the app recorded
      * the acceptance itself (so it's only ever asked once, even if the SDK's own flag is lost).
      */
-    suspend fun termsAccepted(): Boolean = NavigationApi.areTermsAccepted(app) || settings.navTermsAcceptedAt() != null
+    suspend fun termsAccepted(): Boolean = settings.navTermsAcceptedAt() != null || sdkTermsAccepted()
+
+    /**
+     * Whether the SDK itself remembers the acceptance. False while there's no key: any Navigation SDK
+     * call made before [NavigationApi.setApiKey] crashes the app looking for a manifest key, and there
+     * is deliberately none (DESIGN.md §1.4).
+     */
+    suspend fun sdkTermsAccepted(): Boolean = applyApiKey() && NavigationApi.areTermsAccepted(app)
 
     /** Records an acceptance from the terms dialog. */
     suspend fun recordTermsAccepted() {
@@ -76,7 +83,7 @@ class NavigatorHolder @Inject constructor(
         }
         // The SDK remembers the acceptance → normal start. If its flag was lost but we recorded the
         // user's acceptance, start without showing the terms again.
-        val sdkRemembers = NavigationApi.areTermsAccepted(app)
+        val sdkRemembers = sdkTermsAccepted()
         return suspendCancellableCoroutine { cont ->
             val listener = object : NavigationApi.NavigatorListener {
                 override fun onNavigatorReady(navigator: Navigator) {

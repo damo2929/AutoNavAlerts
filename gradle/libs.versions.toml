@@ -7,6 +7,7 @@ carApp = "1.7.0"
 navigationSdk = "8.0.0"
 places = "6.0.2"
 playServicesLocation = "21.4.0"
+playServicesAuth = "21.3.0"
 room = "2.8.5"
 work = "2.12.0"
 hilt = "2.60.1"
@@ -16,7 +17,6 @@ datastore = "1.2.1"
 okhttp = "5.5.0"
 jsoup = "1.23.2"
 junit = "4.13.2"
-secrets = "2.0.1"
 desugar = "2.1.5"
 androidxHilt = "1.4.0"
 
@@ -30,6 +30,7 @@ androidx-car-app-projected = { module = "androidx.car.app:app-projected", versio
 google-navigation = { module = "com.google.android.libraries.navigation:navigation", version.ref = "navigationSdk" }
 google-places = { module = "com.google.android.libraries.places:places", version.ref = "places" }
 play-services-location = { module = "com.google.android.gms:play-services-location", version.ref = "playServicesLocation" }
+play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "playServicesAuth" }
 
 androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
 androidx-room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
@@ -61,4 +62,3 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
-secrets = { id = "com.google.android.libraries.mapsplatform.secrets-gradle-plugin", version.ref = "secrets" }

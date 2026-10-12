@@ -137,3 +137,15 @@ data class CameraReportEntity(
     /** PENDING while speech-to-text runs; FAILED if it couldn't transcribe. */
     val transcription: String? = null,
 )
+
+/** Where a contact's address was found (DESIGN.md §8.3). Keyed by a hash of the address, not the address. */
+@Entity(tableName = "contact_geocode")
+data class ContactGeocodeEntity(
+    @PrimaryKey val key: String,
+    val placeId: String?,
+    val lat: Double,
+    val lon: Double,
+    val formattedAddress: String?,
+    val updatedAt: Long,
+)
+

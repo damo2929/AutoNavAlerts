@@ -93,6 +93,7 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
         const val DEFAULT_PASSING = "{category} now"
         const val ZONE_ENTER = "Entering average speed zone, {speed} limit"
         const val ZONE_EXIT = "Leaving average speed zone"
+        const val ZONE_OVERSPEED = "Average speed zone, {speed} limit, you are over the limit"
         const val OVERSPEED_SUFFIX = "you are over the limit"
     }
 }

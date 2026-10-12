@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- Spoken comments for camera reports, from the car's microphone (DESIGN.md §8.5) -->
@@ -31,10 +32,6 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         tools:targetApi="36">
-
-        <meta-data
-            android:name="com.google.android.geo.API_KEY"
-            android:value="${MAPS_API_KEY}" />
 
         <meta-data
             android:name="com.google.android.gms.car.application"
@@ -74,6 +71,12 @@
         <service
             android:name=".nav.NavUpdatesService"
             android:exported="false" />
+
+        <!-- The speed-limit download runs as a foreground worker (DESIGN.md §8.4a). -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
         <!-- WorkManager is initialised by App (Hilt workers) -->
         <provider
