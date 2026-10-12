@@ -150,15 +150,15 @@ The terminal the DHU runs in is also a console: type `help` there for its comman
      - `--hold N`: sit at the start point for N seconds before moving (a parked car; add `--noise` for parked wander).
      - `--stop-at "lon,lat" --for N`: stop at that point on the route for N seconds, then carry on.
      - `--crawl-mph N --from "lon,lat" --to "lon,lat"`: crawl at N mph between those two points (queueing past a camera), the normal `--mph` elsewhere.
-     - `--car-speed` / `--car-location` (with the DHU started on the `default_sensors` profile, §6.4a): feeds the DHU's sensor console in lockstep with the emulator's GPS, so the app gets a real car feed and a real car↔phone handover. `--car-lag S` delays the car feed; `--car-noise M` gives it its own wander.
+     - `--car-speed` / `--car-location` (with the DHU started on the `default_sensors` profile, §6.4a): feeds the DHU's sensor console in lockstep with the emulator's GPS, so the app gets a real car feed and a real car↔phone handover. `--car-lag MS` delays the car feed; `--car-noise M` gives it its own wander. `--car-dropout S,EVERY` drops only the car feed (the `handover` scenario uses it; plain `--dropout` drops the phone's fixes); `--car-only` feeds the head unit and not the emulator.
      - `--record out.csv`: writes every fix sent, in the app's drive-recording layout.
-     - `--replay file.csv [--speed X]`: drives the emulator from a phone **drive recording** (Settings → Diagnostics, docs/SETTINGS.md §1.8) at real time or X×. Only position and speed can be injected; bearing and accuracy are covered by the JVM replay (G10).
+     - `--replay file (at X× the reported speed is scaled by X too, so motion and the time-based alert distances agree).csv [--speed X]`: drives the emulator from a phone **drive recording** (Settings → Diagnostics, docs/SETTINGS.md §1.8) at real time or X×. Only position and speed can be injected; bearing and accuracy are covered by the JVM replay (G10).
      - `--bearing` (**experimental**): tries to send a heading through the emulator's gRPC `setGps`; falls back to `geo fix` (no heading) if the image doesn't take it.
    - **Scenarios:** `tools/scenario.sh <name>` runs a scripted drive with the options above and says what to look for in the logs (§7):
      | Scenario | What it does | Pass when |
      |---|---|---|
      | `parked-then-go` | Parks 60 s with noise, routes somewhere (preview), presses Go (`--ez go true`), then drives | No `Guidance stop` in `debug-nav` for 5 minutes; `watchdog skip (preview)` then `skip (guiding)` |
-     | `bend-camera` | A 90° bend with a camera 80 m past the apex, at 30 then 50 mph, `--noise 5` | One `enter`, three stages, at most one verdict change per pass |
+     | `bend-camera` | An ~85° bend over ~120 m (B6014 at Stretton) with a camera 80 m past the apex, at 30 then 50 mph, `--noise 5` | One `enter`, three stages, at most one verdict change per pass |
      | `wrong-way` | A ONE_WAY camera driven against its bearing, then a BOTH camera | ONE_WAY: no stage, drawn dimmed with its arrow; BOTH: alerts |
      | `crawl` | 3 mph and 6 mph past a camera (either side of the 2 m/s moving gate) | PASSING fires in both, once the camera was ahead and valid |
      | `handover` | Car feed on, dropping out 5 s every 60 s | `Location source car→phone` within 2 s of each dropout, and back when it returns |
@@ -251,7 +251,7 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | M18 | A contact address that matches several places with no postcode match (e.g. "High Street") | The list shows "Which address for <name>?" rows; picking one routes there and remembers it |
 | M19 | Revoke contacts in Android settings, then search | No contact rows and no Contacts entry; Places search as before |
 | M12 | During a free drive, restart `tools/drive.py` with a route a few km away | The car map catches up with the car within about 10 s (`debug-nav`: `Map refollow d=…`, and `rebuild d=…` only on the third miss) |
-| M20 | Park (`tools/drive.py --hold 90 --noise 4`), Search → a destination → leave the preview showing for 15 s → **Go** → the car moves | The route **stays** for the whole drive. `debug-nav` shows `watchdog skip (preview)` while the preview is up, then `watchdog skip (guiding)` once moving, and `eco re-ask skip (grace)` (with EV routes on) in the first minute; no `Guidance stop` |
+| M20 | Park (`tools/drive.py --hold 60 --noise 4`), Search → a destination → leave the preview showing for 15 s → **Go** → the car moves | The route **stays** for the whole drive. `debug-nav` shows `watchdog skip (preview)` while the preview is up, then `watchdog skip (guiding)` once moving, and `eco re-ask skip (grace)` (with EV routes on) in the first minute; no `Guidance stop` |
 | M21 | While guiding, start a route in **Google Maps** on the DHU (the host stops ours) | Toast "Navigation stopped by the car"; the action strip goes back to Search · Report · Recents · More; `debug-nav`: `Guidance stop caller=host.onStopNavigation` |
 | M22 | Route preview → **Back** without pressing Go | `debug-nav`: `preview abandoned`; no route is left drawn and there's no Stop navigation on the strip |
 | M23 | EV routes on with the Routes API on the key (debug: `--ez ev true --ez tworoutes true`), Go on the energy-efficient route, then drive off it | Within the first 60 s: `eco re-ask skip (grace)`; after the SDK's own reroute: `eco re-ask Ask … RouteStatus OK`. The route **never clears** during the re-ask. |
