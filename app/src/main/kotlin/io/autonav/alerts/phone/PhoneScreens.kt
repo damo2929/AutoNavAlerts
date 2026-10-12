@@ -99,6 +99,9 @@ import io.autonav.alerts.diag.DiagFiles
 import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.pgw.ReportSubmitWorker
 import io.autonav.alerts.reports.CameraReportRepository
+import io.autonav.alerts.settings.DEFAULT_ALERT_LEAD_SECONDS
+import io.autonav.alerts.settings.MAX_ALERT_LEAD_SECONDS
+import io.autonav.alerts.settings.MIN_ALERT_LEAD_SECONDS
 import io.autonav.alerts.settings.MapsKeyCreator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -651,9 +654,10 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
     val scope = rememberCoroutineScope()
     var set by remember { mutableStateOf(initial) }
     var units by remember { mutableStateOf(Units.IMPERIAL) }
+    var leadSeconds by remember { mutableIntStateOf(DEFAULT_ALERT_LEAD_SECONDS) }
     var pickIcon by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { units = deps.settings.current().units }
+    LaunchedEffect(Unit) { deps.settings.current().let { units = it.units; leadSeconds = it.alertLeadSeconds } }
     val iconPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { deps.icons.addUserIcon(it)?.let { id -> set = set.copy(defaultIconId = id) } }
     }
@@ -696,8 +700,11 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
                 }
             }
         }
-        StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser, defaultSeconds = 15) { set = set.copy(firstAlert = it) }
-        StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, defaultSeconds = 7) { set = set.copy(secondAlert = it) }
+        // In seconds-ahead mode the seconds come from the Alerts slider (DESIGN.md §11.1): the
+        // cards say so, and Save writes them into a1_seconds/a2_seconds so older readers see sane values.
+        val sliderNote = "Seconds: from the Alerts slider ($leadSeconds s / ${halfSecondsLabel(leadSeconds)})"
+        StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(firstAlert = it) }
+        StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(secondAlert = it) }
         Section("Passing alert (100 yd)") {
             Text("Always on while sound is enabled for this set.", style = MaterialTheme.typography.bodySmall)
         }
@@ -710,7 +717,9 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         val error = validate(set)
         error?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
         Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(enabled = error == null && set.name.isNotBlank(), onClick = { scope.launch { deps.pois.updateSet(set); onDone() } }) { Text("Save") }
+            Button(enabled = error == null && set.name.isNotBlank(), onClick = {
+                scope.launch { deps.pois.updateSet(withSliderSeconds(set, leadSeconds)); onDone() }
+            }) { Text("Save") }
             OutlinedButton(onClick = { confirmDelete = true }) { Text("Delete set") }
         }
         Spacer(Modifier.height(32.dp))
@@ -733,27 +742,33 @@ private fun validate(set: PoiSetEntity): String? {
     return null
 }
 
+/**
+ * The DB's a1_seconds/a2_seconds are no longer edited: in seconds-ahead mode they're the slider's
+ * value and its half (rounded down, as the 7 s default was), so anything still reading them agrees
+ * with what the slider says. Distance-mode stages keep whatever they had.
+ */
+private fun withSliderSeconds(set: PoiSetEntity, leadSeconds: Int): PoiSetEntity {
+    fun StageCols.fromSlider(seconds: Int) = if (mode == DistanceMode.TIME) copy(seconds = seconds) else this
+    return set.copy(firstAlert = set.firstAlert.fromSlider(leadSeconds), secondAlert = set.secondAlert.fromSlider(leadSeconds / 2))
+}
+
+/** One alert stage: on/off (2nd only), distance or seconds-ahead mode, and the metres (floor in seconds-ahead mode). */
 @Composable
 private fun StageEditor(
     title: String, stage: StageCols, canDisable: Boolean, unit: String,
-    toUser: (Int) -> Int, fromUser: (Int) -> Int, defaultSeconds: Int = 15, onChange: (StageCols) -> Unit,
+    toUser: (Int) -> Int, fromUser: (Int) -> Int, sliderNote: String, onChange: (StageCols) -> Unit,
 ) {
     Section(title) {
         if (canDisable) SwitchRow("On", stage.enabled) { onChange(stage.copy(enabled = it)) }
         if (stage.enabled) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(stage.mode == DistanceMode.FIXED, { onChange(stage.copy(mode = DistanceMode.FIXED)) }, label = { Text("Distance") })
-                FilterChip(stage.mode == DistanceMode.TIME, { onChange(stage.copy(mode = DistanceMode.TIME, seconds = stage.seconds ?: defaultSeconds)) }, label = { Text("Seconds ahead") })
+                FilterChip(stage.mode == DistanceMode.TIME, { onChange(stage.copy(mode = DistanceMode.TIME)) }, label = { Text("Seconds ahead") })
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(toUser(stage.metres).toString(), { v -> v.toIntOrNull()?.let { onChange(stage.copy(metres = fromUser(it))) } },
-                    label = { Text(if (stage.mode == DistanceMode.TIME) "Minimum ($unit)" else "Distance ($unit)") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                if (stage.mode == DistanceMode.TIME) {
-                    OutlinedTextField((stage.seconds ?: defaultSeconds).toString(), { v -> v.toIntOrNull()?.let { onChange(stage.copy(seconds = it)) } },
-                        label = { Text("Seconds") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                }
-            }
+            OutlinedTextField(toUser(stage.metres).toString(), { v -> v.toIntOrNull()?.let { onChange(stage.copy(metres = fromUser(it))) } },
+                label = { Text(if (stage.mode == DistanceMode.TIME) "Minimum ($unit)" else "Distance ($unit)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+            if (stage.mode == DistanceMode.TIME) Text(sliderNote, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -1084,6 +1099,10 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             SwitchRow("Voice", s.voiceOn) { v -> set { it.copy(voiceOn = v) } }
             SwitchRow("Chime before the passing alert", s.chimeOn) { v -> set { it.copy(chimeOn = v) } }
             OverLimitSlider(s.overspeedPct) { p -> set { it.copy(overspeedPct = p) } }
+            AlertLeadSlider(s.alertLeadSeconds, s.units) { n -> set { it.copy(alertLeadSeconds = n) } }
+            SwitchRow("Announce speed limit changes ahead", s.announceLimitChanges) { v -> set { it.copy(announceLimitChanges = v) } }
+            Text("Says the new limit once as you approach a change, from the OpenStreetMap limits on the phone.",
+                style = MaterialTheme.typography.bodySmall)
         }
         Section("Speed and location source") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1266,6 +1285,51 @@ private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
         Text("+20%", style = MaterialTheme.typography.bodySmall)
     }
 }
+
+/**
+ * Alert lead time: 15–60 s in 1 s steps (DESIGN.md §11.1). The 1st alert of every set in
+ * seconds-ahead mode fires this many seconds ahead at the current speed, the 2nd at half, each
+ * lifted to its metre floor; the helper text shows what that gives at 30, 50 and 70 mph.
+ */
+@Composable
+private fun AlertLeadSlider(current: Int, units: Units, onChange: (Int) -> Unit) {
+    var v by remember(current) { mutableIntStateOf(current) }
+    Text("Alert lead time", style = MaterialTheme.typography.bodyLarge)
+    Text("First alert: $v s ahead · second alert at ${halfSecondsLabel(v)}", style = MaterialTheme.typography.bodySmall)
+    androidx.compose.material3.Slider(
+        value = v.toFloat(), onValueChange = { v = Math.round(it) },
+        onValueChangeFinished = { onChange(v) },
+        valueRange = MIN_ALERT_LEAD_SECONDS.toFloat()..MAX_ALERT_LEAD_SECONDS.toFloat(),
+        steps = MAX_ALERT_LEAD_SECONDS - MIN_ALERT_LEAD_SECONDS - 1,
+    )
+    Row(Modifier.fillMaxWidth()) {
+        Text("$MIN_ALERT_LEAD_SECONDS s", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        Text("$MAX_ALERT_LEAD_SECONDS s", style = MaterialTheme.typography.bodySmall)
+    }
+    Text("First alert at " + listOf(30, 50, 70).joinToString(" · ") { mph -> "$mph mph: ${leadDistanceText(mph, v, units)}" },
+        style = MaterialTheme.typography.bodySmall)
+}
+
+/** "7.5 s" for 15, "8 s" for 16: half the lead time, as the 2nd alert uses it. */
+private fun halfSecondsLabel(seconds: Int): String = if (seconds % 2 == 0) "${seconds / 2} s" else "${seconds / 2}.5 s"
+
+/**
+ * The 1st alert's distance at [mph] with [seconds] of lead: max(242 m floor, speed × seconds),
+ * in the user's units, marked "(minimum)" when the floor applies.
+ */
+private fun leadDistanceText(mph: Int, seconds: Int, units: Units): String {
+    val bySpeed = (mph * Geo.MPS_PER_MPH * seconds).roundToInt()
+    val floored = bySpeed < FIRST_ALERT_FLOOR_M
+    val metres = if (floored) FIRST_ALERT_FLOOR_M else bySpeed
+    val text = if (units == Units.IMPERIAL) {
+        val yards = metres / Geo.METRES_PER_YARD
+        if (yards < 1000) "${yards.roundToInt()} yd" else "%.2f mi".format(yards / 1760)
+    } else "$metres m"
+    return if (floored) "$text (minimum)" else text
+}
+
+/** The 1st alert never fires closer than this in seconds-ahead mode (DESIGN.md §11.1). */
+private const val FIRST_ALERT_FLOOR_M = 242
 
 /** "−0.1%", "0%", "5%"… for the over-limit setting. */
 private fun pctLabel(p: Double): String {

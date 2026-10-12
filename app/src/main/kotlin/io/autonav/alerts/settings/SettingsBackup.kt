@@ -44,6 +44,8 @@ class SettingsBackup @Inject constructor(
                 .put("voiceOn", s.voiceOn)
                 .put("chimeOn", s.chimeOn)
                 .put("overspeedPct", s.overspeedPct)
+                .put("alertLeadSeconds", s.alertLeadSeconds)
+                .put("announceLimitChanges", s.announceLimitChanges)
                 .put("speedSource", s.speedSource.name)
                 .put("speedPanelOn", s.speedPanelOn)
                 .put("satelliteMap", s.satelliteMap)
@@ -190,6 +192,8 @@ class SettingsBackup @Inject constructor(
             voiceOn = bool("voiceOn", cur.voiceOn),
             chimeOn = bool("chimeOn", cur.chimeOn),
             overspeedPct = (num(j, "overspeedPct") ?: cur.overspeedPct).coerceIn(-0.05, 0.20),
+            alertLeadSeconds = (num(j, "alertLeadSeconds")?.toInt() ?: cur.alertLeadSeconds).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
+            announceLimitChanges = bool("announceLimitChanges", cur.announceLimitChanges),
             rateCurve = rate,
             speedSource = j.optString("speedSource").let { n -> SpeedSource.entries.firstOrNull { it.name == n } } ?: cur.speedSource,
             speedPanelOn = bool("speedPanelOn", cur.speedPanelOn),
