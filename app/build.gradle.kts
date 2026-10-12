@@ -32,6 +32,12 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        // The git commit the build came from, shown in Settings → About; "-dirty" when the tree had changes.
+        val commit = providers.exec { commandLine("git", "rev-parse", "--short=9", "HEAD"); isIgnoreExitValue = true }
+            .standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }
+        val dirty = providers.exec { commandLine("git", "status", "--porcelain"); isIgnoreExitValue = true }
+            .standardOutput.asText.map { if (it.isBlank()) "" else "-dirty" }
+        buildConfigField("String", "GIT_COMMIT", "\"${commit.get()}${dirty.get()}\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

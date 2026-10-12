@@ -34,6 +34,7 @@
 ### 1.3 Decisions made
 | Topic | Decision | Reason |
 |---|---|---|
+| Build stamp | `BuildConfig.GIT_COMMIT` = `git rev-parse --short=9 HEAD`, plus `-dirty` when the working tree has changes, set at configure time with `providers.exec` (configuration-cache safe); shown as "Build <commit> (debug)" in Settings → About (owner, 2026-10-12) | So a phone can be matched to a commit |
 | Licence | **Apache License 2.0** (`LICENSE`, `NOTICE`, SPDX header in each source file) | Open-source licence chosen by the owner. PGW data is never part of the project (§6.4). |
 | Language | Kotlin only | Car App Library and Navigation SDK are JVM-only. A cross-platform engine adds power drain. |
 | Map/routing/search | Google Navigation SDK + Places API (New) | Closest to the real Google Maps; supports Android Auto directly |

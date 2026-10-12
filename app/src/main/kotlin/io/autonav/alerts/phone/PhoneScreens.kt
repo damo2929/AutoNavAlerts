@@ -1169,6 +1169,8 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
         }
         Section("About") {
             Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
+            Text("Build ${io.autonav.alerts.BuildConfig.GIT_COMMIT}" + if (io.autonav.alerts.BuildConfig.DEBUG) " (debug)" else "",
+                style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/damo2929/AutoNavAlerts")))
             }) { Text("github.com/damo2929/AutoNavAlerts") }

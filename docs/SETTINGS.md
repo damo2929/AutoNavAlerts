@@ -96,7 +96,7 @@ This section isn't shown in release builds.
 - Details and the file's layout: DESIGN.md §13.4.
 
 ### 1.8 About
-The app name and version, **by Damien Dye**, and the source repository **github.com/damo2929/AutoNavAlerts** (tap to open it in the browser). Then the licence (Apache 2.0), the note that the code is AI-assisted, and the PGW icon credit. Nothing to set here.
+The app name and version, **by Damien Dye**, the **build** line (the git commit the app was built from, with `-dirty` if the tree had uncommitted changes, and "(debug)" for debug builds), and the source repository **github.com/damo2929/AutoNavAlerts** (tap to open it in the browser). Then the licence (Apache 2.0), the note that the code is AI-assisted, and the PGW icon credit. Nothing to set here.
 
 ---
 
