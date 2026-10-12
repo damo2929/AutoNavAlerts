@@ -148,6 +148,9 @@ object OsmLimitFile {
 
         val tiles: Int get() = keys.size
 
+        /** The key of the [i]th tile in the file (for sampling and tools). */
+        fun tileKeyAt(i: Int): Long = keys[i]
+
         /** Whether the file has roads in this tile. */
         fun has(tile: Long): Boolean = keys.binarySearch(tile) >= 0
 

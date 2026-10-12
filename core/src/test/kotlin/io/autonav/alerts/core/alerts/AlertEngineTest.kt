@@ -93,6 +93,55 @@ class AlertEngineTest {
     }
 
     @Test
+    fun mobileSiteBesideTheRoadStillAlerts() {
+        // A mobile van site 62 m to the side (bridge / lay-by), like the M40 site found on the bench.
+        val mobile = camera(eastM = 62.0).copy(sideToleranceM = 100.0)
+        val kinds = drive(AlertEngine(), listOf(mobile)).map { it.kind }
+        assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND), kinds.take(2))
+        assertTrue(AlertKind.PASSING in kinds)
+        // The direction rule still applies to it.
+        assertTrue(drive(AlertEngine(), listOf(camera(eastM = 62.0, bearing = 180f).copy(sideToleranceM = 100.0))).isEmpty())
+        // A fixed camera at the same offset is still treated as a parallel road.
+        assertTrue(drive(AlertEngine(), listOf(camera(eastM = 62.0))).isEmpty())
+    }
+
+    @Test
+    fun cameraOnABendWithin45DegreesOfTheHeadingAlerts() {
+        // Guiding along a route that bends right: the camera is on the route, 40° off our heading.
+        val onRoute = RouteMatcher { _, _ -> 0.0 }
+        val cam = camera(northM = 383.0, eastM = 321.0, bearing = 0f) // ~500 m away at 40°
+        val fix = Fix(latAt(0.0), 0.0, 13.4, 0.0, 0)
+        assertEquals(AlertKind.FIRST, AlertEngine().onFix(fix, listOf(cam), onRoute).single().kind)
+        // At 50° it isn't ahead.
+        val wide = camera(northM = 321.0, eastM = 383.0, bearing = 0f)
+        assertTrue(AlertEngine().onFix(fix, listOf(wide), onRoute).isEmpty())
+    }
+
+    @Test
+    fun camerasForTheOtherWayOnOurRoadAreFacingAway() {
+        val engine = AlertEngine()
+        val fix = Fix(latAt(0.0), 0.0, 26.8, 0.0, 0)
+        val away = camera(id = 1, bearing = 180f) // ahead on our road, for southbound traffic
+        val behind = camera(id = 2, northM = -500.0, bearing = 180f) // just passed, other way
+        val ours = camera(id = 3) // ahead, our way
+        val both = camera(id = 4, dir = DirectionType.BOTH, bearing = 180f) // both ways: ours too
+        val sideRoad = camera(id = 5, northM = 1_000.0, eastM = 600.0, bearing = 180f) // another road
+        val parallel = camera(id = 6, eastM = 62.0, bearing = 180f) // the other carriageway's road, 62 m off
+        val far = camera(id = 7, northM = 3_500.0, bearing = 180f)
+        val pois = listOf(away, behind, ours, both, sideRoad, parallel, far)
+        engine.onFix(fix, pois)
+        assertEquals(setOf(1L, 2L), engine.facingAway(fix, pois))
+        // A mobile site is allowed further to the side, so the same goes for it at 62 m.
+        val van = parallel.copy(id = 8, sideToleranceM = 100.0)
+        assertEquals(setOf(8L), engine.facingAway(fix, listOf(van)))
+        // On a route, "our road" is the route.
+        val offRoute = RouteMatcher { _, _ -> 200.0 }
+        assertTrue(engine.facingAway(fix, listOf(away), offRoute).isEmpty())
+        // Heading not known yet: nothing is hidden.
+        assertTrue(AlertEngine().facingAway(fix, pois).isEmpty())
+    }
+
+    @Test
     fun parallelRoadIsIgnoredWithRouteToo() {
         val engine = AlertEngine()
         val route = RouteMatcher { _, lon -> if (kotlin.math.abs(lon) < 1e-9) 0.0 else 60.0 }

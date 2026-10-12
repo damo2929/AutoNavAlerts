@@ -54,6 +54,18 @@ What the panel shows:
   - If neither is known, only your speed is shown.
 - **Colour**: white normally, **amber** at 5% over Google's limit, **red** at 10% over. These thresholds match Google Maps and can't be changed.
 
+### 1.4c Home and Work
+Home and Work are the first two rows on the car's search screen (one tap to the route preview). They come from the **Home and Work you set in Google Maps**, fetched from your Google account (DESIGN.md §8.2a):
+- **Get from my Google account**: Google asks you to allow AutoNavAlerts to copy "the places you labeled on Maps" (Google's Data Portability API), each time you press it. Works for Google accounts in the UK, EEA and Switzerland. Until Google verifies the app, your account must be one of the app's test users.
+- If Google gives an address without a position, it's looked up with Places (your Maps key).
+- The card shows the current Home and Work; **Clear Home and Work** removes them. Set or change them in Google Maps (You → Saved → Labeled), then fetch again.
+
+### 1.4b Routing
+- **Avoid tolls**: **on by default**. Routes avoid toll roads where there's a reasonable way round; if the only way is a toll road, it's still used.
+- **Energy-efficient routes (EV)**: off by default. The route preview then **offers two routes, Fastest and Energy-efficient (EV)**, each with its time and distance, and you pick one before Go (the energy-efficient one is selected first). The energy-efficient one is Google's eco-friendly route for an electric car (Routes API, on your own Maps key, billed to you like the rest). It needs the **Routes API** turned on for your key: **Create a key with my Google account** now does that (press it again if you made your key earlier), or turn it on yourself with the **Routes API** link in the guided steps. If it isn't available, the fastest route is used and the route preview says why.
+- **Avoid unpaved roads** isn't offered: Google's routing for apps has no such option.
+- The same two switches are on the car under More → **Route options**. Changes apply to the next route.
+
 ### 1.4a Speed limits (OpenStreetMap)
 Fills in the speed panel's limit, marked with a **grey dot**, when Google hasn't given one and no camera limit applies (DESIGN.md §8.4a).
 
@@ -90,7 +102,7 @@ This section isn't shown in release builds.
 - Details and the file's layout: DESIGN.md §13.4.
 
 ### 1.8 About
-Licence (Apache 2.0) and the note that the code is AI-assisted. Nothing to set here.
+The app name and version, **by Damien Dye**, and the source repository **github.com/damo2929/AutoNavAlerts** (tap to open it in the browser). Then the licence (Apache 2.0), the note that the code is AI-assisted, and the PGW icon credit. Nothing to set here.
 
 ---
 
@@ -169,8 +181,8 @@ Importing a file creates a **new** set. Each new set starts with the [defaults b
 | Icon | (from the download) | PocketGPSWorld sets | Each PocketGPSWorld set uses **the icon supplied for its file** (e.g. a Gatso "30" sign). A sync updates it unless you've chosen your own. These icons are © GerryC, 2007 (non-commercial use with credit). The credit is shown here, and the full licence is in **Settings → About → Show icon licence**. |
 | Icon | **Choose** | Camera icon for PGW, pin for files | Picks from the built-in icons (camera types, red light, pending site, pin, hazard, school, fuel, EV, star) or icons you've added |
 | | **From file** | | Adds your own image (scaled to 256 px) and uses it for this set |
-| **1st alert** | **Distance / Seconds ahead** | Seconds ahead: **30 s, minimum 500 yd** | When the first warning fires. "Seconds ahead" scales with speed (30 s at 70 mph ≈ 940 m) but never fires closer than the minimum. The 1st alert can't be switched off (turn off the set's Alerts instead). |
-| **2nd alert** | **On**, Distance / Seconds ahead | On, **300 yd** | A second, closer warning. Can be switched off. |
+| **1st alert** | **Distance / Seconds ahead** | Seconds ahead: **15 s, minimum 265 yd (242 m)** | When the first warning fires. "Seconds ahead" uses your **current speed** each moment (15 s at 70 mph ≈ 470 m, at 50 mph ≈ 335 m) but never fires closer than the minimum. The 1st alert can't be switched off (turn off the set's Alerts instead). |
+| **2nd alert** | **On**, Distance / Seconds ahead | On, seconds ahead: **7 s, minimum 155 yd (142 m)** | A second, closer warning (7 s at 70 mph ≈ 220 m). The minimum keeps it outside the 100 yd passing alert. Can be switched off. |
 | **Passing alert (100 yd)** | none | Always 100 yd | Fixed and compulsory while Sound is on. It also fires if a GPS jump skips past the 100 yd mark, it's never dropped by the 3 s spacing between alerts, and it plays at most 1 s after Google's voice. |
 | **Spoken text** | **1st alert**, **2nd alert**, **Passing** templates | `{category} ahead, {speed} limit` · `{category}, {distance}` · `{category} now` | What's said and shown. Each field has a live preview and a **Test speak** button. |
 | | **Save** | | Saves the set. It's disabled while a distance check fails (below). |
@@ -302,10 +314,12 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 | Speed and location source | Car when available |
 | Speed panel | On |
 | Satellite map in the car | Off |
+| Avoid tolls | On |
+| Energy-efficient routes (EV) | Off |
 | Show OpenStreetMap limits | On |
 | Speed limits: download on Wi-Fi only | On |
 | GPS rate | Always 10 Hz |
 | Simulate speed (debug builds) | 1× |
 | PocketGPSWorld auto-update / Wi-Fi only | On / Off |
-| New set: 1st / 2nd / passing alert | 30 s ahead (min 500 yd) / 300 yd / 100 yd |
+| New set: 1st / 2nd / passing alert | 15 s ahead (min 265 yd) / 7 s ahead (min 155 yd) / 100 yd |
 | New set: Show on map / Alerts / Sound | On / On / On (pending mobile sites: alerts Off) |

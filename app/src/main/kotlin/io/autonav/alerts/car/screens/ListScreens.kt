@@ -57,6 +57,9 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                         invalidate()
                     }
                 }.build())
+            .addItem(Row.Builder().setTitle("Route options").addText("Avoid tolls, energy-efficient EV routes")
+                .setImage(CarUi.icon(carContext, R.drawable.ic_action_navigate))
+                .setOnClickListener { screenManager.push(RouteOptionsScreen(carContext, session)) }.build())
             .addItem(Row.Builder().setTitle("Satellite map")
                 .setImage(CarUi.icon(carContext, R.drawable.ic_action_layers))
                 .setToggle(Toggle.Builder { on ->
@@ -85,6 +88,34 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
             .setHeader(Header.Builder().setTitle("More").setStartHeaderAction(Action.BACK).build())
             .setSingleList(list.build())
             .build()
+    }
+}
+
+/** Avoid tolls and energy-efficient EV routes (DESIGN.md §8.3a); used from the next route. */
+class RouteOptionsScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
+    private var settings: io.autonav.alerts.settings.AppSettings? = null
+
+    init {
+        lifecycleScope.launch { settings = session.deps.settings().current(); invalidate() }
+    }
+
+    override fun onGetTemplate(): Template {
+        val header = Header.Builder().setTitle("Route options").setStartHeaderAction(Action.BACK).build()
+        val s = settings ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
+        val list = ItemList.Builder()
+            .addItem(Row.Builder().setTitle("Avoid tolls").addText("Where there's a way round")
+                .setToggle(Toggle.Builder { on -> update { it.copy(avoidTolls = on) } }.setChecked(s.avoidTolls).build()).build())
+            .addItem(Row.Builder().setTitle("Energy-efficient routes (EV)").addText("Least energy for an electric car")
+                .setToggle(Toggle.Builder { on -> update { it.copy(evEfficientRoutes = on) } }.setChecked(s.evEfficientRoutes).build()).build())
+        return ListTemplate.Builder().setHeader(header).setSingleList(list.build()).build()
+    }
+
+    private fun update(change: (io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) {
+        lifecycleScope.launch {
+            session.deps.settings().update(change)
+            settings = session.deps.settings().current()
+            invalidate()
+        }
     }
 }
 

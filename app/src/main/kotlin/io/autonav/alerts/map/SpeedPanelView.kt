@@ -41,10 +41,8 @@ class SpeedPanelView(context: Context) : View(context) {
         if (speed == this.speed && limit == this.limit && source == this.source &&
             severity == this.severity && unit == this.unit
         ) return
-        val resize = (limit == null) != (this.limit == null)
         this.speed = speed; this.limit = limit; this.source = source
         this.severity = severity; this.unit = unit
-        if (resize) requestLayout()
         invalidate()
     }
 
@@ -52,7 +50,7 @@ class SpeedPanelView(context: Context) : View(context) {
     private val gap get() = 8 * density
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val w = if (limit != null) box * 2 + gap else box
+        val w = box * 2 + gap
         setMeasuredDimension(w.toInt(), box.toInt())
     }
 
@@ -73,15 +71,18 @@ class SpeedPanelView(context: Context) : View(context) {
         small.textSize = 11 * density
         canvas.drawText(unit, box / 2, box * 0.85f, small)
 
-        val l = limit ?: return
+        // The limit sign is always there (DESIGN.md §8.4): "–" in a grey ring when it isn't known.
+        val l = limit
         val cx = box + gap + box / 2
         val cy = box / 2
         canvas.drawCircle(cx, cy, box / 2, white)
         ring.strokeWidth = 6 * density
+        ring.color = if (l == null) Color.rgb(158, 158, 158) else Color.rgb(220, 30, 30)
         canvas.drawCircle(cx, cy, box / 2 - ring.strokeWidth / 2, ring)
-        text.color = Color.BLACK
+        text.color = if (l == null) Color.rgb(117, 117, 117) else Color.BLACK
         text.textSize = 24 * density
-        canvas.drawText(l.toString(), cx, cy + 8 * density, text)
+        canvas.drawText(l?.toString() ?: "–", cx, cy + 8 * density, text)
+        if (l == null) return
         when (source) {
             Source.CAMERA -> canvas.drawCircle(cx + box * 0.32f, cy - box * 0.32f, 5 * density, cameraDot)
             Source.OSM -> canvas.drawCircle(cx + box * 0.32f, cy - box * 0.32f, 5 * density, osmDot)

@@ -65,23 +65,104 @@ class RoutePreviewScreen(
             .setHeader(header)
             .addAction(CarUi.textAction("Back") { screenManager.pop() })
             .build()
-        // The host requires a duration or distance span on every route row (it throws otherwise).
-        val title = SpannableString("  ").apply { setSpan(DurationSpan.create(r.seconds.toLong()), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE) }
-        val text = SpannableString("  " + trafficText(r.delaySeverity)).apply {
-            setSpan(DistanceSpan.create(io.autonav.alerts.car.TripMapper(carContext, session.imperial).distance(r.meters)), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
-        }
         val items = ItemList.Builder()
-        items.addItem(Row.Builder().setTitle(CarText.create(title)).addText(CarText.create(text)).build())
-        items.setOnSelectedListener { }
-        items.setSelectedIndex(0)
+        val choices = deps.guidance().choices.value
+        if (choices.isEmpty()) {
+            val note = deps.guidance().routeNote.value?.let { " · $it" }.orEmpty()
+            items.addItem(routeRow(r.seconds, r.meters, trafficText(r.delaySeverity) + note))
+            items.setOnSelectedListener { }
+            items.setSelectedIndex(0)
+        } else {
+            // Fastest and energy-efficient (DESIGN.md §8.3a): the driver picks; the map shows the selected one.
+            // Android Auto allows no button on a route row, so the one Go names the selected route
+            // and the rows say which is selected (DESIGN.md §8.3a).
+            val sel = deps.guidance().selected.value.coerceIn(0, choices.size - 1)
+            choices.forEachIndexed { i, c ->
+                // A green tick on the selected route, an empty circle on the other: clear before Go.
+                val icon = if (choices.size == 1) null
+                    else if (i == sel) routeIcon(R.drawable.ic_route_selected, 0xFF34A853.toInt())
+                    else routeIcon(R.drawable.ic_route_option, 0xFFBDC1C6.toInt())
+                // The card's width is the host's; keep the text short so it wraps less: the route's
+                // name goes on the title line beside the time, the traffic on the line below.
+                val name = if (c.efficient && choices.size > 1) "Energy-efficient" else c.label
+                items.addItem(routeRow(c.route.seconds, c.route.meters, routeTraffic(c.route), icon, title = " · $name", second = routeQueue(c.route)))
+            }
+            items.setSelectedIndex(sel)
+            items.setOnSelectedListener { i ->
+                lifecycleScope.launch {
+                    if (!deps.guidance().select(i)) {
+                        androidx.car.app.CarToast.makeText(carContext, "Couldn't switch to that route", androidx.car.app.CarToast.LENGTH_SHORT).show()
+                    }
+                    invalidate()
+                }
+            }
+        }
         b.setItemList(items.build())
         b.setNavigateAction(
-            Action.Builder().setTitle(carContext.getString(R.string.car_go)).setOnClickListener { start(simulate = false) }.build(),
+            Action.Builder().setTitle(goTitle()).setOnClickListener { start(simulate = false) }.build(),
         )
         if (BuildConfig.DEBUG) {
             b.setActionStrip(ActionStrip.Builder().addAction(CarUi.textAction("Simulate") { start(simulate = true) }).build())
         }
         return b.build()
+    }
+
+    /** The host requires a duration or distance span on every route row (it throws otherwise). */
+    private fun routeRow(
+        seconds: Int, meters: Int, extra: String, icon: androidx.car.app.model.CarIcon? = null, title: String = "", second: String? = null,
+    ): Row {
+        val title = SpannableString("  $title").apply { setSpan(DurationSpan.create(seconds.toLong()), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE) }
+        val text = SpannableString("  $extra").apply {
+            setSpan(DistanceSpan.create(io.autonav.alerts.car.TripMapper(carContext, session.imperial).distance(meters)), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
+        }
+        return Row.Builder().setTitle(CarText.create(title)).addText(CarText.create(text))
+            .apply { second?.let { addText(it) }; icon?.let(::setImage) }.build()
+    }
+
+    /** "Go", or with two routes "Go · Fastest" / "Go · Energy-efficient", so it's clear which one Go uses. */
+    private fun goTitle(): String {
+        val go = carContext.getString(R.string.car_go)
+        val choices = deps.guidance().choices.value
+        if (choices.size < 2) return go
+        val c = choices.getOrNull(deps.guidance().selected.value) ?: return go
+        return "$go · " + if (c.efficient) "Energy-efficient" else "Fastest"
+    }
+
+    /**
+     * The tick / circle drawn here as a bitmap, coloured: a resource icon is loaded by the host from
+     * its own copy of our resources, which after an update can still be the old APK's (it showed
+     * other icons on the bench).
+     */
+    private fun routeIcon(res: Int, color: Int): androidx.car.app.model.CarIcon {
+        val d = androidx.core.content.ContextCompat.getDrawable(carContext, res)!!.mutate()
+        androidx.core.graphics.drawable.DrawableCompat.setTint(d, color)
+        val bmp = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
+        d.setBounds(0, 0, 96, 96)
+        d.draw(android.graphics.Canvas(bmp))
+        return androidx.car.app.model.CarIcon.Builder(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bmp)).build()
+    }
+
+    /** First line after the distance: " · heavy traffic +12 min", so the routes can be compared (DESIGN.md §8.3a). */
+    private fun routeTraffic(r: io.autonav.alerts.nav.EcoRoutes.Route): String {
+        val delay = if (r.delayMinutes > 0) " +${r.delayMinutes} min" else ""
+        val level = when (r.traffic) {
+            io.autonav.alerts.nav.EcoRoutes.Traffic.LIGHT -> " · light traffic$delay"
+            io.autonav.alerts.nav.EcoRoutes.Traffic.SOME -> " · some traffic$delay"
+            io.autonav.alerts.nav.EcoRoutes.Traffic.HEAVY -> " · heavy traffic$delay"
+            io.autonav.alerts.nav.EcoRoutes.Traffic.UNKNOWN -> ""
+        }
+        return level
+    }
+
+    /**
+     * Second line: how far to the first queue Google projects for when you get there, and about
+     * when ("Queue in 12 mi · ~20 min"), or "No queues expected" (DESIGN.md §8.3a).
+     */
+    private fun routeQueue(r: io.autonav.alerts.nav.EcoRoutes.Route): String? {
+        val m = r.firstJamMeters
+        if (m == null) return if (r.traffic != io.autonav.alerts.nav.EcoRoutes.Traffic.UNKNOWN) "No queues expected" else null
+        val mins = maxOf(r.minutesToFirstJam ?: 0, 1)
+        return "Queue in ${CarUi.formatDistance(m, session.imperial)} · ~$mins min"
     }
 
     private fun trafficText(severity: Int): String = when (severity) {

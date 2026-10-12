@@ -47,6 +47,8 @@ class SettingsBackup @Inject constructor(
                 .put("speedSource", s.speedSource.name)
                 .put("speedPanelOn", s.speedPanelOn)
                 .put("satelliteMap", s.satelliteMap)
+                .put("evEfficientRoutes", s.evEfficientRoutes)
+                .put("avoidTolls", s.avoidTolls)
                 .put("osmLimitsOn", s.osmLimitsOn)
                 .put("osmWifiOnly", s.osmWifiOnly)
                 .put("pgwAutoSync", s.pgwAutoSync)
@@ -193,6 +195,8 @@ class SettingsBackup @Inject constructor(
             speedPanelOn = bool("speedPanelOn", cur.speedPanelOn),
             satelliteMap = bool("satelliteMap", cur.satelliteMap),
             osmLimitsOn = bool("osmLimitsOn", cur.osmLimitsOn),
+            evEfficientRoutes = bool("evEfficientRoutes", cur.evEfficientRoutes),
+            avoidTolls = bool("avoidTolls", cur.avoidTolls),
             osmWifiOnly = bool("osmWifiOnly", cur.osmWifiOnly),
             pgwAutoSync = bool("pgwAutoSync", cur.pgwAutoSync),
             pgwWifiOnly = bool("pgwWifiOnly", cur.pgwWifiOnly),

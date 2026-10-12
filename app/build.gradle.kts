@@ -123,4 +123,6 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
+    // Real org.json for JVM tests (Android's is a stub there).
+    testImplementation("org.json:json:20240303")
 }

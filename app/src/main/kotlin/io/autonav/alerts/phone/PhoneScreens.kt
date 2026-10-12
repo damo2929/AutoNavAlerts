@@ -429,15 +429,16 @@ private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> U
         Step(2, "Link a billing account to it (add one first if you have none). Google Maps needs billing.") {
             OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_BILLING) }) { Text("Open") }
         }
-        Step(3, "Turn on these three APIs: press Enable on each page.") {
+        Step(3, "Turn on these APIs: press Enable on each page. The Routes API is only needed for energy-efficient routes.") {
             OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_NAVIGATION) }) { Text("Navigation SDK") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_MAPS_ANDROID) }) { Text("Maps SDK for Android") }
             OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_PLACES) }) { Text("Places API (New)") }
         }
+        OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_ROUTES) }) { Text("Routes API") }
         Step(4, "Create credentials → API key. Then edit the key: under Application restrictions pick Android apps and add this " +
-            "app's package name and SHA-1; under API restrictions pick the three APIs from step 3.") {
+            "app's package name and SHA-1; under API restrictions pick the APIs from step 3.") {
             OutlinedButton(onClick = { open(MapsKeyCreator.CREDENTIALS_URL) }) { Text("Open") }
         }
         Text("Package: ${activity.packageName}", style = MaterialTheme.typography.bodySmall)
@@ -682,8 +683,8 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
                 }
             }
         }
-        StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser) { set = set.copy(firstAlert = it) }
-        StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser) { set = set.copy(secondAlert = it) }
+        StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser, defaultSeconds = 15) { set = set.copy(firstAlert = it) }
+        StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, defaultSeconds = 7) { set = set.copy(secondAlert = it) }
         Section("Passing alert (100 yd)") {
             Text("Always on while sound is enabled for this set.", style = MaterialTheme.typography.bodySmall)
         }
@@ -722,21 +723,21 @@ private fun validate(set: PoiSetEntity): String? {
 @Composable
 private fun StageEditor(
     title: String, stage: StageCols, canDisable: Boolean, unit: String,
-    toUser: (Int) -> Int, fromUser: (Int) -> Int, onChange: (StageCols) -> Unit,
+    toUser: (Int) -> Int, fromUser: (Int) -> Int, defaultSeconds: Int = 15, onChange: (StageCols) -> Unit,
 ) {
     Section(title) {
         if (canDisable) SwitchRow("On", stage.enabled) { onChange(stage.copy(enabled = it)) }
         if (stage.enabled) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(stage.mode == DistanceMode.FIXED, { onChange(stage.copy(mode = DistanceMode.FIXED)) }, label = { Text("Distance") })
-                FilterChip(stage.mode == DistanceMode.TIME, { onChange(stage.copy(mode = DistanceMode.TIME, seconds = stage.seconds ?: 30)) }, label = { Text("Seconds ahead") })
+                FilterChip(stage.mode == DistanceMode.TIME, { onChange(stage.copy(mode = DistanceMode.TIME, seconds = stage.seconds ?: defaultSeconds)) }, label = { Text("Seconds ahead") })
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(toUser(stage.metres).toString(), { v -> v.toIntOrNull()?.let { onChange(stage.copy(metres = fromUser(it))) } },
                     label = { Text(if (stage.mode == DistanceMode.TIME) "Minimum ($unit)" else "Distance ($unit)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
                 if (stage.mode == DistanceMode.TIME) {
-                    OutlinedTextField((stage.seconds ?: 30).toString(), { v -> v.toIntOrNull()?.let { onChange(stage.copy(seconds = it)) } },
+                    OutlinedTextField((stage.seconds ?: defaultSeconds).toString(), { v -> v.toIntOrNull()?.let { onChange(stage.copy(seconds = it)) } },
                         label = { Text("Seconds") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
                 }
             }
@@ -1085,6 +1086,15 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
             SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
         }
+        Section("Home and Work") { HomeWorkSection(activity, deps) }
+        Section("Routing") {
+            SwitchRow("Avoid tolls", s.avoidTolls) { v -> set { it.copy(avoidTolls = v) } }
+            SwitchRow("Energy-efficient routes (EV)", s.evEfficientRoutes) { v -> set { it.copy(evEfficientRoutes = v) } }
+            Text("With energy-efficient routes on, the route preview offers both the fastest route and Google's energy-efficient " +
+                "route for an electric car, and you pick one before Go. They come from the Routes API on your own Maps key " +
+                "(billed to you like the rest). If that isn't available, the fastest route is used and the preview says why. " +
+                "Changes apply to the next route.", style = MaterialTheme.typography.bodySmall)
+        }
         Section("Speed limits (OpenStreetMap)") { OsmLimitsSection(activity, deps, s) { b -> set(b) } }
         if (io.autonav.alerts.BuildConfig.DEBUG) Section("Bench testing (debug builds)") {
             Text("Speed of the Simulate drive on the car screen. 1× is real time; alerts are tested at the speed shown.",
@@ -1159,6 +1169,10 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             }
         }
         Section("About") {
+            Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
+            TextButton(onClick = {
+                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/damo2929/AutoNavAlerts")))
+            }) { Text("github.com/damo2929/AutoNavAlerts") }
             Text("Apache License 2.0. Written with the help of Claude (AI-assisted code).", style = MaterialTheme.typography.bodySmall)
             var showLicence by remember { mutableStateOf(false) }
             val licence = remember { deps.icons.pgwIconLicence() }
@@ -1169,6 +1183,72 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                 if (showLicence) Text(licence.replace("\r", ""), style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+}
+
+/**
+ * Home and Work from the user's Google account (DESIGN.md §8.2a): the Data Portability API
+ * (one-time access; the token is only held for the call).
+ */
+@Composable
+private fun HomeWorkSection(activity: Activity, deps: PhoneDeps) {
+    val scope = rememberCoroutineScope()
+    val auth = remember { Identity.getAuthorizationClient(activity) }
+    var home by remember { mutableStateOf<io.autonav.alerts.data.PlaceEntity?>(null) }
+    var work by remember { mutableStateOf<io.autonav.alerts.data.PlaceEntity?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf(false) }
+
+    suspend fun reload() { deps.homeWork.current().let { (h, w) -> home = h; work = w } }
+    LaunchedEffect(Unit) { reload() }
+
+    fun work(block: suspend ((String) -> Unit) -> String) {
+        scope.launch {
+            busy = "Working…"; message = null; error = false
+            try { message = block { busy = it } } catch (e: Exception) {
+                message = e.message ?: e.javaClass.simpleName; error = true
+            } finally { busy = null; reload() }
+        }
+    }
+
+    fun signInProblem(e: Throwable): String {
+        val code = (e as? ApiException)?.statusCode
+        return when {
+            code == CommonStatusCodes.DEVELOPER_ERROR || e.message.orEmpty().contains("UNREGISTERED", true) ->
+                "This copy of the app isn't registered for Google sign-in yet."
+            code == CommonStatusCodes.CANCELED -> "Google sign-in was cancelled."
+            else -> "Google sign-in failed${code?.let { " (code $it)" } ?: ""}: ${e.message.orEmpty()}"
+        }
+    }
+
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        runCatching { auth.getAuthorizationResultFromIntent(result.data) }
+            .onSuccess { r -> r.accessToken?.let { t -> work { p -> deps.homeWork.fromGoogle(t, p) } } ?: run { message = "Google didn't return access."; error = true } }
+            .onFailure { message = signInProblem(it); error = true }
+    }
+
+    Text("Home and Work are offered first on the car's search screen. They come from the Home and Work you set in Google Maps.",
+        style = MaterialTheme.typography.bodySmall)
+    Text("Home: " + (home?.address ?: home?.let { "%.5f, %.5f".format(it.lat, it.lon) } ?: "not set"))
+    Text("Work: " + (work?.address ?: work?.let { "%.5f, %.5f".format(it.lat, it.lon) } ?: "not set"))
+    Button(enabled = busy == null, onClick = {
+        message = null
+        val request = AuthorizationRequest.builder().setRequestedScopes(listOf(Scope(io.autonav.alerts.places.HomeWork.SCOPE))).build()
+        auth.authorize(request)
+            .addOnSuccessListener { r ->
+                val pending = r.pendingIntent
+                if (r.hasResolution() && pending != null) launcher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                else r.accessToken?.let { t -> work { p -> deps.homeWork.fromGoogle(t, p) } }
+            }
+            .addOnFailureListener { message = signInProblem(it); error = true }
+    }) { Text("Get from my Google account") }
+    Text("Uses Google's Data Portability API (UK, EEA and Switzerland accounts). Google asks you to allow it each time.",
+        style = MaterialTheme.typography.bodySmall)
+    busy?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    message?.let { Text(it, color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary) }
+    if (home != null || work != null) TextButton(enabled = busy == null, onClick = { scope.launch { deps.homeWork.clear(); reload() } }) {
+        Text("Clear Home and Work")
     }
 }
 

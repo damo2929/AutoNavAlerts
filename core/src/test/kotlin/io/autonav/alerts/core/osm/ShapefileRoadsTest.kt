@@ -94,7 +94,8 @@ class ShapefileRoadsTest {
             assertEquals(20.0, idx.limitAt(53.37501, -1.4650, 90.0)!!, 0.01)
             assertEquals(null, idx.limitAt(53.3760, -1.46341, 45.0))  // crossing, not along
             assertEquals(null, idx.limitAt(53.3760, -1.4600, 0.0))    // 230 m away
-            assertEquals(null, idx.limitAt(53.3760, -1.46341, null))
+            // Standing still (no heading): the nearest road piece.
+            assertEquals(30.0, idx.limitAt(53.3760, -1.46341, null)!!, 0.01)
         }
     }
 

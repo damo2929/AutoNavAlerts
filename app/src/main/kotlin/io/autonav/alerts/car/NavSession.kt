@@ -147,10 +147,13 @@ class NavSession : Session(), DefaultLifecycleObserver {
         }
         // Every fix: redraw markers (DESIGN.md §8.1) and update the speed panel (§8.4).
         lifecycleScope.launch {
-            combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active) { f, n, a -> Triple(f, n, a) }
-                .collect { (fix, nearby, active) ->
+            combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active, deps.alerts().facingAway) { f, n, a, away ->
+                Triple(f, n, a) to away
+            }
+                .collect { (t, away) ->
+                    val (fix, nearby, active) = t
                     fix?.let { deps.driving().onSpeed(it.speedMps); surface.keepFollowing(it.lat, it.lon) }
-                    markers.redraw(nearby, fix, active)
+                    markers.redraw(nearby, fix, active, away)
                     updateSpeedPanel(fix?.speedMps, active)
                 }
         }
@@ -158,8 +161,14 @@ class NavSession : Session(), DefaultLifecycleObserver {
 
     private fun redrawMarkers() {
         val a = deps.alerts()
-        markers.redraw(a.nearby.value, a.lastFix.value, a.active.value)
+        markers.redraw(a.nearby.value, a.lastFix.value, a.active.value, a.facingAway.value)
     }
+
+    private data class HeldLimit(val limit: Int, val source: SpeedPanelView.Source, val timeMs: Long, val lat: Double, val lon: Double)
+    private var lastLimit: HeldLimit? = null
+    private var pendingOsm: HeldLimit? = null
+    private var loggedLimit: Int? = -1
+    private var loggedSource: SpeedPanelView.Source? = null
 
     private fun updateSpeedPanel(speedMps: Double?, active: ActiveAlert?) {
         val panel = surface.speedPanel ?: return
@@ -184,12 +193,38 @@ class NavSession : Session(), DefaultLifecycleObserver {
             deps.alerts().lastFix.value?.let { f -> deps.speedLimits().limitAt(f.lat, f.lon, f.heading) }
                 ?.let { io.autonav.alerts.core.osm.OsmSpeedLimits.display(it, imperial) }
         } else null
-        val (limit, source) = when {
+        var (limit, source) = when {
             google != null -> google to SpeedPanelView.Source.GOOGLE
             camera != null -> camera to SpeedPanelView.Source.CAMERA
             else -> osm to SpeedPanelView.Source.OSM
         }
+        // Steady OSM changes (DESIGN.md §8.4): at junctions a side road within 20 m can match for a
+        // fix or two. A different OSM limit replaces the shown one only after 2 s or 40 m.
+        val fixNow = deps.alerts().lastFix.value
+        val shownNow = lastLimit
+        if (source == SpeedPanelView.Source.OSM && limit != null && shownNow != null &&
+            shownNow.source == SpeedPanelView.Source.OSM && limit != shownNow.limit && fixNow != null
+        ) {
+            val p = pendingOsm
+            if (p == null || p.limit != limit) pendingOsm = HeldLimit(limit, source, now, fixNow.lat, fixNow.lon)
+            val q = pendingOsm!!
+            val held = now - q.timeMs >= 2_000 || Geo.distanceM(q.lat, q.lon, fixNow.lat, fixNow.lon) >= 40
+            if (!held) limit = shownNow.limit else pendingOsm = null
+        } else pendingOsm = null
+        // Hold the last limit through short gaps (junctions, road pieces meeting): up to 30 s or
+        // 300 m (DESIGN.md §8.4), so the sign doesn't blink to "–".
+        val fix = deps.alerts().lastFix.value
+        if (limit != null) {
+            if (fix != null) lastLimit = HeldLimit(limit, source, now, fix.lat, fix.lon)
+        } else lastLimit?.let { held ->
+            val moved = fix?.let { Geo.distanceM(held.lat, held.lon, it.lat, it.lon) } ?: 0.0
+            if (now - held.timeMs < 30_000 && moved < 300) { limit = held.limit; source = held.source } else lastLimit = null
+        }
         val unit = if (imperial) "mph" else "km/h"
+        if (io.autonav.alerts.BuildConfig.DEBUG && (limit != loggedLimit || source != loggedSource)) {
+            loggedLimit = limit; loggedSource = source
+            Log.i(TAG, "Panel limit ${limit ?: "–"} (${if (limit == null) "none" else source.name}) at ${fix?.let { "%.5f,%.5f".format(it.lat, it.lon) }}, $shown $unit")
+        }
         panel.post { panel.update(shown, limit, source, speedingSeverity, unit) }
     }
 

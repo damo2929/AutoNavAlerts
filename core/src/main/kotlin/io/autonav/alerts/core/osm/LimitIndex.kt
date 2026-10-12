@@ -25,9 +25,12 @@ class LimitIndex private constructor(
 ) {
     val pieces: Int get() = mph.size
 
-    /** As [OsmSpeedLimits.limitAt]: the nearest piece within 20 m running within 30° of the heading. */
+    /**
+     * As [OsmSpeedLimits.limitAt]: the nearest piece within 20 m running within 30° of the heading.
+     * With no heading (standing still) the nearest piece within 20 m either way (DESIGN.md §8.4).
+     */
     fun limitAt(lat: Double, lon: Double, headingDeg: Double?): Double? {
-        val h = headingDeg ?: return null
+        val h = headingDeg
         val kx = 111_320.0 * cos(Math.toRadians(lat))
         var best = -1
         var bestD = OsmSpeedLimits.MATCH_M
@@ -38,13 +41,13 @@ class LimitIndex private constructor(
             while (i < cells.size && (cells[i] ushr IDX_BITS) == (key ushr IDX_BITS)) {
                 val p = (cells[i] and IDX_MASK).toInt()
                 val d = distanceM(p, lat, lon, kx)
-                if (d <= bestD && headingFits(p, h)) { best = p; bestD = d }
+                if (d <= bestD && (h == null || headingFits(p, h))) { best = p; bestD = d }
                 i++
             }
         }
         for (p in wide) {
             val d = distanceM(p, lat, lon, kx)
-            if (d <= bestD && headingFits(p, h)) { best = p; bestD = d }
+            if (d <= bestD && (h == null || headingFits(p, h))) { best = p; bestD = d }
         }
         return if (best < 0) null else (mph[best].toInt() and 0xff).toDouble()
     }

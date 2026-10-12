@@ -372,7 +372,7 @@ class PoiRepository @Inject constructor(
         return db.poiSets().insert(
             defaultSet("My reports", PoiSourceType.REPORT, "REPORT", true, now).copy(
                 defaultIconId = IconRepository.CAMERA_MOBILE,
-                firstAlert = StageCols(true, DistanceMode.TIME, 457, 30),
+                firstAlert = AlertStage.DEFAULT_FIRST.toCols(),
             ),
         )
     }

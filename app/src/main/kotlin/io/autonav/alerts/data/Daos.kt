@@ -116,6 +116,12 @@ interface PlaceDao {
     @Query("SELECT * FROM place WHERE placeId = :placeId LIMIT 1")
     suspend fun byPlaceId(placeId: String): PlaceEntity?
 
+    @Query("SELECT * FROM place WHERE kind = :kind ORDER BY lastUsedAt DESC LIMIT 1")
+    suspend fun byKind(kind: PlaceKind): PlaceEntity?
+
+    @Query("DELETE FROM place WHERE kind = :kind")
+    suspend fun deleteKind(kind: PlaceKind)
+
     @Insert
     suspend fun insert(p: PlaceEntity): Long
 

@@ -81,12 +81,12 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         progress("Checking billing…")
         ensureBilling(api, projectId, billingAccount)
 
-        progress("Turning on the Navigation SDK, Maps SDK for Android and Places API (New)…")
-        val services = listOf(navigationService(api, projectNumber), MAPS_ANDROID, PLACES)
+        progress("Turning on the Navigation SDK, Maps SDK for Android, Places API (New) and Routes API…")
+        val services = listOf(navigationService(api, projectNumber), MAPS_ANDROID, PLACES, ROUTES)
         enableServices(api, projectNumber, projectId, services)
 
         progress("Creating a key only this app can use…")
-        val keyName = findKey(api, projectNumber) ?: createKey(api, projectNumber, services)
+        val keyName = findKey(api, projectNumber)?.also { allowServices(api, it, services) } ?: createKey(api, projectNumber, services)
         val key = api.get("https://apikeys.googleapis.com/v2/$keyName/keyString").getString("keyString")
         Created(key, projectId)
     }
@@ -182,12 +182,27 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         return done.getJSONObject("response").getString("name")
     }
 
+    /** An existing key gets any API it lacks (e.g. the Routes API added in 2026-10). */
+    private suspend fun allowServices(api: Api, keyName: String, services: List<String>) {
+        val key = api.get("$API_KEYS/$keyName")
+        val restrictions = key.optJSONObject("restrictions") ?: JSONObject()
+        val targets = restrictions.optJSONArray("apiTargets") ?: JSONArray()
+        val have = (0 until targets.length()).map { targets.getJSONObject(it).optString("service") }.toSet()
+        val missing = services.filter { it !in have }
+        if (missing.isEmpty()) return
+        missing.forEach { targets.put(JSONObject().put("service", it)) }
+        restrictions.put("apiTargets", targets)
+        val op = api.patch("$API_KEYS/$keyName?updateMask=restrictions", JSONObject().put("restrictions", restrictions))
+        if (!op.optBoolean("done")) api.waitFor("$API_KEYS/${op.getString("name")}")
+    }
+
     // --- HTTP ------------------------------------------------------------------------------------
 
     private inner class Api(private val token: String) {
         fun get(url: String) = call(Request.Builder().url(url).get())
         fun post(url: String, body: JSONObject) = call(Request.Builder().url(url).post(body.toString().toRequestBody(json)))
         fun put(url: String, body: JSONObject) = call(Request.Builder().url(url).put(body.toString().toRequestBody(json)))
+        fun patch(url: String, body: JSONObject) = call(Request.Builder().url(url).patch(body.toString().toRequestBody(json)))
 
         /** Polls a long-running operation until it's done (up to about 2 minutes). */
         suspend fun waitFor(opUrl: String): JSONObject {
@@ -234,6 +249,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         const val CONSOLE_NAVIGATION = "https://console.cloud.google.com/apis/library/navigationsdk.googleapis.com"
         const val CONSOLE_MAPS_ANDROID = "https://console.cloud.google.com/apis/library/maps-android-backend.googleapis.com"
         const val CONSOLE_PLACES = "https://console.cloud.google.com/apis/library/places.googleapis.com"
+        const val CONSOLE_ROUTES = "https://console.cloud.google.com/apis/library/routes.googleapis.com"
 
         /** A Google API key: "AIza" then 35 letters, digits, '-' or '_'. */
         fun looksLikeKey(text: String) = Regex("AIza[0-9A-Za-z_-]{35}").matches(text.trim())
@@ -246,5 +262,6 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         private const val NAVIGATION_GUESS = "navigationsdk.googleapis.com"
         private const val MAPS_ANDROID = "maps-android-backend.googleapis.com"
         private const val PLACES = "places.googleapis.com"
+        private const val ROUTES = "routes.googleapis.com"
     }
 }

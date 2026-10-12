@@ -82,12 +82,18 @@ class AlertCoordinator @Inject constructor(
     @Volatile private var cache: List<ResolvedPoi> = emptyList()
     /** The cache's alerting POIs as the engine takes them, built once per reload, not per fix. */
     @Volatile private var alertable: List<AlertPoi> = emptyList()
+    /** Every cached POI as the engine takes them (alerting or not), for the facing-away check. */
+    @Volatile private var all: List<AlertPoi> = emptyList()
     /** The latest settings, kept by the collector so a fix doesn't re-read DataStore (10 Hz). */
     @Volatile private var latest: io.autonav.alerts.settings.AppSettings? = null
 
     private val _nearby = MutableStateFlow<List<ResolvedPoi>>(emptyList())
     /** POIs in the cache (for markers). Updated when the cell changes or data changes. */
     val nearby: StateFlow<List<ResolvedPoi>> = _nearby
+
+    private val _facingAway = MutableStateFlow<Set<Long>>(emptySet())
+    /** POIs on our road that point the other way: never alerted, so not shown (DESIGN.md §8.1). */
+    val facingAway: StateFlow<Set<Long>> = _facingAway
 
     private val _active = MutableStateFlow<ActiveAlert?>(null)
     val active: StateFlow<ActiveAlert?> = _active
@@ -157,6 +163,9 @@ class AlertCoordinator @Inject constructor(
             }.toList()
         val events = runCatching { engine.onFix(fix, candidates, guidance.routeMatcher) }
             .onFailure { Log.e(TAG, "engine", it) }.getOrDefault(emptyList())
+        runCatching { engine.facingAway(fix, all, guidance.routeMatcher) }.getOrNull()?.let { away ->
+            if (away != _facingAway.value) _facingAway.value = away
+        }
         if (events.isEmpty()) {
             _active.value?.let { a -> if (now - a.timeMs > 12_000) _active.value = null }
             return
@@ -216,6 +225,7 @@ class AlertCoordinator @Inject constructor(
         val cats = repo.categories()
         cache = pois.mapNotNull { p -> resolve(p, sets[p.setId] ?: return@mapNotNull null, p.categoryId?.let { cats[it] }) }
         alertable = cache.filter { it.alertsOn }.map { it.alert }
+        all = cache.map { it.alert }
         // Only now: if this is interrupted, the next fix reloads again.
         cacheCentre = cell
         _nearby.value = cache
@@ -237,9 +247,22 @@ class AlertCoordinator @Inject constructor(
                     id = p.id, lat = p.lat, lon = p.lon, directionType = p.directionType, bearing = p.bearing,
                     speedLimitMps = limitMps, zoneRole = cat?.zoneRole ?: io.autonav.alerts.core.poi.ZoneRole.NONE,
                     first = set.firstAlert.toStage(), second = set.secondAlert.toStage(), soundOn = soundOn,
+                    sideToleranceM = if (isMobileSite(set, cat)) MOBILE_SIDE_M else null,
                 ),
                 alertsOn = alertsOn,
             )
+        }
+
+        /** Mobile van sites may be marked up to this far beside the road (DESIGN.md §11 step 4). */
+        private const val MOBILE_SIDE_M = 100.0
+
+        /** PGW mobile and pending-mobile sites (any format), and mobile camera reports. */
+        fun isMobileSite(set: PoiSetEntity, cat: PoiCategoryEntity?): Boolean {
+            val code = cat?.sourceCode?.lowercase().orEmpty()
+            val stem = set.format?.substringAfter(':', "")?.lowercase().orEmpty()
+            return set.source == io.autonav.alerts.data.PoiSourceType.PGW_PENDING ||
+                code == "mobile" || code == "pmobile" || stem.startsWith("mobile") || stem.startsWith("pmobile") ||
+                cat?.name?.contains("mobile", ignoreCase = true) == true
         }
 
         fun distanceLabel(m: Double, imperial: Boolean): String =

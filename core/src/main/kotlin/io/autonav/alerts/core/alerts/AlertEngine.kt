@@ -27,8 +27,10 @@ data class AlertStage(
     }
 
     companion object {
-        val DEFAULT_FIRST = AlertStage(true, DistanceMode.TIME, metres = 457, seconds = 30) // 500 yd min
-        val DEFAULT_SECOND = AlertStage(true, DistanceMode.FIXED, metres = 274) // 300 yd
+        // Seconds ahead at the current speed (DESIGN.md §11.1). The minimums keep the 2nd outside
+        // the 100 yd passing alert (+50 m) and the 1st 100 m before the 2nd at low speed.
+        val DEFAULT_FIRST = AlertStage(true, DistanceMode.TIME, metres = 242, seconds = 15)
+        val DEFAULT_SECOND = AlertStage(true, DistanceMode.TIME, metres = 142, seconds = 7)
     }
 }
 
@@ -45,6 +47,11 @@ data class AlertPoi(
     val second: AlertStage,
     /** Sound on for this POI: makes the 100 yd passing alert compulsory. */
     val soundOn: Boolean,
+    /**
+     * How far to the side of the road it may be (route and lateral checks), when more than the
+     * engine's usual 40/50 m: mobile camera sites are marked where the van parks (DESIGN.md §11 step 4).
+     */
+    val sideToleranceM: Double? = null,
 )
 
 enum class AlertKind { FIRST, SECOND, PASSING, ZONE_ENTER, ZONE_EXIT, OVERSPEED }
@@ -81,7 +88,8 @@ class AlertEngine(
     private val config: Config = Config(),
 ) {
     data class Config(
-        val aheadDeg: Double = 30.0,
+        /** A camera counts as ahead within this of the direction of travel (DESIGN.md §11 step 2). */
+        val aheadDeg: Double = 45.0,
         val aheadDegNear: Double = 45.0,
         val nearM: Double = 150.0,
         val directionToleranceDeg: Double = 45.0,
@@ -224,6 +232,28 @@ class AlertEngine(
         return out
     }
 
+    /**
+     * The POIs that point the other way on the road we're on (DESIGN.md §8.1): a camera for the
+     * other direction, on our road (the route, or within the side allowance of our line) and
+     * straight ahead or behind (within [Config.aheadDeg]), within 3 km. These are never alerted
+     * (the direction rule, §11 step 3), so the map doesn't show them either. Uses the heading the
+     * last [onFix] used; empty while it's unknown.
+     */
+    fun facingAway(fix: Fix, pois: Collection<AlertPoi>, route: RouteMatcher? = null): Set<Long> {
+        val heading = fixHeading ?: return emptySet()
+        var out: MutableSet<Long>? = null
+        for (poi in pois) {
+            if (poi.bearing == null || poi.directionType == DirectionType.ANY || directionMatches(poi, heading)) continue
+            val d = Geo.distanceM(fix.lat, fix.lon, poi.lat, poi.lon)
+            if (d > config.maxLookaheadM) continue
+            val offAxis = Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, poi.lat, poi.lon), heading)
+            if (offAxis > config.aheadDeg && offAxis < 180.0 - config.aheadDeg && d >= 15.0) continue
+            if (!onOurRoad(poi, fix, d, offAxis, route)) continue
+            (out ?: HashSet<Long>().also { out = it }) += poi.id
+        }
+        return out ?: emptySet()
+    }
+
     /** The 2nd stage, held at least 100 m inside the 1st (§11.1 validation, applied at runtime). */
     private fun effectiveSecondTrigger(poi: AlertPoi, speedMps: Double): Double? {
         if (!poi.second.enabled) return null
@@ -244,9 +274,10 @@ class AlertEngine(
 
     private fun onOurRoad(poi: AlertPoi, fix: Fix, d: Double, offAxisDeg: Double, route: RouteMatcher?): Boolean {
         val routeDist = route?.distanceToRouteM(poi.lat, poi.lon)
-        if (routeDist != null) return routeDist <= config.routeToleranceM
+        val extra = poi.sideToleranceM
+        if (routeDist != null) return routeDist <= maxOf(config.routeToleranceM, extra ?: 0.0)
         val lateral = abs(d * sin(Math.toRadians(offAxisDeg)))
-        return lateral <= config.lateralToleranceM
+        return lateral <= maxOf(config.lateralToleranceM, extra ?: 0.0)
     }
 
     private fun allowSpeech(nowMs: Long, d: Double): Boolean {

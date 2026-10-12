@@ -20,6 +20,7 @@ import androidx.car.app.SurfaceContainer
 import io.autonav.alerts.R
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.model.FollowMyLocationOptions
 import com.google.android.libraries.navigation.NavigationViewForAuto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +55,9 @@ class MapSurface(
 
     var speedPanel: SpeedPanelView? = null
         private set
+    /** The car map window's root view (debug bench checks of what draws). */
+    var overlayRoot: FrameLayout? = null
+        private set
 
     /** The alert banner at the bottom of the map (DESIGN.md §12.1), or null before the map exists. */
     var alertBanner: AlertBannerView? = null
@@ -64,6 +68,12 @@ class MapSurface(
     private var stableArea: Rect? = null
     private var visibleArea: Rect? = null
     private var following = true
+    /**
+     * The zoom the map follows the car at: MAX_ZOOM until the user picks another (+ / − or pinch).
+     * Always passed to the SDK: its own follow zoom draws closer than the max-zoom cap and so
+     * shows no traffic (DESIGN.md §8).
+     */
+    private var followZoom: Float = MAX_ZOOM
     private var container: SurfaceContainer? = null
     private var lastRefollow = 0L
     private var refollowsInARow = 0
@@ -112,7 +122,7 @@ class MapSurface(
         display = vd
         val pres = Presentation(carContext, vd.display)
         // NavigationViewForAuto takes no child views, so the speed panel sits beside it in a plain frame.
-        val root = FrameLayout(pres.context)
+        val root = FrameLayout(pres.context).also { overlayRoot = it }
         val view = NavigationViewForAuto(pres.context)
         root.addView(view, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         pres.setContentView(root)
@@ -162,12 +172,12 @@ class MapSurface(
             m.uiSettings.isMyLocationButtonEnabled = false
             m.mapType = if (satellite) GoogleMap.MAP_TYPE_HYBRID else GoogleMap.MAP_TYPE_NORMAL
             m.isTrafficEnabled = true
-            // The road map stops drawing traffic above zoom 17.5 (satellite keeps it), and the follow
+            // The road map stops drawing traffic above zoom 17 in towns (satellite keeps it), and the follow
             // camera sits at 18. Capping the zoom keeps traffic on screen on both (DESIGN.md §8).
             m.setMaxZoomPreference(MAX_ZOOM)
             Log.i(TAG, "Map ready: type ${m.mapType}, traffic ${m.isTrafficEnabled}, max zoom $MAX_ZOOM")
-            runCatching { m.followMyLocation(GoogleMap.CameraPerspective.TILTED) }
             following = true
+            follow(m)
             _map.value = m
             applyPadding()
             onMapReady?.invoke(m)
@@ -228,20 +238,36 @@ class MapSurface(
     override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
         val m = _map.value ?: return
         val amount = (ln(scaleFactor.toDouble()) / ln(2.0)).toFloat()
+        if (following) { zoom(amount); return }
         val focus = if (focusX < 0 || focusY < 0) null else Point(focusX.toInt(), focusY.toInt())
         m.moveCamera(if (focus != null) CameraUpdateFactory.zoomBy(amount, focus) else CameraUpdateFactory.zoomBy(amount))
     }
 
+    /**
+     * + / − (DESIGN.md §8). While following, keep following at the new zoom: a plain camera zoom
+     * would be undone by the SDK's follow camera, which picks its own zoom.
+     */
     fun zoom(delta: Float) {
-        _map.value?.animateCamera(CameraUpdateFactory.zoomBy(delta))
+        val m = _map.value ?: return
+        if (!following) { m.animateCamera(CameraUpdateFactory.zoomBy(delta)); return }
+        followZoom = (followZoom + delta).coerceIn(MIN_FOLLOW_ZOOM, MAX_ZOOM)
+        follow(m)
     }
 
-    @SuppressLint("MissingPermission")
     fun recenter() {
         val m = _map.value ?: return
         following = true
+        followZoom = MAX_ZOOM
+        follow(m)
+    }
+
+    /** Follows the car at [followZoom]. */
+    @SuppressLint("MissingPermission")
+    private fun follow(m: GoogleMap) {
         // Location permission is granted on the phone during setup; without it this is a no-op.
-        runCatching { m.followMyLocation(GoogleMap.CameraPerspective.TILTED) }
+        runCatching {
+            m.followMyLocation(GoogleMap.CameraPerspective.TILTED, FollowMyLocationOptions.builder().setZoomLevel(followZoom).build())
+        }
     }
 
     val isFollowing: Boolean get() = following
@@ -270,7 +296,7 @@ class MapSurface(
             container?.let(::attach)
         } else {
             Log.i(TAG, "Map is ${d[0].toInt()} m from the car: following again")
-            runCatching { m.followMyLocation(GoogleMap.CameraPerspective.TILTED) }
+            follow(m)
         }
     }
 
@@ -357,12 +383,13 @@ class MapSurface(
     companion object {
         private const val TAG = "MapSurface"
         private const val LOST_METRES = 500f
+        private const val MIN_FOLLOW_ZOOM = 3f
         private const val REFOLLOW_INTERVAL_MS = 5_000L
         /** Room left either side of the banner for the speed panel (two 64 dp boxes and gaps). */
         private const val SPEED_PANEL_CLEAR_DP = 170
         /** Height kept clear at the top for the host's action strip (its buttons end at 88 px on a 160 dpi DHU). */
         private const val ACTION_STRIP_CLEAR_DP = 88
-        /** Closest zoom at which the road map still draws Google traffic (found on the bench: 18 has none). */
-        const val MAX_ZOOM = 17.5f
+        /** Closest zoom at which the road map still draws Google traffic (found on the bench: 17.5 has none in towns, 18 none anywhere). */
+        const val MAX_ZOOM = 17f
     }
 }

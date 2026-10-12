@@ -23,7 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * POI markers, redrawn on every GPS fix as a diff (DESIGN.md §8.1): pick visible POIs from the
  * in-memory cache, rank by distance, cap at 200, then add/remove/change only what differs.
- * Bursts of fixes are conflated: only the newest state is drawn.
+ * Bursts of fixes are conflated: only the newest state is drawn. Cameras on our road that point
+ * the other way are left off: they're never alerted (the direction rule), so they'd only mislead.
  */
 class PoiMarkerLayer(
     private val icons: IconRepository,
@@ -34,7 +35,8 @@ class PoiMarkerLayer(
     private val main = Handler(Looper.getMainLooper())
     private val shown = HashMap<Long, Shown>()
     private val pending = AtomicBoolean(false)
-    @Volatile private var latest: Triple<List<ResolvedPoi>, Fix?, ActiveAlert?>? = null
+    private class State(val pois: List<ResolvedPoi>, val fix: Fix?, val active: ActiveAlert?, val facingAway: Set<Long>)
+    @Volatile private var latest: State? = null
     /** Marker images handed to the map once and reused, keyed by icon, limit and emphasis. */
     private val descriptors = HashMap<String, BitmapDescriptor>()
     var map: GoogleMap? = null
@@ -44,14 +46,15 @@ class PoiMarkerLayer(
         }
 
     /** Called on every fix (any thread). */
-    fun redraw(pois: List<ResolvedPoi>, fix: Fix?, active: ActiveAlert?) {
-        latest = Triple(pois, fix, active)
+    fun redraw(pois: List<ResolvedPoi>, fix: Fix?, active: ActiveAlert?, facingAway: Set<Long> = emptySet()) {
+        latest = State(pois, fix, active, facingAway)
         if (pending.compareAndSet(false, true)) main.post { pending.set(false); drawLatest() }
     }
 
     private fun drawLatest() {
         val m = map ?: return
-        val (pois, fix, active) = latest ?: return
+        val state = latest ?: return
+        val pois = state.pois; val fix = state.fix; val active = state.active; val away = state.facingAway
         val zoom = m.cameraPosition.zoom
         val bounds = runCatching { m.projection.visibleRegion.latLngBounds }.getOrNull() ?: return
         val south = bounds.southwest.latitude; val north = bounds.northeast.latitude
@@ -59,6 +62,7 @@ class PoiMarkerLayer(
         val onScreen = ArrayList<ResolvedPoi>()
         for (r in pois) {
             if (!r.set.showOnMap || !r.set.enabled || zoom < r.set.minZoom) continue
+            if (r.poi.id in away) continue
             val lat = r.poi.lat; val lon = r.poi.lon
             if (lat < south || lat > north) continue
             if (if (west <= east) lon < west || lon > east else lon < west && lon > east) continue

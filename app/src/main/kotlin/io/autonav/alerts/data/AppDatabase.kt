@@ -16,7 +16,7 @@ import javax.inject.Singleton
 
 @Database(
     entities = [PoiSetEntity::class, PoiCategoryEntity::class, PoiEntity::class, PlaceEntity::class, CameraReportEntity::class, ContactGeocodeEntity::class],
-    version = 6,
+    version = 7,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -83,6 +83,19 @@ val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
     }
 }
 
+/**
+ * v7: alerts default to seconds ahead at the current speed, 1st 15 s and 2nd 7 s (DESIGN.md §11.1).
+ * Sets still on the old defaults move to the new ones; sets the user changed are left alone.
+ */
+val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("UPDATE poi_set SET a1_mode = 'TIME', a1_metres = 242, a1_seconds = 15 " +
+            "WHERE a1_mode = 'TIME' AND a1_metres = 457 AND a1_seconds = 30")
+        db.execSQL("UPDATE poi_set SET a2_mode = 'TIME', a2_metres = 142, a2_seconds = 7 " +
+            "WHERE a2_mode = 'FIXED' AND a2_metres = 274")
+    }
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
@@ -90,7 +103,7 @@ object DatabaseModule {
     @Singleton
     fun db(@ApplicationContext context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, AppDatabase.NAME)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
 }

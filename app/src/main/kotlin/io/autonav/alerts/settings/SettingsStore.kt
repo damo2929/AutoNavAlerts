@@ -41,6 +41,10 @@ data class AppSettings(
     val speedPanelOn: Boolean = true,
     /** Car map shows satellite imagery (with road names) instead of the road map. */
     val satelliteMap: Boolean = false,
+    /** Route for least energy use by an electric car (DESIGN.md §8.3a). */
+    val evEfficientRoutes: Boolean = false,
+    /** Avoid toll roads where there's a way round (DESIGN.md §8.3a). */
+    val avoidTolls: Boolean = true,
     /** OpenStreetMap limits on the speed panel (DESIGN.md §8.4a). */
     val osmLimitsOn: Boolean = true,
     /** The speed-limit download waits for Wi-Fi; off lets it use mobile data too. */
@@ -88,6 +92,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val satellite = booleanPreferencesKey("satellite_map")
         val osmLimits = booleanPreferencesKey("osm_limits")
         val osmWifiOnly = booleanPreferencesKey("osm_wifi_only")
+        val evRoutes = booleanPreferencesKey("ev_efficient_routes")
+        val avoidTolls = booleanPreferencesKey("avoid_tolls")
         val mutedUntil = longPreferencesKey("muted_until")
         val speedSource = stringPreferencesKey("speed_source")
         val pgwDownload = stringPreferencesKey("pgw_download")
@@ -125,6 +131,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             pgwWifiOnly = p[K.pgwWifi] ?: false,
             speedPanelOn = p[K.speedPanel] ?: true,
             satelliteMap = p[K.satellite] ?: false,
+            evEfficientRoutes = p[K.evRoutes] ?: false,
+            avoidTolls = p[K.avoidTolls] ?: true,
             osmLimitsOn = p[K.osmLimits] ?: true,
             osmWifiOnly = p[K.osmWifiOnly] ?: true,
             mutedUntilMs = p[K.mutedUntil] ?: 0,
@@ -159,6 +167,8 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.pgwWifi] = s.pgwWifiOnly
             p[K.speedPanel] = s.speedPanelOn
             p[K.satellite] = s.satelliteMap
+            p[K.evRoutes] = s.evEfficientRoutes
+            p[K.avoidTolls] = s.avoidTolls
             p[K.osmLimits] = s.osmLimitsOn
             p[K.osmWifiOnly] = s.osmWifiOnly
             p[K.mutedUntil] = s.mutedUntilMs

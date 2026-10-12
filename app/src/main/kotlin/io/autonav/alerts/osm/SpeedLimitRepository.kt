@@ -110,6 +110,9 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
         _progress.value = null
     }
 
+    /** The open file, for checks (debug bench). */
+    fun reader(): OsmLimitFile.Reader? = openReader()
+
     fun stats(): Stats? = openReader()?.let { Stats(it.dataDate, it.roads, it.tiles, file.length()) }
 
     fun delete() {

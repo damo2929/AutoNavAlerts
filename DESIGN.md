@@ -45,6 +45,8 @@
 | GPS rate | Always 10 Hz (§10.2) | Alerts fire at accurate distances and the map is always fresh; costs more battery when slow |
 | **Camera direction (hard rule)** | A camera alerts only when it faces your direction of travel (§11 step 3). Never dropped, loosened or defaulted to "any direction" when the data gives one | Alerts for the other carriageway are wrong and noisy; set by the owner, 2026-10-12 |
 | **Car-map buttons (hard rule)** | All our on-screen buttons on the car map are on the **right-hand side only** (§8) | One control column on the right; set by the owner, 2026-10-12 |
+| Tolls | **Avoided by default** (setting, §8.3a) | The owner's choice |
+| EV routing | Optional **energy-efficient routes** from Google's Routes API (eco-friendly route for an electric vehicle), followed by the Navigation SDK through a route token (§8.3a); falls back to the fastest route | The Navigation SDK has no energy option of its own |
 | Speed limits | Google's when it gives one, else a camera's, else OpenStreetMap's from **one bulk download** (Geofabrik, the whole UK) kept on the phone (§8.4–8.4a). Never live OSM lookups | Google only gives apps the limit while you're speeding |
 | Memory | Big data is streamed from disk, never held whole in RAM: zip entries are read when used (§5.2), the speed-limit download spills to disk and lookups load only the tiles around the car (§8.4a) | The phone also runs the map, Android Auto and media |
 
@@ -673,7 +675,7 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 | POI layers | `ListTemplate` (pushed; map stays behind) | Per set: toggle map, toggle alerts; global "Mute alerts for 30 min" |
 | **People** | `PlaceListNavigationTemplate` | Tracked HA people with live markers, distance, "updated 2 min ago", and accuracy; tap → Find (§17.3) |
 | **Report** (one tap) | `MessageTemplate` "Listening…" with Done / Skip | One tap saves the report, then an optional spoken comment from the car mic; Undo alert (§8.5). No review or Send on the car. |
-| More | `ListTemplate` | Recents · POI layers · Mute alerts 30 min · Diagnostics (debug) |
+| More | `ListTemplate` | Recents · POI layers · Mute alerts 30 min · Satellite map · Route options (avoid tolls, energy-efficient EV routes) · Diagnostics (debug) |
 
 **Action strip** (up to 4): Search · **Report** · People · More. While navigating, People is replaced by Stop navigation, and People moves to More. Recents are also shown in Search's empty state, so they're still one tap away. Mute is in More ("Mute alerts for 30 min"); the alert banner on the map has no buttons (§12.1). The People action only appears when a HA server is set up. **All its actions are persistent** (`Action.FLAG_IS_PERSISTENT`), so the host never fades them out: the user wants the four top-right buttons always on screen.
 **Hard rule: all our on-screen buttons are on the right-hand side only** (owner, 2026-10-12): the satellite toggle and the zoom/recenter column are anchored to the right edge (`Gravity.END`) from the moment they're added, under the action strip, and `applyPadding` only adjusts their right and top margins from the visible area. (Anchored from the left, they sat at the top-left until the host reported the visible area.) The speed panel is bottom-right; nothing of ours goes on the left.
@@ -706,10 +708,11 @@ This is what keeps the car marker and route clear of the turn card, the rail and
 - `onScale` zooms.
 - `onFling` gives a short animated pan.
 - `onClick` on the satellite toggle switches the map type; on the alert banner it dismisses the alert; on a marker it shows the POI's details in a short-lived `Message`.
-- Recenter turns camera-follow back on.
+- **Zooming keeps your zoom**: while the map follows the car, + / − (and a pinch) keep following but at the zoom you chose (`followMyLocation(TILTED, FollowMyLocationOptions.setZoomLevel(z))`, `z` between 3 and 17), so the SDK's own follow zoom can't pull it back in while you look along the route. Zoom from a panned map just zooms. The follow watchdog re-follows at your zoom too.
+- Recenter turns camera-follow back on and hands the zoom back to the SDK (its automatic follow zoom).
 
 **Traffic**: Google's live traffic layer is **always on** (the user's rule). It's turned on when the map is created and when the map type changes, and checked on every GPS fix (`keepFollowing`), so if guidance, a rebuild or the SDK ever turns it off it's back within one fix. There's no setting to turn it off.
-- **Zoom cap 17.5** (`MapSurface.MAX_ZOOM`, `setMaxZoomPreference`): the road map (`MAP_TYPE_NORMAL`) **stops drawing traffic above zoom 17.5**, while satellite/hybrid keeps it, and the follow camera's default zoom is 18, so the road map showed no traffic at all while following. Found on the bench, 2026-10-12, by stepping the zoom: 18 → none; 17.5, 17, 16.5, 16 → traffic. It isn't the 3D buildings (turning them off changed nothing) or the SDK's map style (an empty style changed nothing). With the cap, the follow camera and the + button stop at 17.5, and traffic looks the same on both map types.
+- **Zoom cap 17** (`MapSurface.MAX_ZOOM`, `setMaxZoomPreference`): the road map (`MAP_TYPE_NORMAL`) **stops drawing traffic when zoomed in closer than 17**, while satellite/hybrid keeps it, and the follow camera's default zoom is 18, so the road map showed no traffic at all while following. Found on the bench, 2026-10-12, by stepping the zoom: 18 → none anywhere; 17.5 → none in towns (Banbury: no colour at 17.5, a red queue on Hennef Way at 17), only thin green on some motorways; 17, 16.5, 16 → traffic everywhere. It isn't the 3D buildings (turning them off changed nothing) or the SDK's map style (an empty style changed nothing). With the cap, the follow camera and the + button stop at 17, and traffic looks the same on both map types. The map **always follows at an explicit zoom** (17 until the user picks another; recenter goes back to 17): left to itself, the SDK's follow camera drew closer than the cap (it reported 17 but showed no traffic in Banbury), and with `setZoomLevel(17)` the same spot showed amber and red on Hennef Way.
 
 **Satellite view** (`satelliteMap` setting, default off):
 - A toggle sits in the **top-right corner of the map**, 16 px inside the visible area's top-right corner. The action strip is **persistent** (`Action.FLAG_IS_PERSISTENT` on all its actions), so it's always on screen and the column always sits **below** it: its top is the largest of the visible area's top, the stable area's top and 88 dp, plus 16 px. (The host sometimes reports a visible area that ignores the strip, right after the map starts; going by that alone put the toggle under the strip.) Each change is logged ("Visible area Rect(…)"). On the 1080p bench with the strips hidden the visible area is `Rect(12, 12 - 1180, 1044)`. It's a dark pill (150 × 52 dp) with the layers icon and the type a tap switches to: "Satellite" on the road map, "Map" on satellite.
@@ -720,7 +723,7 @@ This is what keeps the car marker and route clear of the turn card, the rail and
 `PoiMarkerLayer` redraws on **every fix** (cheaply: the on-screen POIs are picked without allocating, a distance sort runs only when more than 200 are on screen, and each marker image is handed to the map once and reused) from `AdaptiveLocationController`, so it runs at up to the 10 Hz GPS rate. It also redraws on camera idle (the user panned or zoomed) and on `setsChanged`.
 
 Each redraw:
-1. **Pick the POIs to show**: POIs from `PoiGridCache` (in-memory, with no Room access per fix) in sets with `showOnMap`, inside the current visible bounds plus a 10% margin, and at or above each set's `minZoom`. While the user is panning, the bounds come from the camera, and a Room viewport query fills in cells outside the cache once the camera goes idle.
+1. **Pick the POIs to show**: POIs from `PoiGridCache` (in-memory, with no Room access per fix) in sets with `showOnMap`, inside the current visible bounds plus a 10% margin, and at or above each set's `minZoom`, **leaving out cameras on our road that point the other way** (2026-10-12): `AlertEngine.facingAway` lists the ONE_WAY/BOTH POIs whose direction doesn't match our heading (the §11 step 3 rule, 45°), that are on our road (on the route, or within the side allowance of our line: 40 m, 100 m for mobile sites) and straight ahead or behind (within 45°), within 3 km. These are never alerted, so showing them only misleads (found on the bench: a pending mobile site for westbound traffic shown on our eastbound road, silent as it should be). It works from the heading the engine last used, so nothing is hidden before the heading is known; cameras on other roads are still shown either way. While the user is panning, the bounds come from the camera, and a Room viewport query fills in cells outside the cache once the camera goes idle.
 2. **Rank and cap**: sort by distance to the vehicle and keep the closest **200**.
 3. **Work out each marker's state**:
    - **icon**: §4.2 resolution
@@ -748,7 +751,7 @@ Each redraw:
 | **Google Maps share** | Share a place from Google Maps → "AutoNavAlerts". The share target reads the `maps.app.goo.gl` / `google.com/maps` link, follows the short-link redirect, and gets the place ID, or coordinates from the `!3d…!4d…` / `@lat,lon` parts, then fills in details through Places | Recents (with "Navigate now" if the car is connected) | Each time you share |
 | **Google Takeout** | Import the zip on the phone: `My Activity/Maps/MyActivity.json` (the "Searched for" / "Directions to" / "Viewed" entries, coordinates taken from their URLs) and `Maps (your places)/Saved Places.json` (GeoJSON) | Recents (by time), Favourites, Home/Work | No, you import it by hand |
 | **On-device Timeline export** | Android Settings → Location → Timeline → Export → `Timeline.json`. We read the `visit` segments (top candidate place ID + location) | Recents: places you actually visited, most recent first, for the last N months (default 3) | No, you import it by hand |
-| **Google Data Portability API** (optional) | OAuth with your Google account, using the `myactivity.maps` and `maps` saved-place scopes. A background job (weekly, Wi-Fi) runs an archive job, downloads the result, and runs the same parser as Takeout | Same as Takeout | **Yes**, but it needs a Google Cloud OAuth client set up with you as a test user. Only available in the EEA/UK/Switzerland. |
+| **Google Data Portability API** (optional) | OAuth with your Google account, using the `myactivity.maps` and `maps` saved-place scopes (Home and Work: `maps.aliased_places`, built, §8.2a). A background job (weekly, Wi-Fi) runs an archive job, downloads the result, and runs the same parser as Takeout | Same as Takeout | **Yes**, but it needs a Google Cloud OAuth client set up with you as a test user. Only available in the EEA/UK/Switzerland. |
 
 - There is **no API for reading Google Maps' recents live**. Takeout, Timeline and the Data Portability API are the only official exports. That means imported history is only as fresh as the last import or sync. Recents from our own app and shared places are always current.
 - **Merging and duplicates**: the match is on `placeId`. Without one, two entries count as the same if they're within 30 m of each other and have similar names (case-folded, with Levenshtein ≤ 3). On a match, `lastUsedAt` takes the newest value, `useCount` is added together, and HOME/WORK/FAVOURITE win over RECENT.
@@ -769,6 +772,23 @@ Each redraw:
 - **We can't delete it inside Google Maps**, because there's no write API. The phone app's Places screen has a "Manage in Google My Activity" link for that.
 - Home/Work/Favourites can't be removed from the recents action. Removing them needs Unfavourite or the phone app.
 
+### 8.2a Home and Work from your Google account
+**Goal** (owner, 2026-10-12): the car offers **Home** and **Work** as one-tap destinations, using the Home and Work you set in Google Maps on your Google account.
+
+**There's no live API** for Google Maps' Home/Work. The app uses the official export, from your Google account:
+- **Google account**: phone Settings → **Home and Work** → **Get from my Google account**. The app asks Google (the same in-app Google sign-in as key creation, §13.1) for the **Data Portability API** scope `https://www.googleapis.com/auth/dataportability.maps.aliased_places` ("the places you labeled on Maps"), then:
+   - `POST https://dataportability.googleapis.com/v1/portabilityArchive:initiate` with `{"resources": ["maps.aliased_places"]}` → an `archiveJobId`;
+   - polls `GET …/v1/archiveJobs/{id}/portabilityArchiveState` (every 3 s, up to 3 minutes) until `COMPLETE`, then downloads each signed URL in `urls` (a zip or JSON);
+   - parses the labeled places (below) and keeps the ones labelled Home and Work.
+   - Limits: Google offers this API only to accounts in the **UK, EEA and Switzerland**; the scope is **restricted**, so until Google verifies the app, it works for accounts added as **test users** on the app's OAuth consent screen (maintainer task, with `dataportability.googleapis.com` enabled in the app's own Cloud project). Access is one-time: pressing the button again asks again. The token is only held in memory for the call.
+- **No Takeout import** (removed at the owner's request, 2026-10-12).
+
+**Parsing** (`LabeledPlaces`, in the app module since it uses `org.json`; JVM-tested): Google's export is a zip or JSON file of GeoJSON `features`, each with `geometry.coordinates` `[lon, lat]` and `properties` (or `property`) `name` and `address`. A place is **Home** if its name is "Home" or its `semantic_type`/`semanticType` is `TYPE_HOME`, **Work** likewise (any case). Coordinates may be missing (Google can leave them out for Home/Work); then the address is looked up with Places text search (§8, the user's own key).
+
+**Stored**: one `place` row of kind `HOME` and one of kind `WORK` (DB unchanged), replacing the previous ones, with the address. The Settings card shows them with **Clear**.
+
+**Car**: with the search box empty, **Home** and **Work** are the first two rows (house and briefcase icons, the address underneath); one tap previews the route (§8.3a choices apply). When one isn't set, its row is left out. They also lead Recents.
+
 ### 8.3 Navigating to contacts' addresses
 - **Permission**: `READ_CONTACTS` (in the manifest), **optional**. Settings → Permissions has a "Contacts (optional)" line and its own **Allow contacts** button (the main **Allow** only asks for the needed permissions). Without it the contact rows and the Contacts entry are hidden, and search works as before.
 - **Source** (`ContactsSource`): `ContactsContract.CommonDataKinds.StructuredPostal` rows, read with the `ContentResolver`, each with its contact's `DISPLAY_NAME_PRIMARY`, the address type (HOME/WORK/OTHER or the custom label, via `StructuredPostal.getTypeLabel`) and `FORMATTED_ADDRESS`. Read-only; the app never changes your contacts. Addresses with a blank formatted address are skipped.
@@ -784,6 +804,28 @@ Each redraw:
 - **Recents**: a contact destination is stored as a recent titled with the name and type, for example "Mum (Home)", with the formatted address. It can be deleted like any other recent (§8.2).
 - **Privacy**: contact data is only read on the device, when you search. Only the address you pick is sent to Google (Places Text Search, billed to your Maps key like any search). Names, phone numbers and other addresses never leave the phone.
 
+### 8.3a Route options: avoid tolls, energy-efficient routes for electric vehicles
+**Where**: phone Settings → **Routing**, and car More → **Route options** (a list with a toggle for each). Both write the same settings, which apply to the next route (and to re-routes).
+
+**Avoid tolls** (`avoidTolls`, default **on**, the owner's choice): every route avoids toll roads where there's a reasonable way round: `RoutingOptions.avoidTolls(true)` for the SDK's own routes, and `routeModifiers.avoidTolls: true` for energy-efficient ones. If the only way there is a toll road, Google still uses it.
+
+**Energy-efficient routes (EV)** (`evEfficientRoutes`, default **off**): the route preview **offers both routes, the fastest and the energy-efficient one for an electric car, and the driver picks** which to use (owner's choice, 2026-10-12).
+
+**How**: the Navigation SDK's own routing options only cover tolls, ferries, motorways and shorter-vs-faster; it has no energy option. It can, though, follow a route made elsewhere (`setDestinations(waypoints, CustomRoutesOptions(routeToken, DRIVING))`). So with the option on:
+1. The app asks Google's **Routes API** (`POST https://routes.googleapis.com/directions/v2:computeRoutes`) for a route from the current position to the destination (the place ID when there is one, else its position), with `travelMode DRIVE`, `routingPreference TRAFFIC_AWARE_OPTIMAL`, `requestedReferenceRoutes ["FUEL_EFFICIENT"]`, `extraComputations ["TRAFFIC_ON_POLYLINE"]` and `routeModifiers.vehicleInfo.emissionType ELECTRIC` (plus `routeModifiers.avoidTolls` when Avoid tolls is on), and the field mask `routes.routeToken,routes.routeLabels,routes.duration,routes.staticDuration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.travelAdvisory.speedReadingIntervals`. The origin is the latest fix, or the phone's last known position right after a restart (no fix yet).
+2. Google returns the default route (label `DEFAULT_ROUTE`) and its eco-friendly one (`FUEL_EFFICIENT`), each with a `routeToken`, time and distance; when the default is already the most efficient it returns one route with both labels.
+3. **The preview lists both**: "Fastest" and "Energy-efficient (EV)", each with its time and distance (from the Routes API, so they compare like for like), or one row "Fastest and most efficient" when they're the same. The energy-efficient row is selected first (the option is on). Android Auto allows **no button on a route row** (the route preview's rows are "simple" rows, max 0 actions, and the template has one Navigate action), so a Go per route isn't possible; instead the **Go button names the selected route** ("Go · Energy-efficient" / "Go · Fastest") and the selected row is **highlighted before Go**: a green tick icon (vs an empty circle), on top of the host's own selection highlight.
+   - **Traffic on each route**, so it's clear which is better: `duration` is with today's traffic and `staticDuration` without, so the delay is their difference. Under 3 min or under 10% of the traffic-free time → "light traffic", under 25% → "some traffic", else "heavy traffic", with the delay: e.g. title "1 hr 39 min · Energy-efficient", text "39 mi · heavy +12 min · queue in 20 min" (traffic "light" / "busy" / "heavy") (the card's width is set by the host, so the route's name sits on the title line to keep the text to fewer lines). The single-route preview keeps the SDK's own traffic level.
+   - **Projected traffic** (owner: "we don't want to be on a route that in 20 minutes is going to get congested"): `TRAFFIC_AWARE_OPTIMAL` times each stretch for **when you'll reach it**, from live and historical (predicted) traffic, so a route that clogs up later already shows the delay. `TRAFFIC_ON_POLYLINE` also says where: the `speedReadingIntervals` (NORMAL / SLOW / TRAFFIC_JAM over polyline point ranges) are measured along the decoded polyline. Each row adds **"queue in N min"** for the first TRAFFIC_JAM stretch (its distance along the route × the route's time ÷ its length, a rough arrival time), or "No queues expected". Pick the row without the early queue; guidance then re-routes around new jams as usual. Selecting a row sets that route in the Navigation SDK (`setDestinations(waypoint, CustomRoutesOptions(token, DRIVING))`) so the map shows it; **Go** starts guidance on the selected one. The preview, the guidance and the turn feed are the SDK's as usual.
+- **Key and billing**: the call uses the user's own Maps key (§1.4), with the Android app headers (`X-Android-Package`, `X-Android-Cert` = the signing SHA-1) its restriction needs, so it's billed to the user like the rest. **Create a key with my Google account** now also turns on the Routes API (`routes.googleapis.com`) and adds it to the key's API list; for an existing key, pressing it again adds it. The guided steps have a Routes API link too.
+- **Fallback, never a dead end**: if the Routes API call fails (not turned on for the key, no network, no eco route there) the app routes normally and the preview says why: "Fastest route (energy-efficient routing isn't available: …)". With the option off, or when the call fails, the preview has its single SDK route as before.
+- **Limits**: Google's eco-friendly routing doesn't cover every region; when there's no eco route the default route is used. If you leave the route, the Navigation SDK re-routes itself (fastest); if you chose the energy-efficient route, the app then asks the Routes API again for one from where you are, at most once a minute.
+- **Not affected**: camera alerts, the direction rule (§11) and the speed panel work the same on any route.
+
+**Avoid unpaved roads: not possible** (owner asked for it always on, 2026-10-12). Neither the Navigation SDK 8.0 (`RoutingOptions`: tolls, ferries, motorways, shorter/faster only) nor the Routes API (`routeModifiers`: tolls, motorways, ferries, indoor) has an unpaved or road-surface option, so Google's routing can't be told to avoid them. Recorded here so it isn't promised in the UI; revisit with each SDK release (the quarterly SDK check, TESTING.md §6.10).
+
+**Bench** (2026-10-12): with the option on and a key without the Routes API, Google answers 403 and the preview shows the fastest route (tolls avoided) with "Fastest route (energy-efficient routing isn't available: turn on the Routes API for your Maps key in Settings)". The energy-efficient path itself needs the Routes API on the key (re-run **Create a key with my Google account**, which now adds it).
+
 ### 8.4 Speed panel: current speed and the road's speed limit
 - **What it shows**: always on the map, in the **bottom-right corner** of the visible area (16 px in), clear of the turn card and the media panel (the user asked for bottom right, 2026-10-12; it was bottom left). The map buttons are in a column at the top right, so nothing else uses that corner:
   - **Current speed** in your units (mph/km/h), from the smoothed speed in `AdaptiveLocationController` (§10.3). It updates on every fix, up to 10 Hz, with the number rounded and steadied to avoid flicker.
@@ -793,7 +835,11 @@ Each redraw:
   1. **Google**, while you're over its limit: `SpeedingListener.onSpeedingUpdated(percentageAboveLimit, severity)` gives the percentage over, so the limit is worked out (speed ÷ (1 + %), rounded to 5) and kept for 60 s. Google exposes no limit at all below it, and `NavigationViewForAuto` has no speed-limit icon option (SDK 8.0.0). No marker.
   2. **Camera or zone**: the limit of the camera being alerted (last 20 s) or the average-speed zone you're in. Small **blue dot**.
   3. **OpenStreetMap** (§8.4a): the posted `maxspeed` of the road you're on, from data downloaded to the phone. Small **grey dot**.
-  4. None: only your speed.
+  4. None known: the sign is **still shown**, with "–" in a grey ring, so the limit always sits next to the speed (owner's rule, 2026-10-12).
+- **Always a limit next to the speed** (owner, 2026-10-12):
+  - **Held through gaps**: the last limit shown stays for up to **30 s or 300 m** when the lookup briefly finds nothing (junctions, where road pieces meet, a camera alert ending), then the next source in the list takes over.
+  - **Steady at junctions**: a side road within 20 m can match for a fix or two, so a **different OSM limit replaces the shown one only after 2 s or 40 m**; Google and camera limits switch at once.
+  - **Standing still**: with no heading (parked, crawling), the OpenStreetMap lookup takes the nearest road piece within 20 m in either direction, instead of needing a heading.
 - **Colour**: amber/red follow Google's `SpeedingListener` severity (5% / 10% over), as before. Being over a camera or OSM limit doesn't colour the panel.
 
 ### 8.4a OpenStreetMap speed limits (one download for the UK)
@@ -980,12 +1026,13 @@ Inputs per fix: position *P*, smoothed speed *v* (m/s), heading *h*, plus the ro
 For each candidate *q* in the cached cells, with the set's and category's alerts on and not `hiddenByReport`:
 
 1. **Distance**: *d* = haversine(*P*, *q*). Skip if *d* > `maxLookahead`, which is the trigger distance + 200 m, capped at 3 km.
-2. **Ahead of you**: β = bearing(*P*→*q*). Keep if |angleDiff(β, *h*)| ≤ **30°**. Within 150 m this widens to 45° to cope with bends.
+2. **Ahead of you**: β = bearing(*P*→*q*). Keep if |angleDiff(β, *h*)| ≤ **45°** (owner's choice, 2026-10-12; was 30°, widening to 45° only within 150 m). Parallel roads are still filtered by step 4.
 3. **Direction check** (**hard rule**, §1.3: never dropped or loosened; a camera with a bearing in its data is never treated as "any direction"; tests cover both facing and opposite):
    - ANY or no bearing: passes
    - ONE_WAY: passes if |angleDiff(*q*.bearing, *h*)| ≤ **45°**
    - BOTH: passes if that's ≤ 45° **or** |angleDiff(*q*.bearing + 180, *h*)| ≤ 45°
 4. **Route matching** (only with a route): the cross-track distance from *q* to the route polyline ahead of you (the next 3 km of segments). If it's more than **50 m**, drop the POI, which removes cameras on parallel roads. Without a route, a **lateral offset** check is used instead: *d*·sin(angleDiff(β, *h*)) must be ≤ 40 m.
+   - **Mobile camera sites get 100 m** for both checks (PGW mobile and pending-mobile sets, and mobile reports): a site is marked where the van parks (bridge, lay-by, verge), often 50–100 m from the carriageway's centre. Found on the bench, 2026-10-12: a PGW mobile site on the M40 south of J11, 62 m off the route and facing the right way, was dropped by the 40 m check. Fixed, red-light and average-speed cameras keep 40/50 m so parallel roads stay filtered. The direction check (step 3) applies to all, unchanged.
 5. **Alert stages**: three per POI, defined in §11.1. Each fires once, when *d* ≤ that stage's trigger distance.
 6. **Missed-passing safety net**: if a POI that passed steps 2–4 suddenly goes from ahead to behind (|angleDiff(β, *h*)| > 90°) within 150 m, and its passing alert hasn't fired yet, the passing alert fires right away. This covers a GPS jump or slow fixes that skip over the 100 yd mark. When sound is on the passing alert can't be missed.
 7. **Deduplication**: per POI it keeps `{firstFired, secondFired, passingFired, closestD}`. The state is cleared once *d* is past its lowest point by more than 100 m (you've passed it) or the POI is more than 2 km behind. That way the same POI re-alerts on a later pass but not twice on one approach.
@@ -1012,12 +1059,13 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
 ### 11.1 Alert stages
 | Stage | Settings | Default | Can be turned off? |
 |---|---|---|---|
-| **1st alert** | Mode FIXED (distance) or TIME (seconds ahead at current speed, with a minimum distance) | TIME: 30 s, min 500 yd (457 m) | No. Its distance can be set, but the stage stays (turn the whole set's alerts off to remove it). |
-| **2nd alert** | Turned on/off; mode FIXED or TIME; distance or seconds and minimum | On, FIXED 300 yd (274 m) | Yes |
+| **1st alert** | Mode FIXED (distance) or TIME (seconds ahead at current speed, with a minimum distance) | **TIME: 15 s** at the current speed, min 242 m (265 yd) | No. Its distance can be set, but the stage stays (turn the whole set's alerts off to remove it). |
+| **2nd alert** | Turned on/off; mode FIXED or TIME; distance or seconds and minimum | On, **TIME: 7 s** at the current speed, min 142 m (155 yd) | Yes |
 | **Passing alert** | None: fixed at **100 yd (91.44 m)** | 100 yd | **No. Compulsory whenever sound is on for the POI** (`soundOn`, §4.2). With sound off it's skipped and only the visual alerts run. |
 
 - **Where it's set**: per set, with per-category overrides, in the phone's set detail screen (§13). The settings screen holds the defaults for new sets. Distances are entered in the user's units: yards/miles in imperial, metres/km in metric. The passing distance always shows as "100 yd (91 m)".
-- **Trigger distance**: FIXED `D = metres`. TIME `D = max(metres, v × seconds)`; for example 30 s at 70 mph (31.3 m/s) is 939 m.
+- **Trigger distance**: FIXED `D = metres`. TIME `D = max(metres, v × seconds)`, with *v* the **current speed** each fix, so the warning time stays the same at any speed: with the defaults (owner's choice, 2026-10-12: 1st 15 s, 2nd 7 s) 70 mph (31.3 m/s) gives 469 m and 219 m, 50 mph 335 m and 156 m, and at 30 mph the minimums (242 m, 142 m) apply, which keep the 2nd outside the 100 yd passing alert and the 1st 100 m before the 2nd.
+- **Existing sets**: DB v7 (`MIGRATION_6_7`) moves sets still on the old defaults (1st TIME 30 s / 457 m, 2nd FIXED 274 m) to the new ones; sets the user changed are left alone.
 - **Validation** (in the editor, and again at runtime):
   - D(2nd) must be at least 100 yd + 50 m (≈ 142 m)
   - D(1st) must be at least D(2nd) + 100 m
@@ -1057,7 +1105,9 @@ The alert is drawn by us on the map surface, in the same `Presentation` as the s
 - **Size and look** (`AlertBannerView`):
   - height **96 dp**; width up to **640 dp**, leaving **170 dp** clear on each side for the speed panel (two 64 dp boxes and their gaps), but never narrower than half the visible width
   - placed by `MapSurface.applyPadding` from the **visible** area: centred across it, 16 px above its bottom edge, so it moves with the rail, the turn card and the split-screen media panel
-  - dark card (`#202124` at 92%), 16 dp corners; icon at the left (the set's icon, 128 px bitmap); title 26 dp white, ellipsised; subtitle 20 dp grey; progress bar 4 dp along the bottom (`#8AB4F8` on a dark track), redrawn every 100 ms while shown
+  - dark card (`#202124` at 92%), 16 dp corners; the icon (the set's icon, 128 px bitmap) and the text beside it are **centred together** in the card (2026-10-12; text left-aligned to each other, the block centred); title 26 dp white, ellipsised; subtitle 20 dp grey; progress bar 4 dp along the bottom (`#8AB4F8` on a dark track)
+  - **GPU drawing** (2026-10-12): the card, icon and text are drawn once per alert (text shortened once, not per frame) into a **hardware layer**, a GPU texture freed when the banner hides; the progress bar is its own view whose `scaleX` is animated on the **render thread** (`ViewPropertyAnimator`), so nothing is redrawn while it runs. (Before, the whole banner was redrawn every 100 ms.)
+  - **Map frame rate** (measured on the bench): the Navigation SDK draws the map into a `GLTextureView` and keeps rendering about 57 frames/s even when parked; hiding all our overlays or leaving follow mode doesn't change it, so it's the SDK's own (e.g. its location marker), not our code.
   - fade in and out over 150 ms; never slides
 - **Timing:** shown for 8 s, or 5 s for the passing alert; each new stage restarts the time. The banner hides itself when the time runs out, or at once when tapped.
 - **Identity:** the banner remembers the POI id it's showing. A new alert for the same POI (2nd stage, passing) updates the text in place with no fade; a different POI fades the new one in.
@@ -1141,6 +1191,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - Over-limit warning: −5% to +20% slider, default −0.1%.
    - Speed and location source: car when available / phone only (§10.6).
    - Speed panel: show/hide; **Satellite map in the car**.
+   - Routing: **Avoid tolls** (on), **Energy-efficient routes (EV)** (off) (§8.3a).
    - **Speed limits (OpenStreetMap)** (§8.4a): show switch, **Download on Wi-Fi only**, Download/Update with progress and Cancel, the data's date, roads and size, Delete, and the attribution.
    - Backup: save / restore the settings file (§13.4).
    - Bench testing (debug builds): simulated-drive speed.
@@ -1221,7 +1272,7 @@ Shown under **Create a key with my Google account** as **Set it up yourself in G
 
 **One-time registration by the maintainer** (Google Cloud, done once for the app, never by users):
 1. A Cloud project for the app: **`autonavalerts-app-6c5c7b`** ("AutoNavAlerts app", created 2026-10-12 with `gcloud`), with Cloud Resource Manager, Cloud Billing, Service Usage and API Keys enabled. It has no billing and needs none.
-2. **Console only** (no API for personal accounts): the OAuth consent screen (External, Testing, the `cloud-platform` scope, test users), then an **Android OAuth client** for `io.autonav.alerts` + the SHA-1 above.
+2. **Console only** (no API for personal accounts): the OAuth consent screen (External, Testing, the `cloud-platform` scope, test users), then an **Android OAuth client** for `io.autonav.alerts` + the SHA-1 above. **Done 2026-10-12**, but in the maintainer's Maps project **`damien-maps-b17139`** rather than the project in step 1 (it can be moved later): Google Auth Platform in Testing, External, scopes `cloud-platform` and `dataportability.maps.aliased_places`, the maintainer's account as the only test user so far, and the Android client "AutoNavAlerts Android (shared signing key)". **The same five APIs (step 1's four plus Data Portability) had to be enabled in that project too:** Google counts calls made with the app's sign-in against the project that owns the OAuth client, so the first run on a phone failed with "Cloud Resource Manager API has not been used in project 893733140226" until they were. Verified on a phone the same day: the button signed in and created the user's key with nothing else to do.
 3. Beyond 100 users: Google's verification of the `cloud-platform` scope (needs a privacy policy page; can take weeks).
 
 After that, users never set anything up: they press **Create a key with my Google account** (§13.1). The only thing they may still meet is adding a billing account, if they've never had one.
@@ -1243,7 +1294,7 @@ After that, users never set anything up: they press **Create a key with my Googl
   "settings": {
     "units": "IMPERIAL", "voiceOn": true, "chimeOn": true, "overspeedPct": -0.001,
     "speedSource": "CAR_WHEN_AVAILABLE", "speedPanelOn": true, "satelliteMap": false,
-    "osmLimitsOn": true, "osmWifiOnly": true,
+    "osmLimitsOn": true, "osmWifiOnly": true, "avoidTolls": true, "evEfficientRoutes": false,
     "pgwAutoSync": true, "pgwWifiOnly": false, "pgwDownload": "TOMTOM_OV2"
   },
   "secrets": { "mapsApiKey": "AIza…", "pgwUsername": "…", "pgwPassword": "…" },
@@ -1286,7 +1337,7 @@ After that, users never set anything up: they press **Create a key with my Googl
 | Map drawing | Navigation SDK; POI markers redrawn on **every GPS fix** (up to 10 Hz, §8.1) as a diff, ≤ 200, existing markers changed rather than re-created, unchanged markers left alone | Small to moderate at 10 Hz; measured on its own in the power test |
 | Network | Places only on search; PGW: a daily conditional GET of the feed (usually a 304) plus about 220 KB per release (about weekly), on any network | Negligible |
 | TTS | Engine stays warm while connected; focus only while speaking | Negligible |
-| Startup | R8 code shrinking, Baseline Profile, Room DB opened in the background | Faster cold start |
+| Startup | R8 code shrinking (release builds; the Navigation SDK and Maps classes are kept whole by `app/proguard-rules.pro`, because the SDK creates some of its own classes by reflection and a shrunk SDK crashed on a phone the moment the key was saved, 2026-10-12), Baseline Profile, Room DB opened in the background | Faster cold start |
 | Wakeups | No timers or polling; WorkManager only for sync | — |
 
 **How it's measured**:
