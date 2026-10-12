@@ -50,6 +50,8 @@ data class AppSettings(
     /** The speed-limit download waits for Wi-Fi; off lets it use mobile data too. */
     val osmWifiOnly: Boolean = true,
     val mutedUntilMs: Long = 0,
+    /** The Google account chosen for Home and Work (DESIGN.md §8.2a); null shows the picker. */
+    val googleAccount: String? = null,
     /** Debug builds: Navigation SDK simulator speed multiplier for bench testing. */
     val simulationSpeed: Float = 1f,
     val speedSource: SpeedSource = SpeedSource.CAR_WHEN_AVAILABLE,
@@ -94,6 +96,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val osmWifiOnly = booleanPreferencesKey("osm_wifi_only")
         val evRoutes = booleanPreferencesKey("ev_efficient_routes")
         val avoidTolls = booleanPreferencesKey("avoid_tolls")
+        val googleAccount = stringPreferencesKey("google_account")
         val mutedUntil = longPreferencesKey("muted_until")
         val speedSource = stringPreferencesKey("speed_source")
         val pgwDownload = stringPreferencesKey("pgw_download")
@@ -136,6 +139,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             osmLimitsOn = p[K.osmLimits] ?: true,
             osmWifiOnly = p[K.osmWifiOnly] ?: true,
             mutedUntilMs = p[K.mutedUntil] ?: 0,
+            googleAccount = p[K.googleAccount],
             simulationSpeed = p[K.simSpeed] ?: 1f,
             pgwDownload = io.autonav.alerts.core.pgw.PgwDownload.fromName(p[K.pgwDownload]),
             speedSource = p[K.speedSource]?.let { runCatching { SpeedSource.valueOf(it) }.getOrNull() } ?: SpeedSource.CAR_WHEN_AVAILABLE,
@@ -172,6 +176,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.osmLimits] = s.osmLimitsOn
             p[K.osmWifiOnly] = s.osmWifiOnly
             p[K.mutedUntil] = s.mutedUntilMs
+            s.googleAccount?.let { p[K.googleAccount] = it } ?: p.remove(K.googleAccount)
             p[K.simSpeed] = s.simulationSpeed
             p[K.speedSource] = s.speedSource.name
             p[K.pgwDownload] = s.pgwDownload.name

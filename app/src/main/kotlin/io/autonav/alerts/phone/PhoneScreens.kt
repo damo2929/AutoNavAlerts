@@ -64,6 +64,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
+import com.google.android.gms.auth.api.identity.ClearTokenRequest
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.CommonStatusCodes
@@ -1086,7 +1087,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
             SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
         }
-        Section("Home and Work") { HomeWorkSection(activity, deps) }
+        Section("Home and Work") { HomeWorkSection(activity, deps, s) { b -> set(b) } }
         Section("Routing") {
             SwitchRow("Avoid tolls", s.avoidTolls) { v -> set { it.copy(avoidTolls = v) } }
             SwitchRow("Energy-efficient routes (EV)", s.evEfficientRoutes) { v -> set { it.copy(evEfficientRoutes = v) } }
@@ -1191,7 +1192,10 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
  * (one-time access; the token is only held for the call).
  */
 @Composable
-private fun HomeWorkSection(activity: Activity, deps: PhoneDeps) {
+private fun HomeWorkSection(
+    activity: Activity, deps: PhoneDeps, s: io.autonav.alerts.settings.AppSettings,
+    set: ((io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val auth = remember { Identity.getAuthorizationClient(activity) }
     var home by remember { mutableStateOf<io.autonav.alerts.data.PlaceEntity?>(null) }
@@ -1199,6 +1203,8 @@ private fun HomeWorkSection(activity: Activity, deps: PhoneDeps) {
     var busy by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf(false) }
+    // One automatic re-ask after Google resets a used grant, so a second 409 can't loop.
+    var reAsked by remember { mutableStateOf(false) }
 
     suspend fun reload() { deps.homeWork.current().let { (h, w) -> home = h; work = w } }
     LaunchedEffect(Unit) { reload() }
@@ -1212,6 +1218,25 @@ private fun HomeWorkSection(activity: Activity, deps: PhoneDeps) {
         }
     }
 
+    /** Asks Google for access with the given account (DESIGN.md §8.2a); set once the launcher exists. */
+    lateinit var authorize: (String) -> Unit
+
+    /** Runs the export with a one-time token, then drops the token from Play services' cache (DESIGN.md §8.2a). */
+    fun fetch(token: String, account: String) = work { p ->
+        try {
+            deps.homeWork.fromGoogle(token, p)
+        } catch (e: io.autonav.alerts.places.HomeWork.NeedsConsent) {
+            if (reAsked) throw e
+            reAsked = true
+            p("Google needs you to allow access again…")
+            auth.clearToken(ClearTokenRequest.builder().setToken(token).build())
+            authorize(account)
+            "Google's earlier export was used up, so it's asking again."
+        } finally { auth.clearToken(ClearTokenRequest.builder().setToken(token).build()) }
+    }
+    // The account the sign-in in progress is for, so the result can be tied to it.
+    var account by remember { mutableStateOf(s.googleAccount) }
+
     fun signInProblem(e: Throwable): String {
         val code = (e as? ApiException)?.statusCode
         return when {
@@ -1224,25 +1249,40 @@ private fun HomeWorkSection(activity: Activity, deps: PhoneDeps) {
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         runCatching { auth.getAuthorizationResultFromIntent(result.data) }
-            .onSuccess { r -> r.accessToken?.let { t -> work { p -> deps.homeWork.fromGoogle(t, p) } } ?: run { message = "Google didn't return access."; error = true } }
+            .onSuccess { r -> r.accessToken?.let { t -> fetch(t, account ?: "") } ?: run { message = "Google didn't return access."; error = true } }
             .onFailure { message = signInProblem(it); error = true }
+    }
+    authorize = { name ->
+        account = name
+        // Data Portability scopes can't be added to the app's other grants (e.g. cloud-platform from Create a key).
+        val request = AuthorizationRequest.builder().setRequestedScopes(listOf(Scope(io.autonav.alerts.places.HomeWork.SCOPE)))
+            .setOptOutIncludingGrantedScopes(true).setAccount(android.accounts.Account(name, "com.google")).build()
+        auth.authorize(request)
+            .addOnSuccessListener { r ->
+                val pending = r.pendingIntent
+                if (r.hasResolution() && pending != null) launcher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                else r.accessToken?.let { t -> fetch(t, name) }
+            }
+            .addOnFailureListener { message = signInProblem(it); error = true }
+    }
+    // Android's own chooser, Google accounts only: we learn the name, so it's asked once and remembered.
+    val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val name = res.data?.getStringExtra(android.accounts.AccountManager.KEY_ACCOUNT_NAME)
+        if (name.isNullOrBlank()) message = "No account chosen." else { set { it.copy(googleAccount = name) }; authorize(name) }
+    }
+    fun start() {
+        message = null; reAsked = false
+        s.googleAccount?.let { authorize(it) } ?: chooser.launch(
+            android.accounts.AccountManager.newChooseAccountIntent(null, null, arrayOf("com.google"), null, null, null, null))
     }
 
     Text("Home and Work are offered first on the car's search screen. They come from the Home and Work you set in Google Maps.",
         style = MaterialTheme.typography.bodySmall)
     Text("Home: " + (home?.address ?: home?.let { "%.5f, %.5f".format(it.lat, it.lon) } ?: "not set"))
     Text("Work: " + (work?.address ?: work?.let { "%.5f, %.5f".format(it.lat, it.lon) } ?: "not set"))
-    Button(enabled = busy == null, onClick = {
-        message = null
-        val request = AuthorizationRequest.builder().setRequestedScopes(listOf(Scope(io.autonav.alerts.places.HomeWork.SCOPE))).build()
-        auth.authorize(request)
-            .addOnSuccessListener { r ->
-                val pending = r.pendingIntent
-                if (r.hasResolution() && pending != null) launcher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
-                else r.accessToken?.let { t -> work { p -> deps.homeWork.fromGoogle(t, p) } }
-            }
-            .addOnFailureListener { message = signInProblem(it); error = true }
-    }) { Text("Get from my Google account") }
+    s.googleAccount?.let { Text("Account: $it", style = MaterialTheme.typography.bodySmall) }
+    Button(enabled = busy == null, onClick = { start() }) { Text("Get from my Google account") }
+    if (s.googleAccount != null) TextButton(enabled = busy == null, onClick = { set { it.copy(googleAccount = null) } }) { Text("Use a different account") }
     Text("Uses Google's Data Portability API (UK, EEA and Switzerland accounts). Google asks you to allow it each time.",
         style = MaterialTheme.typography.bodySmall)
     busy?.let { Text(it, style = MaterialTheme.typography.bodySmall) }

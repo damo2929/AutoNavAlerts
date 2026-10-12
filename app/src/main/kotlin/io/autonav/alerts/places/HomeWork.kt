@@ -35,6 +35,8 @@ class HomeWork @Inject constructor(
     private val places: PlacesSearch,
 ) {
     class Problem(message: String) : Exception(message)
+    /** The grant was already used for an export; it has been reset and the user must allow access again. */
+    class NeedsConsent : Exception("Google needs you to allow access again")
 
     private val http = OkHttpClient.Builder().callTimeout(60, TimeUnit.SECONDS).build()
 
@@ -46,9 +48,7 @@ class HomeWork @Inject constructor(
     /** Fetches labeled places with a Data Portability access token, then saves Home and Work. */
     suspend fun fromGoogle(accessToken: String, progress: (String) -> Unit): String = withContext(Dispatchers.IO) {
         progress("Asking Google for your labeled places…")
-        val job = call(accessToken, Request.Builder().url("$API/portabilityArchive:initiate")
-            .post(JSONObject().put("resources", JSONArray().put(RESOURCE)).toString().toRequestBody(JSON)))
-            .optString("archiveJobId").ifBlank { throw Problem("Google didn't start the export") }
+        val job = initiate(accessToken)
         var urls: JSONArray? = null
         var tries = 0
         while (urls == null) {
@@ -74,6 +74,8 @@ class HomeWork @Inject constructor(
                     if (!r.isSuccessful) throw Problem("Couldn't download Google's export (HTTP ${r.code})")
                     tmp.outputStream().use { r.body.byteStream().copyTo(it) }
                 }
+                // Debug builds keep Google's file (app-private, `run-as`) to check its layout on the bench.
+                if (io.autonav.alerts.BuildConfig.DEBUG) tmp.copyTo(File(context.filesDir, "debug/labeled-$i.dat").apply { parentFile?.mkdirs() }, true)
                 found += parseFile(tmp)
             } finally { tmp.delete() }
         }
@@ -113,17 +115,43 @@ class HomeWork @Inject constructor(
         }
     }
 
+    /**
+     * Starts the export. One grant gives one export: on 409 ("Requested resources have already been
+     * exported in job <id>") the grant is reset so the user can allow access again and get a new
+     * export with current data (DESIGN.md §8.2a).
+     */
+    private fun initiate(token: String): String {
+        val b = Request.Builder().url("$API/portabilityArchive:initiate")
+            .post(JSONObject().put("resources", JSONArray().put(RESOURCE)).toString().toRequestBody(JSON))
+            .header("Authorization", "Bearer $token")
+        http.newCall(b.build()).execute().use { r ->
+            val text = r.body.string()
+            if (r.code == 409) {
+                Log.i(TAG, "Grant already used; resetting it")
+                http.newCall(Request.Builder().url("$API/authorization:reset").post("{}".toRequestBody(JSON))
+                    .header("Authorization", "Bearer $token").build()).execute().use { rr ->
+                    if (!rr.isSuccessful) failed(rr.code, rr.body.string())
+                }
+                throw NeedsConsent()
+            }
+            if (!r.isSuccessful) failed(r.code, text)
+            return JSONObject(text).optString("archiveJobId").ifBlank { throw Problem("Google didn't start the export") }
+        }
+    }
+
+    private fun failed(code: Int, text: String): Nothing {
+        val msg = runCatching { JSONObject(text).getJSONObject("error").optString("message") }.getOrNull().orEmpty()
+        Log.w(TAG, "Data Portability $code: $msg")
+        throw Problem(when (code) {
+            403 -> "Google refused: $msg (this needs a UK/EEA account that is allowed to use the app's Google sign-in)"
+            else -> "Google error $code: $msg"
+        })
+    }
+
     private fun call(token: String, b: Request.Builder): JSONObject =
         http.newCall(b.header("Authorization", "Bearer $token").build()).execute().use { r ->
             val text = r.body.string()
-            if (!r.isSuccessful) {
-                val msg = runCatching { JSONObject(text).getJSONObject("error").optString("message") }.getOrNull().orEmpty()
-                Log.w(TAG, "Data Portability ${r.code}: $msg")
-                throw Problem(when (r.code) {
-                    403 -> "Google refused: $msg (this needs a UK/EEA account that is allowed to use the app's Google sign-in)"
-                    else -> "Google error ${r.code}: $msg"
-                })
-            }
+            if (!r.isSuccessful) failed(r.code, text)
             if (text.isBlank()) JSONObject() else JSONObject(text)
         }
 
