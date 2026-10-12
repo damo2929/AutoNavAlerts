@@ -55,6 +55,8 @@ data class AppSettings(
     val speedSource: SpeedSource = SpeedSource.CAR_WHEN_AVAILABLE,
     /** Which PocketGPSWorld download to use (Cameras tab). */
     val pgwDownload: io.autonav.alerts.core.pgw.PgwDownload = io.autonav.alerts.core.pgw.PgwDownload.DEFAULT,
+    /** Record every fix to a CSV for bench replay (DESIGN.md §15.5). Not in the settings backup. */
+    val driveRecordingOn: Boolean = false,
 )
 
 data class PgwState(
@@ -98,6 +100,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val speedSource = stringPreferencesKey("speed_source")
         val pgwDownload = stringPreferencesKey("pgw_download")
         val simSpeed = androidx.datastore.preferences.core.floatPreferencesKey("sim_speed")
+        val driveRecording = booleanPreferencesKey("drive_recording")
 
         val mapsKey = stringPreferencesKey("maps_api_key_enc")
         val pgwUser = stringPreferencesKey("pgw_user_enc")
@@ -139,6 +142,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             simulationSpeed = p[K.simSpeed] ?: 1f,
             pgwDownload = io.autonav.alerts.core.pgw.PgwDownload.fromName(p[K.pgwDownload]),
             speedSource = p[K.speedSource]?.let { runCatching { SpeedSource.valueOf(it) }.getOrNull() } ?: SpeedSource.CAR_WHEN_AVAILABLE,
+            driveRecordingOn = p[K.driveRecording] ?: false,
         )
     }
 
@@ -175,6 +179,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.simSpeed] = s.simulationSpeed
             p[K.speedSource] = s.speedSource.name
             p[K.pgwDownload] = s.pgwDownload.name
+            p[K.driveRecording] = s.driveRecordingOn
         }
     }
 

@@ -10,6 +10,8 @@
         <exclude domain="file" path="datastore" />
         <exclude domain="file" path="pgw" />
         <exclude domain="file" path="osm" />
+        <!-- Debug logs and drive recordings stay on the phone (DESIGN.md §15.5) -->
+        <exclude domain="file" path="diag" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="poi.db" />
@@ -19,5 +21,6 @@
         <exclude domain="file" path="datastore" />
         <exclude domain="file" path="pgw" />
         <exclude domain="file" path="osm" />
+        <exclude domain="file" path="diag" />
     </device-transfer>
 </data-extraction-rules>

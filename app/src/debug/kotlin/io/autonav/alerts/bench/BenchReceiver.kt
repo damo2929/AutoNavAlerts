@@ -35,7 +35,9 @@ import kotlinx.coroutines.launch
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez search true  # the empty search screen
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es banner "'Speed camera'"  # a test alert banner for 8 s
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez ev true --ez tolls true  # route options
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez diag true  # last 100 lines of each debug log to logcat
  *   (add -p io.autonav.alerts: Android only delivers explicit broadcasts to manifest receivers)
+ *   Every command lands in debug-nav.log as a `Bench` line (DESIGN.md §15.5).
  */
 class BenchReceiver : BroadcastReceiver() {
     @dagger.hilt.EntryPoint
@@ -43,9 +45,21 @@ class BenchReceiver : BroadcastReceiver() {
     interface Deps {
         fun speedLimits(): io.autonav.alerts.osm.SpeedLimitRepository
         fun settings(): io.autonav.alerts.settings.SettingsStore
+        fun eventLog(): io.autonav.alerts.diag.EventLog
     }
 
     override fun onReceive(context: Context, intent: Intent) {
+        val eventLog = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).eventLog()
+        eventLog.record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Bench", describe(intent))
+        if (intent.getBooleanExtra("diag", false)) {
+            // The end of each debug log to logcat, after a forced write of what's pending.
+            eventLog.flush("bench")
+            for (c in io.autonav.alerts.diag.EventLog.Channel.entries) {
+                Log.i(TAG, "--- ${c.fileName}: ${eventLog.sizeBytes(c)} bytes, oldest ${eventLog.oldest(c) ?: "-"}")
+                eventLog.tail(c, 100).forEach { Log.i(TAG, it) }
+            }
+            return
+        }
         if (intent.hasExtra("ev") || intent.hasExtra("tolls")) {
             val store = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).settings()
             App.appScope.launch {
@@ -190,6 +204,13 @@ class BenchReceiver : BroadcastReceiver() {
                 pending.finish()
             }
         }
+    }
+
+    /** The command as typed: its extras, sorted, `key=value`. */
+    @Suppress("DEPRECATION")
+    private fun describe(intent: Intent): String {
+        val b = intent.extras ?: return "(no extras)"
+        return b.keySet().sorted().joinToString(" ") { k -> "$k=${b.get(k)}" }.ifEmpty { "(no extras)" }
     }
 
     private companion object { const val TAG = "Bench" }

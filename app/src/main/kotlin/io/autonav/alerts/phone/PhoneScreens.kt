@@ -26,10 +26,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -51,6 +55,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,8 +65,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
@@ -87,10 +95,15 @@ import io.autonav.alerts.data.ReportKind
 import io.autonav.alerts.data.ReportStatus
 import io.autonav.alerts.reports.Transcriber
 import io.autonav.alerts.data.StageCols
+import io.autonav.alerts.diag.DiagFiles
+import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.pgw.ReportSubmitWorker
 import io.autonav.alerts.reports.CameraReportRepository
 import io.autonav.alerts.settings.MapsKeyCreator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.roundToInt
@@ -1167,6 +1180,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                 )
             }
         }
+        Section("Diagnostics") { DiagnosticsSection(activity, deps, s) { b -> set(b) } }
         Section("About") {
             Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
             Text("Build ${io.autonav.alerts.BuildConfig.GIT_COMMIT}" + if (io.autonav.alerts.BuildConfig.DEBUG) " (debug)" else "",
@@ -1258,4 +1272,154 @@ private fun pctLabel(p: Double): String {
     val v = p * 100
     val text = if (kotlin.math.abs(v - Math.rint(v)) < 1e-9) "${Math.rint(v).roundToInt()}%" else "%.1f%%".format(v)
     return text.replace("-", "−")
+}
+
+// --- Diagnostics (DESIGN.md §15.5, §13 item 11; docs/SETTINGS.md §1.8) ------------------------
+
+/**
+ * The two always-on debug logs and the opt-in drive recorder: a status line per file, the last
+ * 200 lines, Save (file picker), Share (share sheet via the diag FileProvider), Clear, the engine
+ * snapshot, the Drive recording switch and its Save, and the privacy note.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DiagnosticsSection(
+    activity: Activity,
+    deps: PhoneDeps,
+    s: io.autonav.alerts.settings.AppSettings,
+    set: ((io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var refresh by remember { mutableIntStateOf(0) }
+    Text("The app always keeps two debug logs, so a drive that goes wrong leaves evidence. debug-nav: routes, the map, " +
+        "navigation and the location feed. alert-debug: alerts and what was done at each camera. Lines are written in " +
+        "15-second blocks; each file is capped at 1 MB with one rotation.", style = MaterialTheme.typography.bodySmall)
+    for (ch in EventLog.Channel.entries) key(ch) { DiagLogCard(activity, deps, ch, refresh) }
+
+    var snapshot by remember { mutableStateOf<String?>(null) }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            scope.launch {
+                withContext(Dispatchers.IO) { deps.eventLog.clear() }
+                refresh++
+                Toast.makeText(activity, "Debug logs cleared", Toast.LENGTH_SHORT).show()
+            }
+        }) { Text("Clear both logs") }
+        Button(onClick = {
+            scope.launch {
+                val text = withContext(Dispatchers.Default) {
+                    runCatching { deps.diagnostics.snapshot() }.getOrElse { "snapshot failed: $it" }
+                }
+                text.lines().forEach { deps.eventLog.record(EventLog.Channel.ALERT, "Engine", it) }
+                snapshot = text
+            }
+        }) { Text("Engine now") }
+    }
+    snapshot?.let { text ->
+        AlertDialog(
+            onDismissRequest = { snapshot = null },
+            title = { Text("Engine now") },
+            text = { MonoLines(text.lines(), 420.dp) },
+            confirmButton = { TextButton(onClick = { snapshot = null }) { Text("Close") } },
+        )
+    }
+
+    HorizontalDivider()
+    SwitchRow("Drive recording", s.driveRecordingOn) { v -> set { it.copy(driveRecordingOn = v) } }
+    Text("Records every GPS fix the app receives (phone and car, with speed, bearing, accuracy and which one was used) " +
+        "to a CSV file, so a drive can be replayed on the bench exactly as the phone saw it. About 1–8 MB an hour; " +
+        "the newest 3 recordings are kept. Not in the settings backup, and off again after a reinstall.",
+        style = MaterialTheme.typography.bodySmall)
+    var latest by remember { mutableStateOf<File?>(null) }
+    var recording by remember { mutableStateOf(false) }
+    LaunchedEffect(refresh, s.driveRecordingOn) {
+        withContext(Dispatchers.IO) { latest = deps.driveRecorder.latest(); recording = deps.driveRecorder.isRecording }
+    }
+    Text(latest?.let { "Latest: ${it.name} · ${sizeText(it.length())}" + (if (recording) " · recording now" else "") } ?: "No recordings yet",
+        style = MaterialTheme.typography.bodySmall)
+    val csvSaver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        val f = latest
+        if (uri != null && f != null) scope.launch {
+            val msg = withContext(Dispatchers.IO) {
+                runCatching { deps.driveRecorder.flush(); DiagFiles.writeTo(activity, uri, listOf(f)) }
+            }.fold({ "Drive recording saved" }, { "Couldn't save the recording: ${it.message}" })
+            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+    OutlinedButton(enabled = latest != null, onClick = { latest?.let { csvSaver.launch(it.name) } }) { Text("Save drive recording…") }
+
+    HorizontalDivider()
+    Text("Privacy. The logs and recordings stay on the phone only, in private app storage, and are excluded from cloud " +
+        "backup. They contain where you drove (sampled positions, destination names) and which cameras you passed. " +
+        "Nothing is sent anywhere unless you press Save or Share; what you then do with the file is up to you. " +
+        "Uninstalling the app deletes them.", style = MaterialTheme.typography.bodySmall)
+}
+
+/** One debug log: status, Show last 200 lines, Save…, Share. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DiagLogCard(activity: Activity, deps: PhoneDeps, ch: EventLog.Channel, refresh: Int) {
+    val scope = rememberCoroutineScope()
+    var size by remember { mutableLongStateOf(0L) }
+    var oldest by remember { mutableStateOf<String?>(null) }
+    var show by remember { mutableStateOf(false) }
+    var lines by remember { mutableStateOf<List<String>>(emptyList()) }
+    var reload by remember { mutableIntStateOf(0) }
+    LaunchedEffect(refresh, show, reload) {
+        withContext(Dispatchers.IO) {
+            if (show) deps.eventLog.flush("view")
+            size = deps.eventLog.sizeBytes(ch)
+            oldest = deps.eventLog.oldest(ch)
+            lines = if (show) deps.eventLog.tail(ch, 200) else emptyList()
+        }
+    }
+    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) scope.launch {
+            val msg = withContext(Dispatchers.IO) {
+                runCatching {
+                    deps.eventLog.flush("export")
+                    DiagFiles.writeTo(activity, uri, deps.eventLog.files(ch))
+                }
+            }.fold({ "${ch.shortName} saved" }, { "Couldn't save ${ch.shortName}: ${it.message}" })
+            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+    Text("${ch.fileName} · ${sizeText(size)}" + (oldest?.let { " · oldest $it" } ?: " · empty"), style = MaterialTheme.typography.bodyMedium)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = { show = !show }) { Text(if (show) "Hide lines" else "Show last 200 lines") }
+        TextButton(onClick = { saver.launch(DiagFiles.exportName(ch)) }) { Text("Save ${ch.shortName}…") }
+        TextButton(onClick = {
+            scope.launch {
+                withContext(Dispatchers.IO) { deps.eventLog.flush("share") }
+                val files = deps.eventLog.files(ch)
+                if (files.isEmpty()) Toast.makeText(activity, "Nothing to share yet", Toast.LENGTH_SHORT).show()
+                else activity.startActivity(DiagFiles.shareIntent(activity, files, title = "AutoNavAlerts ${ch.shortName}"))
+            }
+        }) { Text("Share") }
+    }
+    if (show) {
+        if (lines.isEmpty()) Text("(empty)", style = MaterialTheme.typography.bodySmall) else MonoLines(lines, 320.dp)
+        TextButton(onClick = { reload++ }) { Text("Refresh") }
+    }
+}
+
+/** Monospace lines in a box that scrolls both ways, opened at the bottom (the newest lines). */
+@Composable
+private fun MonoLines(lines: List<String>, maxHeight: Dp) {
+    val v = rememberScrollState()
+    val h = rememberScrollState()
+    LaunchedEffect(lines, v.maxValue) { v.scrollTo(v.maxValue) }
+    Text(
+        lines.joinToString("\n"),
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = FontFamily.Monospace,
+        softWrap = false,
+        modifier = Modifier.fillMaxWidth().heightIn(max = maxHeight).verticalScroll(v).horizontalScroll(h),
+    )
+}
+
+private fun sizeText(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> "%.1f MB".format(bytes / 1048576.0)
 }

@@ -78,6 +78,17 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
+        <!-- Share for the debug logs and drive recordings in files/diag/ (DESIGN.md §15.5) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.diag"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/diag_paths" />
+        </provider>
+
         <!-- WorkManager is initialised by App (Hilt workers) -->
         <provider
             android:name="androidx.startup.InitializationProvider"

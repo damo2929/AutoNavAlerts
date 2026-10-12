@@ -57,11 +57,15 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var backup: io.autonav.alerts.settings.SettingsBackup
     @Inject lateinit var contacts: io.autonav.alerts.contacts.ContactsSource
     @Inject lateinit var speedLimits: io.autonav.alerts.osm.SpeedLimitRepository
+    @Inject lateinit var eventLog: io.autonav.alerts.diag.EventLog
+    @Inject lateinit var driveRecorder: io.autonav.alerts.diag.DriveRecorder
+    @Inject lateinit var diagnostics: io.autonav.alerts.diag.DiagnosticsSnapshot
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving, keyCreator, backup, contacts, speedLimits)
+        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving, keyCreator, backup, contacts, speedLimits,
+            eventLog, driveRecorder, diagnostics)
         val requestedTab = intent?.getIntExtra(EXTRA_TAB, -1) ?: -1
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
@@ -130,4 +134,8 @@ class PhoneDeps(
     val backup: io.autonav.alerts.settings.SettingsBackup,
     val contacts: io.autonav.alerts.contacts.ContactsSource,
     val speedLimits: io.autonav.alerts.osm.SpeedLimitRepository,
+    val eventLog: io.autonav.alerts.diag.EventLog,
+    val driveRecorder: io.autonav.alerts.diag.DriveRecorder,
+    /** Settings → Diagnostics → Engine now (DESIGN.md §15.5). */
+    val diagnostics: io.autonav.alerts.diag.DiagnosticsSnapshot,
 )

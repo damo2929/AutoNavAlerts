@@ -8,4 +8,6 @@
     <exclude domain="file" path="datastore" />
     <exclude domain="file" path="pgw" />
     <exclude domain="file" path="osm" />
+    <!-- Debug logs and drive recordings stay on the phone (DESIGN.md §15.5) -->
+    <exclude domain="file" path="diag" />
 </full-backup-content>

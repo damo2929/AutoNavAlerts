@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Share for the debug logs and drive recordings only (DESIGN.md §15.5): files/diag/ and nothing else. -->
+<paths>
+    <files-path name="diag" path="diag/" />
+</paths>
