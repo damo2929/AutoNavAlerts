@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="bench-test">
+  <!-- tools/scenario.sh crawl (TESTING.md A19). One invented camera on the A61 southbound south of Clay
+       Cross; the scenario crawls from 100 m before it to 60 m past it. course = direction of travel. -->
+  <wpt lat="53.15268" lon="-1.41322"><name>Test camera 40</name><course>177</course><type>Fixed</type></wpt>
+</gpx>

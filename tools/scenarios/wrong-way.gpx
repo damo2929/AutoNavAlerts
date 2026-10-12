@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="bench-test">
+  <!-- tools/scenario.sh wrong-way (TESTING.md A18). One invented ONE_WAY camera on the A61 at Clay Cross
+       facing NORTH (course 354): the scenario drives south past it first (against its bearing), then
+       back north (the right way). The both-ways camera is in wrong-way.csv (GPX can't say "both"). -->
+  <wpt lat="53.16030" lon="-1.41473"><name>Test camera 30</name><course>354</course><type>Fixed</type></wpt>
+</gpx>

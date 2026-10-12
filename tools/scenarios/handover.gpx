@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="bench-test">
+  <!-- tools/scenario.sh handover (TESTING.md C7). Invented cameras on the A61 northbound, Higham to Clay
+       Cross, so alerts can be seen to carry on across each car->phone->car handover. -->
+  <wpt lat="53.13502" lon="-1.41927"><name>Test camera 50</name><course>7</course><type>Fixed</type></wpt>
+  <wpt lat="53.15075" lon="-1.41307"><name>Test camera 40</name><course>358</course><type>Fixed</type></wpt>
+  <wpt lat="53.16422" lon="-1.41547"><name>Test camera 30</name><course>357</course><type>Fixed</type></wpt>
+</gpx>
