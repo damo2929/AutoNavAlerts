@@ -2,7 +2,7 @@
 
 An Android Auto navigation app built on the Google Navigation SDK. It's meant to stand in for Google Maps on the head unit, with a direction-aware POI alert system on top. PocketGPSWorld speed cameras are the first POI source.
 
-> **AI-assisted code:** this project is written with the help of **Claude** (Anthropic's AI assistant, via Claude Code). A human reviews, tests and is responsible for the code. Commits that include AI-generated changes are marked with a `Co-Authored-By: Claude` trailer.
+> **AI-assisted code:** this project is written with the help of **Claude** (Anthropic's AI assistant, via Claude Code; the Claude Fable and Claude Opus models). A human reviews, tests and is responsible for the code. Commits that include AI-generated changes are marked with a `Co-Authored-By: Claude` trailer.
 
 ## Status
 **First test build (v0.1.0).** It builds and lint passes, and the `:core` logic has 61 unit tests. It **hasn't been run on a real car or the Desktop Head Unit yet**, so expect rough edges.

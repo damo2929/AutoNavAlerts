@@ -1220,7 +1220,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             TextButton(onClick = {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/damo2929/AutoNavAlerts")))
             }) { Text("github.com/damo2929/AutoNavAlerts") }
-            Text("Apache License 2.0. Written with the help of Claude (AI-assisted code).", style = MaterialTheme.typography.bodySmall)
+            Text("Apache License 2.0. AI-assisted code, written with Claude Fable and Claude Opus.", style = MaterialTheme.typography.bodySmall)
             var showLicence by remember { mutableStateOf(false) }
             val licence = remember { deps.icons.pgwIconLicence() }
             if (licence != null) {

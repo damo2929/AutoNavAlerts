@@ -127,7 +127,7 @@ The app always keeps **two debug logs** on the phone, so a drive that goes wrong
 **Privacy.** The logs and recordings stay **on the phone only**, in private app storage, and are excluded from cloud backup. They contain **where you drove** (sampled positions, destination names) and **which cameras you passed**. Nothing is sent anywhere unless you press **Save** or **Share**; what you then do with the file is up to you. Uninstalling the app deletes them.
 
 ### 1.9 About
-The app name and version, **by Damien Dye**, the **build** line (the git commit the app was built from, with `-dirty` if the tree had uncommitted changes, and "(debug)" for debug builds), and the source repository **github.com/damo2929/AutoNavAlerts** (tap to open it in the browser). Then the licence (Apache 2.0), the note that the code is AI-assisted, and the PGW icon credit. Nothing to set here.
+The app name and version, **by Damien Dye**, the **build** line (the git commit the app was built from, with `-dirty` if the tree had uncommitted changes, and "(debug)" for debug builds), and the source repository **github.com/damo2929/AutoNavAlerts** (tap to open it in the browser). Then the licence (Apache 2.0), the note that the code is AI-assisted (written with Claude Fable and Claude Opus), and the PGW icon credit. Nothing to set here.
 
 ---
 
