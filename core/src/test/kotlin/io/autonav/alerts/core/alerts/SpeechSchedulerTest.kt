@@ -32,6 +32,25 @@ class SpeechSchedulerTest {
     private fun outcomes(s: SpeechScheduler) = s.records().map { it.outcome }
 
     @Test
+    fun limitChangeIsNotAStageAndTheNewestOneWins() {
+        val s = SpeechScheduler()
+        val first = Utterance(900, -1, AlertKind.LIMIT_CHANGE, "Speed limit changes to thirty ahead", 10, 0.0, null, false, 0)
+        val camera = Utterance(901, 7, AlertKind.FIRST, "Fixed camera ahead", 10, 400.0, 200.0, false, 10)
+        val second = Utterance(902, -1, AlertKind.LIMIT_CHANGE, "Speed limit changes to forty ahead", 10, 0.0, null, false, 20)
+        s.offer(first, 0)
+        s.offer(camera, 10)
+        val d = s.offer(second, 20)
+        // The waiting limit announcement is replaced by the newer one; the camera stage is untouched.
+        assertTrue(d.any { it is Decision.Replaced && it.old === first })
+        assertEquals(listOf(camera, second).map { it.id }.sorted(), s.waiting.map { it.id }.sorted())
+        assertEquals(Outcome.REPLACED, s.records().last().outcome)
+        assertTrue(!SpeechScheduler.isStage(AlertKind.LIMIT_CHANGE))
+        // A camera stage never replaces, and is never replaced by, a limit announcement (different kinds, different POI).
+        s.offer(Utterance(903, 7, AlertKind.SECOND, "Fixed camera, 200 yards", 50, 200.0, null, false, 30), 30)
+        assertTrue(s.waiting.any { it.id == second.id })
+    }
+
+    @Test
     fun interruptedUtteranceDoesNotBlockTheQueue() {
         val s = SpeechScheduler()
         val a = u(AlertKind.FIRST, poi = 1)

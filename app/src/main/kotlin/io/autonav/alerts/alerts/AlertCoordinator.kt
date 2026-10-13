@@ -148,6 +148,11 @@ class AlertTraceLog(
     /** NavTts reported the outcome of a stage's speech (through the coordinator's callback). */
     @Synchronized
     fun onSpoken(poiId: Long, kind: AlertKind, spoken: Boolean, delayMs: Long?, outcome: String) {
+        if (kind == AlertKind.LIMIT_CHANGE) {
+            // A speed-limit change is its own thing, never a camera stage (owner, 2026-10-13).
+            sink("Alerts", "limitChange spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
+            return
+        }
         sink("Trace", "spoken $kind poi=$poiId spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
         val p = passages[poiId] ?: return
         val rec = p.stages.lastOrNull { it.kind == kind && it.spoken == null } ?: return
@@ -387,6 +392,7 @@ class AlertCoordinator @Inject constructor(
             AlertKind.ZONE_ENTER -> AlertTemplateRenderer.ZONE_ENTER
             AlertKind.ZONE_EXIT -> AlertTemplateRenderer.ZONE_EXIT
             AlertKind.OVERSPEED -> AlertTemplateRenderer.ZONE_OVERSPEED
+            AlertKind.LIMIT_CHANGE -> null // never emitted by the engine; spoken by NavSession (§8.4a)
         } ?: return null
         val values = TemplateValues(
             category = r?.categoryName, setName = r?.set?.name,

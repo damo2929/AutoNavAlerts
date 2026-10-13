@@ -101,6 +101,14 @@ class SpeechScheduler(private val config: Config = Config()) {
             return listOf(Decision.Dropped(u, Outcome.MUTED))
         }
         val out = ArrayList<Decision>()
+        if (u.kind == AlertKind.LIMIT_CHANGE) {
+            // Only the newest limit announcement matters: one still waiting is replaced, never a camera stage.
+            for (e in queue.filter { it.kind == AlertKind.LIMIT_CHANGE }) {
+                queue.remove(e)
+                record(Record(e, Outcome.REPLACED, nowMs, byKind = u.kind))
+                out += Decision.Replaced(e, u)
+            }
+        }
         if (isStage(u.kind)) {
             val same = queue.filter { it.poiId == u.poiId && isStage(it.kind) }
             for (e in same) {

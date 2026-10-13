@@ -57,7 +57,12 @@ data class AlertPoi(
     val sideToleranceM: Double? = null,
 )
 
-enum class AlertKind { FIRST, SECOND, PASSING, ZONE_ENTER, ZONE_EXIT, OVERSPEED }
+/**
+ * What an utterance or event is. The engine emits the first six for a camera; [LIMIT_CHANGE] is the
+ * "speed limit changes to thirty ahead" announcement (DESIGN.md §8.4a): no camera, no POI, never a
+ * stage, so it is never reported or shown as one (owner, 2026-10-13).
+ */
+enum class AlertKind { FIRST, SECOND, PASSING, ZONE_ENTER, ZONE_EXIT, OVERSPEED, LIMIT_CHANGE }
 
 data class AlertEvent(
     val poiId: Long,

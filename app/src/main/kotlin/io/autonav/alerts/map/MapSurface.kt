@@ -189,7 +189,9 @@ class MapSurface(
             // camera sits at 18. Capping the zoom keeps traffic on screen on both (DESIGN.md §8).
             m.setMaxZoomPreference(MAX_ZOOM)
             log("ready type=${m.mapType} traffic=${m.isTrafficEnabled} maxZoom=$MAX_ZOOM followZoom=$followZoom")
-            if (!sdkControlsOff) disableSdkControls(view, "final")
+            // Again now the map exists: the SDK builds its ETA card and the rest lazily, and a setter
+            // called before that had no effect on the bench (the card was still drawn, 2026-10-13).
+            disableSdkControls(view, if (sdkControlsOff) "mapReady" else "final")
             following = true
             follow(m)
             _map.value = m
@@ -367,8 +369,30 @@ class MapSurface(
             "setSpeedLimitIconEnabled" to { inner.setSpeedLimitIconEnabled(false) },
         )
         for ((name, call) in setters) runCatching(call).onSuccess { off += name }.onFailure { failed += name }
-        log("sdkControls off=$off${if (failed.isEmpty()) "" else " failed=$failed"} ($attempt)")
+        // Belt and braces: the SDK draws its cards as ordinary child views beside the map container
+        // (the one holding the GL texture view), and a setter called before a card exists did nothing
+        // on the bench. Everything that isn't the map container is hidden; what was hidden is logged.
+        val hid = ArrayList<String>()
+        for (i in 0 until inner.childCount) {
+            val c = inner.getChildAt(i)
+            if (holdsMap(c)) continue
+            if (c.visibility != android.view.View.GONE) { c.visibility = android.view.View.GONE; hid += c.javaClass.simpleName.ifEmpty { "view" } + "#$i" }
+        }
+        log("sdkControls off=$off${if (failed.isEmpty()) "" else " failed=$failed"}${if (hid.isEmpty()) "" else " hid=$hid"} ($attempt)")
         return true
+    }
+
+    /** True for the SDK child that holds the map's GL view (never hidden). */
+    private fun holdsMap(v: android.view.View): Boolean {
+        if (v is android.opengl.GLSurfaceView || v is android.view.TextureView) return true
+        if (v is android.view.ViewGroup) for (i in 0 until v.childCount) if (holdsMap(v.getChildAt(i))) return true
+        return false
+    }
+
+    /** Re-applies the SDK-controls-off calls (when guidance starts or stops, from [NavSession]). */
+    fun refreshSdkControls(reason: String) {
+        val view = navView ?: return
+        main.post { disableSdkControls(view, reason) }
     }
 
     private fun findNavigationView(root: android.view.ViewGroup): NavigationView? {

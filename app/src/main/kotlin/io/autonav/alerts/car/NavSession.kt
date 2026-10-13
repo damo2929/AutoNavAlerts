@@ -183,6 +183,15 @@ class NavSession : Session(), DefaultLifecycleObserver {
                 eventLog.record(EventLog.Channel.NAV, "Session", "sdkLocationListener added")
             }
         }
+        // The SDK builds its ETA card when guidance starts, so the controls-off calls are repeated then
+        // (DESIGN.md §8 step 6; on the bench a call made before the card existed had no effect).
+        lifecycleScope.launch {
+            deps.guidance().guiding.collect { g ->
+                surface.refreshSdkControls("guiding=$g")
+                delay(2_000)
+                surface.refreshSdkControls("guiding=$g +2s")
+            }
+        }
         // Every fix: redraw markers (DESIGN.md §8.1) and update the speed panel (§8.4).
         lifecycleScope.launch {
             combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active, deps.alerts().facingAway, deps.alerts().verdicts) { f, n, a, away, verdicts ->
@@ -236,7 +245,8 @@ class NavSession : Session(), DefaultLifecycleObserver {
         if (!limitAnnouncer.shouldAnnounce(change.newMph, change.distanceM, fix.lat, fix.lon, fix.speedMps, heading)) return
         val speak = announceLimits && voiceOn && mutedUntilMs <= System.currentTimeMillis()
         eventLog.record(EventLog.Channel.ALERT, "Alerts", "limitAhead announce new=${change.newMph} d=${change.distanceM.toInt()} spd=${fix.speedMps.roundToInt()} speak=$speak")
-        if (speak) deps.tts().speak(LimitAnnouncer.text(change.newMph), 10, -1, false)
+        // Its own kind: never reported, listed or traced as a camera stage (owner, 2026-10-13).
+        if (speak) deps.tts().speak(LimitAnnouncer.text(change.newMph), 10, -1, false, kind = io.autonav.alerts.core.alerts.AlertKind.LIMIT_CHANGE)
     }
 
     private fun setUpcoming(panel: SpeedPanelView, mph: Int?) {
