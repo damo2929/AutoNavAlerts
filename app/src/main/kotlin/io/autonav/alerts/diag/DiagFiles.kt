@@ -55,8 +55,7 @@ object DiagFiles {
 
 /**
  * The alert engine's state as text for Settings → Diagnostics → **Engine now** and the bench's
- * `--ez engine true` (DESIGN.md §15.5). Bound in Hilt; the real binding (`AlertCoordinator.snapshot()`)
- * replaces the placeholder in [DiagModule] once the engine wiring lands.
+ * `--ez engine true` (DESIGN.md §15.5): `AlertCoordinator.snapshot()`, bound in [DiagModule].
  */
 fun interface DiagnosticsSnapshot {
     fun snapshot(): String
@@ -65,7 +64,9 @@ fun interface DiagnosticsSnapshot {
 @Module
 @InstallIn(SingletonComponent::class)
 object DiagModule {
+    /** Lazy, so the phone app doesn't build the engine stack just to inject the snapshot. */
     @Provides
     @Singleton
-    fun diagnosticsSnapshot(): DiagnosticsSnapshot = DiagnosticsSnapshot { "not wired yet" }
+    fun diagnosticsSnapshot(alerts: dagger.Lazy<io.autonav.alerts.alerts.AlertCoordinator>): DiagnosticsSnapshot =
+        DiagnosticsSnapshot { alerts.get().snapshot() }
 }
