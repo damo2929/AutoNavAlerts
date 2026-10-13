@@ -79,8 +79,8 @@ data class AlertEvent(
 /** Where the heading in a [Fix] came from (DESIGN.md §10.6a). */
 enum class HeadingSource { GPS, TRACK, BLEND, HELD, NONE, UNKNOWN }
 
-/** Where the speed in a [Fix] came from (DESIGN.md §10.2, §10.6). */
-enum class SpeedSource { CAR_RAW, GPS, DERIVED, SIMULATED }
+/** Where the speed in a [Fix] came from (DESIGN.md §10.2, §10.6). [NONE]: nothing to go on yet (no reported speed and no displacement reference). */
+enum class SpeedSource { CAR_RAW, GPS, DERIVED, SIMULATED, NONE }
 
 /** Which feed the position in a [Fix] came from (DESIGN.md §10.1, §10.7). */
 enum class LocationSource { PHONE, CAR, SIM }

@@ -15,20 +15,33 @@ import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 import androidx.car.app.model.Toggle
 import androidx.car.app.versioning.CarAppApiLevels
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
+import io.autonav.alerts.alerts.NavTts
 import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.core.alerts.SpeechScheduler
+import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.data.PlaceEntity
 import io.autonav.alerts.data.PlaceKind
 import io.autonav.alerts.data.PoiSetEntity
 import io.autonav.alerts.nav.Destination
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-/** More: Recents, POI layers, mute, diagnostics (DESIGN.md §8). */
+/**
+ * More: Recents, POI layers, mute, route options, satellite, Alerts and GPS (DESIGN.md §8). The GPS
+ * and Alerts rows are live: a once-a-second ticker refreshes the template while the screen is
+ * visible (the row titles don't change, so each refresh is a host "refresh", not a new template).
+ */
 class MoreScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var mutedUntil = 0L
     private var satellite = false
+    private var ticker: Job? = null
 
     init {
         lifecycleScope.launch {
@@ -37,11 +50,27 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
             satellite = s.satelliteMap
             invalidate()
         }
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                ticker?.cancel()
+                ticker = lifecycleScope.launch {
+                    while (isActive) { delay(1_000); invalidate() }
+                }
+            }
+
+            override fun onStop(owner: LifecycleOwner) {
+                ticker?.cancel()
+                ticker = null
+            }
+        })
     }
 
     override fun onGetTemplate(): Template {
         val muted = mutedUntil > System.currentTimeMillis()
         val stats = session.deps.location().stats.value
+        val alerts = session.deps.alerts()
+        val aheadCount = alerts.verdicts.value.count { it.value == Verdict.AHEAD_OK }
+        val awayCount = alerts.facingAway.value.size
         val list = ItemList.Builder()
             .addItem(Row.Builder().setTitle("Recents").setImage(CarUi.icon(carContext, R.drawable.ic_action_recents))
                 .setOnClickListener { screenManager.push(RecentsScreen(carContext, session)) }.build())
@@ -80,9 +109,24 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                         }.build(),
                 )
             }
+            .addItem(Row.Builder().setTitle("Alerts")
+                .addText("Ahead $aheadCount · facing away $awayCount")
+                .addText("Last: ${alerts.trace.lastStage ?: "no stage yet"} · ${alerts.trace.lastSuppress ?: "no suppress yet"}")
+                .setImage(CarUi.icon(carContext, R.drawable.ic_action_volume_on))
+                .setOnClickListener { screenManager.push(AlertsRecordsScreen(carContext, session.deps.tts())) }
+                .build())
             .addItem(Row.Builder().setTitle("GPS")
-                .addText("Requested ${stats.requestedHz} Hz · actual ${"%.1f".format(stats.actualHz)} Hz · ${"%.0f".format(stats.speedMph)} mph")
-                .addText("Location from " + (if (stats.locationFromCar) "car" else "phone") + " · speed from " + (if (stats.speedFromCar) "car" else "phone"))
+                .addText(
+                    "Requested ${stats.requestedHz} Hz · actual ${"%.1f".format(stats.actualHz)} Hz · " +
+                        "heading ${stats.headingDeg?.let { "%.0f°".format(it) } ?: "–"} (${stats.headingSrc.ifEmpty { "none" }}" +
+                        "${stats.headingAccDeg?.let { " ±%.0f°".format(it) } ?: ""})",
+                )
+                .addText(
+                    "Engine ${"%.0f".format(stats.speedMph)} mph (${stats.speedSrc.ifEmpty { "none" }}) · " +
+                        "dial ${stats.dialSpeedMph?.let { "%.0f mph (car)".format(it) } ?: "${"%.0f".format(stats.speedMph)} mph (${if (stats.speedFromCar) "car" else "phone"})"} · " +
+                        "location ${if (stats.locationFromCar) "car" else "phone"}" +
+                        (stats.accuracyM?.let { " ±%.0f m".format(it) } ?: ""),
+                )
                 .build())
         return ListTemplate.Builder()
             .setHeader(Header.Builder().setTitle("More").setStartHeaderAction(Action.BACK).build())
@@ -156,11 +200,49 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
     }
 }
 
-/** Recents and favourites, with delete on the car screen (DESIGN.md §8.2). */
+/**
+ * The speech scheduler's decisions, newest first (DESIGN.md §12.3): what was spoken, replaced,
+ * dropped as stale, interrupted, timed out, failed or muted, and how long each waited. A snapshot
+ * when opened; Refresh takes a new one.
+ */
+class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Screen(carContext) {
+    private var records: List<SpeechScheduler.Record> = tts.records.value
+
+    override fun onGetTemplate(): Template {
+        val header = Header.Builder().setTitle("Alerts").setStartHeaderAction(Action.BACK).build()
+        val limit = runCatching {
+            carContext.getCarService(androidx.car.app.constraints.ConstraintManager::class.java)
+                .getContentLimit(androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
+        }.getOrDefault(6)
+        val list = ItemList.Builder()
+        if (records.isEmpty()) list.setNoItemsMessage("No alerts spoken yet")
+        val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)
+        records.asReversed().take(limit).forEach { r ->
+            val u = r.utterance
+            list.addItem(
+                Row.Builder().setTitle("${u.kind} poi ${u.poiId} ${r.outcome}")
+                    .addText(
+                        fmt.format(java.util.Date(r.atMs)) + " · waited " + (r.waitedMs?.let { "$it ms" } ?: "–") +
+                            (r.byKind?.let { " · by $it" } ?: "") + (r.detail?.let { " · $it" } ?: ""),
+                    )
+                    .build(),
+            )
+        }
+        return ListTemplate.Builder().setHeader(header).setSingleList(list.build())
+            .addAction(CarUi.textAction("Refresh") { records = tts.records.value; invalidate() })
+            .build()
+    }
+}
+
+/** Recents and favourites, with delete on the car screen (DESIGN.md §8.2); reloaded whenever it comes back on top. */
 class RecentsScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var places: List<PlaceEntity>? = null
 
-    init { reload() }
+    init {
+        lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onResume(owner: LifecycleOwner) = reload()
+        })
+    }
 
     private fun reload() {
         lifecycleScope.launch { places = session.deps.places().recents(50); invalidate() }
