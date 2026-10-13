@@ -71,7 +71,7 @@ class SpeechSchedulerTest {
         val a = u(AlertKind.FIRST, poi = 1, text = "x".repeat(20))
         s.offer(a, 0)
         speak(s, 0)
-        val expected = 1_500 + 70 * 20L
+        val expected = 3_000 + 120 * 20L
         assertEquals(expected, s.deadlineMs())
         assertNull(s.onWatchdog(expected - 1))
         assertEquals(a, s.onWatchdog(expected))
@@ -80,8 +80,8 @@ class SpeechSchedulerTest {
         s.offer(b, 1_000)
         assertEquals(b, speak(s, expected + 400))
         assertEquals(listOf(Outcome.TIMED_OUT), outcomes(s))
-        // Long texts cap at 12 s.
-        assertEquals(12_000L, s.expectedMs(u(AlertKind.FIRST, text = "y".repeat(500))))
+        // Long texts cap at 15 s.
+        assertEquals(15_000L, s.expectedMs(u(AlertKind.FIRST, text = "y".repeat(500))))
     }
 
     @Test

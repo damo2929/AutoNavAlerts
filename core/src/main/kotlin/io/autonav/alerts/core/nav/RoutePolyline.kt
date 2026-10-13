@@ -99,6 +99,10 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
 
     override fun distanceToRouteM(lat: Double, lon: Double): Double = distanceAheadM(lat, lon, carIndex)
 
+    /** How far the car is from the segment it was last located on: over ~50 m the car isn't on this route. */
+    fun carDistanceM(carLat: Double, carLon: Double): Double =
+        if (segments == 0) Double.MAX_VALUE else segDistance(carIndex.coerceIn(0, segments - 1), carLat, carLon)
+
     private fun segDistance(i: Int, pLat: Double, pLon: Double) =
         Geo.distanceToSegmentM(pLat, pLon, lat[i], lon[i], lat[i + 1], lon[i + 1])
 }

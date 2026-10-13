@@ -25,9 +25,15 @@ class SpeechScheduler(private val config: Config = Config()) {
         val passingBusyWaitMs: Long = 500,
         val busyIgnoreAfterMs: Long = 5_000,
         val busyIgnoreForMs: Long = 60_000,
-        val watchdogBaseMs: Long = 1_500,
-        val watchdogPerCharMs: Long = 70,
-        val watchdogCapMs: Long = 12_000,
+        /**
+         * Allowance before an utterance counts as stuck: numbers speak far longer than their characters
+         * ("148 yards" is "one hundred and forty-eight yards"), and on the bench 1500 + 70/char cut every
+         * SECOND off mid-sentence (2026-10-13). The app also extends the deadline while the engine says
+         * it is still speaking.
+         */
+        val watchdogBaseMs: Long = 3_000,
+        val watchdogPerCharMs: Long = 120,
+        val watchdogCapMs: Long = 15_000,
         val ringSize: Int = 50,
     )
 

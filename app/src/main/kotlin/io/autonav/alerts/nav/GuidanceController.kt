@@ -117,6 +117,15 @@ class GuidanceController @Inject constructor(
         // With the heading: a route that doubles back along this road (the SDK's U-turn route from a
         // parked car) must not pin the car to the leg going the other way (bench, 2026-10-13).
         p.locate(lat, lon, lastHeading)
+        // Off the SDK's route (it hasn't rerouted yet, or routed a parallel road): the route says
+        // nothing about the road the car is on, so the engine falls back to its free-drive corridor
+        // (DESIGN.md §11 step 4; bench 2026-10-13: cameras on the driven A61 were 1.2 km from the route).
+        val carOff = p.carDistanceM(lat, lon)
+        val offRoute = carOff > CAR_OFF_ROUTE_M
+        eventLog.onChange("guidance.carOffRoute", offRoute, EventLog.Channel.NAV, "Guidance") {
+            if (offRoute) "carOffRoute d=${carOff.toInt()} m: free-drive matching until the SDK reroutes" else "carOnRoute d=${carOff.toInt()} m"
+        }
+        if (offRoute) return@RouteMatcher null
         p.distanceToRouteM(lat, lon).coerceAtMost(10_000.0)
     }
 
@@ -448,6 +457,8 @@ class GuidanceController @Inject constructor(
     private fun log(msg: String) = eventLog.record(EventLog.Channel.NAV, "Guidance", msg)
 
     companion object {
+        /** The car further than this from its own route segment is off the SDK's route (§11 step 4). */
+        private const val CAR_OFF_ROUTE_M = 50.0
         private const val TAG = "Guidance"
         /** How much route [routePointsAhead] returns: enough for the 600 m limit lookahead. */
         private const val AHEAD_M = 1_500.0

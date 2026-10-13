@@ -50,6 +50,8 @@ class NavTts @Inject constructor(
     private var nextId = 1L
     /** The utterance handed to the engine, by its engine id. */
     private var current: Utterance? = null
+    /** When the engine reported `onStart` for [current]; null until it has. */
+    private var currentStartedMs: Long? = null
     private var currentEngineId: String? = null
     private var lastRecord: Record? = null
     private var toastShown = false
@@ -171,6 +173,7 @@ class NavTts @Inject constructor(
         override fun onStart(id: String?) {
             main.post {
                 val u = forEngineId(id) ?: return@post
+                currentStartedMs = now()
                 scheduler.onStarted(u, now())
                 scheduleWatchdog()
             }
@@ -212,6 +215,7 @@ class NavTts @Inject constructor(
     private fun clearCurrent() {
         current = null
         currentEngineId = null
+        currentStartedMs = null
         main.removeCallbacks(watchdogRunnable)
     }
 
@@ -287,6 +291,15 @@ class NavTts @Inject constructor(
     }
 
     private fun onWatchdog() {
+        // Still audibly speaking? Then it isn't stuck: give it longer (up to the cap) rather than cut
+        // it off. On the bench every SECOND ("…, 148 yards") was killed mid-sentence (2026-10-13).
+        val speakingNow = runCatching { tts?.isSpeaking == true }.getOrDefault(false)
+        val startedMs = currentStartedMs
+        if (speakingNow && startedMs != null && now() - startedMs < WATCHDOG_HARD_CAP_MS) {
+            log("watchdog extend ${current?.kind} poi=${current?.poiId} speaking=true after=${now() - startedMs}ms")
+            main.postDelayed(watchdogRunnable, 1_500)
+            return
+        }
         val u = scheduler.onWatchdog(now())
         if (u == null) { scheduleWatchdog(); return }
         log("stuck ${u.kind} poi=${u.poiId} after=${scheduler.expectedMs(u)}ms")
@@ -342,6 +355,9 @@ class NavTts @Inject constructor(
     private fun now() = System.currentTimeMillis()
 
     companion object {
+        /** An utterance the engine still calls "speaking" is cut off only after this long (DESIGN.md §12.3). */
+        private const val WATCHDOG_HARD_CAP_MS = 15_000L
+
         /** One line for a record: `KIND poi=… OUTCOME waited=…`. */
         fun describe(r: Record): String {
             val u = r.utterance
