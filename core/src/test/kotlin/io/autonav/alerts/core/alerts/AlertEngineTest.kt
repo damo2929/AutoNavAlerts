@@ -443,6 +443,19 @@ class AlertEngineTest {
     }
 
     @Test
+    fun waitingAtTheCameraAfterPassingDoesNotSayPassingAgain() {
+        // A red-light camera: PASSING fires, then 100 s at the stop line 60 m short of it, then on through.
+        val track = straight(30.0)
+        val trace = RecordingTrace()
+        val engine = AlertEngine(trace = trace)
+        val cam = track.camera(1, 1_000.0)
+        assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND, AlertKind.PASSING), track.drive(engine, listOf(cam), 0.0, 940.0).kinds())
+        assertTrue(track.hold(engine, listOf(cam), 940.0, 100.0, startMs = 80_000).isEmpty())
+        assertTrue(1L to ClearReason.STALE !in trace.cleared)
+        assertTrue(track.drive(engine, listOf(cam), 940.0, 1_150.0, startMs = 190_000).isEmpty())
+    }
+
+    @Test
     fun passingWhileCrawling() {
         val track = straight(30.0)
         val engine = AlertEngine()

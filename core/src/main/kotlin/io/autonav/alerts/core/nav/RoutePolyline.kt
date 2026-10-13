@@ -42,23 +42,28 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
     }
 
     /**
-     * The segment nearest the car, searched from a little before [hintIndex]: first within
-     * [windowM] along the route (taken if within [snapM]), else over the whole rest of the route.
-     * With [headingDeg], segments more than [sameWayDeg] off the heading are skipped; if that
-     * leaves nothing (a short route of turns), the search is repeated without the heading.
+     * The segment nearest the car, searched from up to [backM] before [hintIndex] (so a wrong jump
+     * ahead can recover): first within [windowM] along the route (taken if within [snapM]), else
+     * over the whole rest of the route. With [headingDeg], segments more than [sameWayDeg] off the
+     * heading are skipped; if that leaves nothing, or only a same-way segment further than
+     * [farSnapM] from the car (a later leg of the route, not the road the car is on), the search is
+     * repeated without the heading.
      */
     fun nearestSegment(
         carLat: Double, carLon: Double, hintIndex: Int,
         windowM: Double = 500.0, snapM: Double = 50.0,
         headingDeg: Double? = null, sameWayDeg: Double = 90.0,
+        backM: Double = 200.0, farSnapM: Double = 150.0,
     ): Int {
         if (segments == 0) return 0
-        val start = (hintIndex - 2).coerceIn(0, segments - 1)
+        val hint = hintIndex.coerceIn(0, segments - 1)
+        var start = hint
+        while (start > 0 && (hint - start < 2 || cum[hint] - cum[start - 1] <= backM)) start--
         var best = -1
         var bestD = Double.MAX_VALUE
         var i = start
         fun sameWay(seg: Int) = headingDeg == null || Geo.absAngleDiffDeg(segBearing(seg), headingDeg) <= sameWayDeg
-        while (i < segments && cum[i] - cum[start] <= windowM) {
+        while (i < segments && cum[i] - cum[hint] <= windowM) {
             if (sameWay(i)) {
                 val d = segDistance(i, carLat, carLon)
                 if (d < bestD) { bestD = d; best = i }
@@ -73,8 +78,8 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
             }
             i++
         }
-        if (best >= 0) return best
-        return if (headingDeg != null) nearestSegment(carLat, carLon, hintIndex, windowM, snapM, null, sameWayDeg) else start
+        if (best >= 0 && (headingDeg == null || bestD <= farSnapM)) return best
+        return if (headingDeg != null) nearestSegment(carLat, carLon, hintIndex, windowM, snapM, null, sameWayDeg, backM, farSnapM) else start
     }
 
     private fun segBearing(i: Int) = Geo.bearingDeg(lat[i], lon[i], lat[i + 1], lon[i + 1])

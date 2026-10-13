@@ -98,11 +98,14 @@ object PgwOv2 {
 
     /** One entry per PGW OV2 file, keyed by its stem: `pocketgps_uk_gatso_30.ov2` → "gatso_30"; `…_redlight.ov2` → "redlight". */
     fun files(entries: Map<String, ByteArray>): Map<String, ByteArray> {
-        val rx = Regex("""^pocketgps_[a-z]+_([a-z]+(?:_[a-z0-9]+)?)\.ov2$""", RegexOption.IGNORE_CASE)
+        val rx = Regex("""^pocketgps_([a-z]+)_([a-z]+(?:_[a-z0-9]+)?)\.ov2$""", RegexOption.IGNORE_CASE)
         val out = LinkedHashMap<String, () -> ByteArray>()
         for (name in entries.keys) {
-            val stem = rx.matchEntire(name)?.groupValues?.get(1)?.lowercase() ?: continue
-            out[stem] = { entries.getValue(name) }
+            val m = rx.matchEntire(name.substringAfterLast('/')) ?: continue
+            val stem = m.groupValues[2].lowercase()
+            // Another region's file of the same type keeps its region, so the two never merge.
+            val key = if (stem in out) "${m.groupValues[1].lowercase()}_$stem" else stem
+            out[key] = { entries.getValue(name) }
         }
         return LazyBytes(out)
     }

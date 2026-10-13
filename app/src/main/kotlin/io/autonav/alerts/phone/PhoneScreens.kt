@@ -751,13 +751,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
 }
 
 /** DESIGN.md §11.1 validation: 2nd ≥ 100 yd + 50 m; 1st ≥ 2nd + 100 m (FIXED distances). */
-private fun validate(set: PoiSetEntity): String? {
-    val s2 = set.secondAlert
-    val s1 = set.firstAlert
-    if (s2.enabled && s2.metres < 142) return "The 2nd alert must be at least 155 yd (142 m), outside the 100 yd passing alert."
-    if (s2.enabled && s1.metres < s2.metres + 100) return "The 1st alert must be at least 110 yd (100 m) before the 2nd."
-    return null
-}
+private fun validate(set: PoiSetEntity): String? = io.autonav.alerts.data.StageRules.problem(set.firstAlert, set.secondAlert)
 
 /**
  * The DB's a1_seconds/a2_seconds are no longer edited: in seconds-ahead mode they're the slider's

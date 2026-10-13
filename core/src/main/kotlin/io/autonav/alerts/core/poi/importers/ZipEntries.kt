@@ -32,7 +32,13 @@ object ZipEntries {
     class Opened internal constructor() : LazyBytes(LinkedHashMap()), java.io.Closeable {
         internal val zips = ArrayList<ZipFile>()
         internal val temps = ArrayList<File>()
-        internal fun put(name: String, load: () -> ByteArray) { loaders[name] = load }
+        /** Two entries with one file name (in different folders) both stay: the later keeps its folder path. */
+        internal fun put(name: String, path: String, load: () -> ByteArray) {
+            var key = if (name in loaders) path.replace('\\', '/').trimStart('/') else name
+            var n = 2
+            while (key in loaders) key = "$name ($n)".also { n++ }
+            loaders[key] = load
+        }
         override fun close() {
             zips.forEach { runCatching { it.close() } }
             temps.forEach { it.delete() }
@@ -54,7 +60,7 @@ object ZipEntries {
                 zf.getInputStream(e).use { i -> tmp.outputStream().use { i.copyTo(it) } }
                 index(tmp, out, depth + 1, maxDepth, total)
             } else {
-                out.put(name) { zf.getInputStream(e).use { capped(it, e.size) } }
+                out.put(name, e.name) { zf.getInputStream(e).use { capped(it, e.size) } }
             }
         }
     }

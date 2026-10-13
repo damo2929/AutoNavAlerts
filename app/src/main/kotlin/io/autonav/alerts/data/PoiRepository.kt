@@ -29,7 +29,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -102,25 +101,35 @@ class PoiRepository @Inject constructor(
                 }
             } finally { tmp.delete() }
         } else {
-            name to (context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return@withContext fail("Couldn't open the file"))
+            // A single file is streamed to a temp file and parsed from it, never held whole in memory (§1.3).
+            val tmp = copyToTemp(uri, ".poi") ?: return@withContext fail("Couldn't open the file")
+            try {
+                val head = tmp.inputStream().use { i -> ByteArray(512).let { b -> b.copyOf(i.read(b).coerceAtLeast(0)) } }
+                val fmt = format ?: FormatSniffer.detect(name, head) ?: return@withContext fail("Unknown file format")
+                if ((fmt == PoiFormat.KML || fmt == PoiFormat.GPX) && tmp.length() > MAX_XML_BYTES) {
+                    return@withContext fail("This ${fmt.name} file is too large (over ${MAX_XML_BYTES / 1_000_000} MB). Split it, or use CSV or OV2.")
+                }
+                val result = parse(fmt, { tmp.inputStream() }, csvProfile) ?: return@withContext fail("CSV files need a column mapping")
+                return@withContext storeImport(result, setNameFor(name), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
+            } finally { tmp.delete() }
         }
         val (entryName, data) = entry
         val fmt = format ?: FormatSniffer.detect(entryName, data.copyOf(minOf(512, data.size)))
             ?: return@withContext fail("Unknown file format")
-        val result = parse(fmt, data, csvProfile) ?: return@withContext fail("CSV files need a column mapping")
+        val result = parse(fmt, { data.inputStream() }, csvProfile) ?: return@withContext fail("CSV files need a column mapping")
         // Set name comes from the file itself, never asked for.
         storeImport(result, setNameFor(entryName), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
     }
 
     private fun fail(msg: String) = ImportOutcome(null, 0, 0, emptyList(), true, msg)
 
-    private fun parse(fmt: PoiFormat, data: ByteArray, csv: CsvProfile?): ImportResult? = when (fmt) {
-        PoiFormat.IGO_TXT -> IgoTxtImporter().parse(data.inputStream().bufferedReader(Charsets.ISO_8859_1))
-        PoiFormat.KML -> KmlImporter().parse(ByteArrayInputStream(data))
-        PoiFormat.GPX -> GpxImporter().parse(ByteArrayInputStream(data))
-        PoiFormat.OV2 -> Ov2Importer().parse(data)
-        PoiFormat.CSV -> csv?.let { CsvImporter(it).parse(data.inputStream().bufferedReader(Charsets.UTF_8)) }
+    /** Parses from a fresh stream; OV2, iGO and CSV are read record by record. */
+    private fun parse(fmt: PoiFormat, open: () -> java.io.InputStream, csv: CsvProfile?): ImportResult? = when (fmt) {
+        PoiFormat.IGO_TXT -> open().bufferedReader(Charsets.ISO_8859_1).use { IgoTxtImporter().parse(it) }
+        PoiFormat.KML -> open().use { KmlImporter().parse(it) }
+        PoiFormat.GPX -> open().use { GpxImporter().parse(it) }
+        PoiFormat.OV2 -> open().use { Ov2Importer().parse(it) }
+        PoiFormat.CSV -> csv?.let { p -> open().bufferedReader(Charsets.UTF_8).use { CsvImporter(p).parse(it) } }
     }
 
     /** First POI file in a picked zip (read via the central directory; see ZipEntries). */
@@ -136,8 +145,8 @@ class PoiRepository @Inject constructor(
             listOf("licence", "license", "release", "readme").none { lower.contains(it) }
     }
 
-    private fun copyToTemp(uri: Uri): java.io.File? {
-        val tmp = java.io.File.createTempFile("import", ".zip", context.cacheDir)
+    private fun copyToTemp(uri: Uri, suffix: String = ".zip"): java.io.File? {
+        val tmp = java.io.File.createTempFile("import", suffix, context.cacheDir)
         val ok = context.contentResolver.openInputStream(uri)?.use { i -> tmp.outputStream().use { i.copyTo(it) }; true } ?: false
         return if (ok) tmp else { tmp.delete(); null }
     }
@@ -170,15 +179,17 @@ class PoiRepository @Inject constructor(
         for ((fileName, data) in poiFiles) {
             val fmt = FormatSniffer.detect(fileName, data.copyOf(minOf(512, data.size)))
             if (fmt == null) { problems += "$fileName: unknown format"; continue }
-            val result = parse(fmt, data, csvProfile)
+            val result = parse(fmt, { data.inputStream() }, csvProfile)
             if (result == null) { problems += "$fileName: CSV needs a column mapping"; continue }
             val stem = fileName.substringBeforeLast('.')
             val iconBytes = entries.entries.firstOrNull { (n, _) ->
                 n.substringBeforeLast('.').equals(stem, true) && n.lowercase().let { it.endsWith(".bmp") || it.endsWith(".png") }
             }?.value
             val icon = iconBytes?.let { icons.saveImportedIcon(stem, it) }
-            val key = "${fmt.name}:file:$fileName"
-            val existing = db.poiSets().byFormat(key)
+            // Keyed by zip and file, so another zip with a file of the same name gets its own set.
+            // A set imported before 2026-10-13 has the old key without the zip: the first re-import claims it.
+            val key = "${fmt.name}:file:$zipName/$fileName"
+            val existing = db.poiSets().byFormat(key) ?: db.poiSets().byFormat("${fmt.name}:file:$fileName")
             val out = storeImport(
                 result, setNameFor(fileName), PoiSourceType.FILE, key, existing?.id,
                 categoryNamer = { it }, defaultIcon = icon, fileIcon = icon != null,
@@ -383,4 +394,9 @@ class PoiRepository @Inject constructor(
     suspend fun setHidden(poiId: Long, hidden: Boolean) { db.pois().setHidden(poiId, hidden); notifyChanged() }
     suspend fun poi(id: Long) = db.pois().get(id)
     suspend fun purgeExpired() = db.pois().deleteExpired(System.currentTimeMillis())
+
+    private companion object {
+        /** KML and GPX are read as a whole document; above this a phone could run out of memory. */
+        const val MAX_XML_BYTES = 50_000_000L
+    }
 }

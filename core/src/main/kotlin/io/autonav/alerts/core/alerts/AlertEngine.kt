@@ -252,7 +252,9 @@ class AlertEngine(
             // Passed it: reset once we're > 100 m beyond the closest point, so a later pass re-alerts.
             if (d > state.closestM + 100.0) { resetApproach(poi.id, state, d, ClearReason.PASSED); continue }
             // Fired, but no approach since (parked jitter or a long stop): forget it so the real approach alerts.
-            if (state.fired && now - state.firedAtMs >= config.staleFiredMs && d >= state.firedAtD - config.staleApproachM) {
+            // Never once PASSING has fired: we reached the camera (e.g. waiting at a red-light camera's stop
+            // line), so a stale clear would only say PASSING again on moving off; leaving it resets as passed.
+            if (state.fired && !state.passingFired && now - state.firedAtMs >= config.staleFiredMs && d >= state.firedAtD - config.staleApproachM) {
                 clear(poi.id, state, ClearReason.STALE); continue
             }
             val toPoi = Geo.bearingDeg(fix.lat, fix.lon, poi.lat, poi.lon)
@@ -493,7 +495,13 @@ class AlertEngine(
     }
 
     private fun emit(poi: AlertPoi, kind: AlertKind, d: Double, fix: Fix, triggerM: Double, staleBelowM: Double?): AlertEvent {
-        val limit = if (inZone) zoneLimitMps ?: poi.speedLimitMps else poi.speedLimitMps
+        // In a zone, its cameras are judged against the zone's limit; any other camera (a red-light camera
+        // at 30 inside a 50 zone) against its own, and the zone's only when it has none.
+        val limit = when {
+            inZone && poi.zoneRole != ZoneRole.NONE -> zoneLimitMps ?: poi.speedLimitMps
+            inZone -> poi.speedLimitMps ?: zoneLimitMps
+            else -> poi.speedLimitMps
+        }
         val over = limit != null && fix.speedMps > limit * (1 + overspeedPct)
         val priority = when (kind) {
             AlertKind.PASSING -> 100
@@ -513,7 +521,8 @@ class AlertEngine(
                     startZone(poi, fix)
                     out += zoneEvent(poi.id, AlertKind.ZONE_ENTER)
                 } else {
-                    zoneLimitMps = poi.speedLimitMps
+                    // A camera with no limit (variable or unknown) keeps the zone's.
+                    zoneLimitMps = poi.speedLimitMps ?: zoneLimitMps
                 }
                 zonePoiId = poi.id
                 lastZonePointLat = poi.lat; lastZonePointLon = poi.lon
@@ -526,7 +535,8 @@ class AlertEngine(
                     startZone(poi, fix)
                     out += zoneEvent(poi.id, AlertKind.ZONE_ENTER)
                 } else {
-                    zoneLimitMps = poi.speedLimitMps
+                    // A camera with no limit (variable or unknown) keeps the zone's.
+                    zoneLimitMps = poi.speedLimitMps ?: zoneLimitMps
                 }
                 zonePoiId = poi.id
                 lastZonePointLat = poi.lat; lastZonePointLon = poi.lon

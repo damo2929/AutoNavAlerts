@@ -58,6 +58,36 @@ class OtherImportersTest {
     }
 
     @Test
+    fun roadAndJunctionNumbersAreNotLimits() {
+        assertNull(speedFromText("M25 J10 Gatso"))
+        assertNull(speedFromText("B1234 camera"))
+        assertEquals(50 to null, speedFromText("A303 Gatso 50"))
+        assertEquals(40, speedFromText("A61 Chesterfield Rd 40mph")?.first)
+        assertEquals(40 to io.autonav.alerts.core.poi.SpeedUnit.MPH, speedFromText("Camera 30 then 40 mph"))
+        assertEquals(50, speedFromText("[SPECS] 50")?.first)
+    }
+
+    @Test
+    fun ov2ShortOrTypeThreeRecordsDontBreakTheImport() {
+        val bad = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN).put(2).putInt(10).putInt(0).put(0).array()
+        val n = "[SPECS] 40\u0000123\u0000extra\u0000".toByteArray(Charsets.ISO_8859_1)
+        val type3 = ByteBuffer.allocate(13 + n.size).order(ByteOrder.LITTLE_ENDIAN)
+            .put(3).putInt(13 + n.size).putInt(-150_000).putInt(5_380_000).put(n).array()
+        val r = Ov2Importer().parse(bad + type3)
+        assertEquals(1, r.errors.size)
+        assertEquals(1, r.rows.size)
+        assertEquals("[SPECS] 40", r.rows[0].name)
+        assertEquals(40, r.rows[0].speed)
+    }
+
+    @Test
+    fun kmlZeroSpeedIsNoLimit() {
+        val kml = """<kml><Placemark><name>Cam</name><ExtendedData><Data name="speed"><value>0</value></Data></ExtendedData>
+            <Point><coordinates>-1.5,53.8</coordinates></Point></Placemark></kml>"""
+        assertNull(KmlImporter().parse(kml.byteInputStream()).rows[0].speed)
+    }
+
+    @Test
     fun csvWithProfileAndQuotes() {
         val csv = "lat;lon;name;speed;heading;dir\n53.8;-1.5;\"Cam; A\";30;180;both\n53.9;-1.6;B;;;\n"
         val profile = CsvProfile(delimiter = ';', latCol = 0, lonCol = 1, nameCol = 2, speedCol = 3, bearingCol = 4, dirTypeCol = 5)

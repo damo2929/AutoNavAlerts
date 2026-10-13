@@ -34,12 +34,17 @@ object FormatSniffer {
     }
 }
 
-private val SPEED_IN_TEXT = Regex("""(?<!\d)(\d{2,3})\s*(mph|km/?h|kph)?""", RegexOption.IGNORE_CASE)
+/**
+ * A limit in a POI's name: a standalone 2–3 digit number, never part of a road or junction number
+ * ("M25", "J10", "A303", "B1234" are not limits). A number with a unit wins over a bare one.
+ */
+private val SPEED_IN_TEXT = Regex("""(?<![A-Za-z\d])(\d{2,3})(?!\d)\s*(mph|km/?h|kph)?""", RegexOption.IGNORE_CASE)
 
-private fun speedFromText(text: String?): Pair<Int, SpeedUnit?>? {
+internal fun speedFromText(text: String?): Pair<Int, SpeedUnit?>? {
     if (text.isNullOrBlank()) return null
-    val m = SPEED_IN_TEXT.find(text) ?: return null
-    val v = m.groupValues[1].toInt().takeIf { it in 5..200 } ?: return null
+    val all = SPEED_IN_TEXT.findAll(text).filter { it.groupValues[1].toInt() in 5..200 }.toList()
+    val m = all.firstOrNull { it.groupValues[2].isNotEmpty() } ?: all.firstOrNull() ?: return null
+    val v = m.groupValues[1].toInt()
     val unit = when (m.groupValues[2].lowercase()) {
         "mph" -> SpeedUnit.MPH
         "" -> null
@@ -95,7 +100,7 @@ class KmlImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
                 else -> DirectionType.ONE_WAY
             }
             val folder = (pm.parentNode as? Element)?.takeIf { it.tagName == "Folder" }?.childText("name")
-            val speed = extended["speed"]?.toIntOrNull()?.let { it to null } ?: speedFromText(name) ?: speedFromText(desc)
+            val speed = extended["speed"]?.toIntOrNull()?.takeIf { it > 0 }?.let { it to null } ?: speedFromText(name) ?: speedFromText(desc)
             rows += ImportRow(
                 lat = lat, lon = lon, name = name,
                 categoryCode = folder ?: pm.childText("styleUrl")?.removePrefix("#"),
@@ -137,27 +142,50 @@ class GpxImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
     }
 }
 
-/** TomTom OV2 binary (DESIGN.md §5.6). No direction information. */
+/** TomTom OV2 binary (DESIGN.md §5.6). No direction information. Read as a stream, one record at a time. */
 class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
-    fun parse(bytes: ByteArray): ImportResult {
-        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+    fun parse(bytes: ByteArray): ImportResult = parse(bytes.inputStream())
+
+    fun parse(input: InputStream): ImportResult {
+        val inp = java.io.DataInputStream(input.buffered())
+        fun leInt(): Int? {
+            val b = ByteArray(4)
+            var n = 0
+            while (n < 4) { val k = inp.read(b, n, 4 - n); if (k < 0) return null; n += k }
+            return ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN).int
+        }
+        fun skip(n: Int): Boolean {
+            var left = n
+            while (left > 0) {
+                val k = inp.skipBytes(left)
+                if (k > 0) left -= k else if (inp.read() < 0) return false else left--
+            }
+            return true
+        }
         val rows = ArrayList<ImportRow>()
         val errors = ArrayList<RowError>()
         var record = 0
-        while (buf.remaining() >= 1) {
+        while (true) {
+            val type = inp.read().takeIf { it >= 0 } ?: break
             record++
-            val type = buf.get().toInt() and 0xFF
-            if (buf.remaining() < 4) break
-            val len = buf.int
-            if (len < 5 || len - 5 > buf.remaining()) {
+            val len = leInt() ?: break
+            if (len < 5 || len > MAX_RECORD) {
                 errors += RowError(record, "type $type", "bad record length $len"); break
+            }
+            // A POI record holds two ints before its name: anything shorter is corrupt, not a crash.
+            if ((type == 2 || type == 3) && len < 13) {
+                errors += RowError(record, "type $type", "bad record length $len"); if (!skip(len - 5)) break; continue
             }
             when (type) {
                 2, 3 -> {
-                    val lon = buf.int / 100_000.0
-                    val lat = buf.int / 100_000.0
-                    val nameBytes = ByteArray(len - 13).also { buf.get(it) }
-                    val name = String(nameBytes, Charsets.ISO_8859_1).trimEnd('\u0000').trim()
+                    val lon = (leInt() ?: break) / 100_000.0
+                    val lat = (leInt() ?: break) / 100_000.0
+                    val nameBytes = ByteArray(len - 13)
+                    try { inp.readFully(nameBytes) } catch (_: java.io.EOFException) {
+                        errors += RowError(record, "type $type", "truncated record"); break
+                    }
+                    // Type 3 is "name\0id\0extra\0": the name is the first field.
+                    val name = String(nameBytes, Charsets.ISO_8859_1).substringBefore('\u0000').trim()
                     if (!isPlausibleCoordinate(lat, lon)) {
                         errors += RowError(record, name, "bad coordinates"); continue
                     }
@@ -165,12 +193,13 @@ class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
                     rows += ImportRow(lat = lat, lon = lon, name = name, speed = speed?.first,
                         speedUnit = speed?.let { it.second ?: defaultUnit })
                 }
-                1 -> buf.position(buf.position() + 16) // skipper: len covers 21 bytes total
-                else -> buf.position(buf.position() + (len - 5)) // deleted or unknown
+                else -> if (!skip(len - 5)) break // skipper (1), deleted or unknown
             }
         }
         return ImportResult(rows, errors, 0)
     }
+
+    private companion object { const val MAX_RECORD = 1 shl 20 }
 }
 
 /** A saved CSV column mapping (DESIGN.md §5.7). Column indexes are 0-based. */

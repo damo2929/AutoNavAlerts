@@ -50,6 +50,14 @@ class ZipEntriesTest {
     }
 
     @Test
+    fun sameFileNameInTwoFoldersKeepsBoth() {
+        val bytes = zip("UK/cameras.ov2" to "a".toByteArray(), "IE/cameras.ov2" to "b".toByteArray())
+        val entries = ZipEntries.read(bytes)
+        assertEquals(listOf("cameras.ov2", "IE/cameras.ov2"), entries.keys.toList())
+        assertEquals("b", String(entries.getValue("IE/cameras.ov2")))
+    }
+
+    @Test
     fun opensNestedZipAndSkipsZipSlip() {
         val inner = zip("pocketgps_uk_sc.txt" to igo)
         val entries = ZipEntries.read(zip("cams.zip" to inner, "../evil.txt" to "x".toByteArray()))

@@ -23,17 +23,30 @@ object Grid {
     fun colOf(cell: Long): Long = cell % COLS
 
     /** The (2r+1)×(2r+1) block of cells centred on [cell]; columns wrap at the antimeridian. */
-    fun neighbourhood(cell: Long, radius: Int = 2): List<Long> {
+    fun neighbourhood(cell: Long, radius: Int = 2): List<Long> = neighbourhood(cell, radius, radius)
+
+    /** The (2·rows+1)×(2·cols+1) block of cells centred on [cell]; columns wrap at the antimeridian. */
+    fun neighbourhood(cell: Long, rows: Int, cols: Int): List<Long> {
         val r0 = rowOf(cell)
         val c0 = colOf(cell)
-        val out = ArrayList<Long>((2 * radius + 1) * (2 * radius + 1))
-        for (dr in -radius..radius) {
+        val out = ArrayList<Long>((2 * rows + 1) * (2 * cols + 1))
+        for (dr in -rows..rows) {
             val r = r0 + dr
             if (r < 0 || r >= ROWS) continue
-            for (dc in -radius..radius) {
+            for (dc in -cols..cols) {
                 out += r * COLS + (c0 + dc).mod(COLS)
             }
         }
         return out
+    }
+
+    /**
+     * Cells needed each way to reach [metres] from a point at [lat] (DESIGN.md §4.3): a cell is
+     * 0.01° tall (≈ 1.11 km) and 0.01° × cos(lat) wide, so the column count grows towards the poles.
+     */
+    fun reachCells(lat: Double, metres: Double): Pair<Int, Int> {
+        val cellNs = CELL_DEG * 111_320.0
+        val cellEw = cellNs * kotlin.math.cos(Math.toRadians(lat.coerceIn(-85.0, 85.0)))
+        return kotlin.math.ceil(metres / cellNs).toInt() to kotlin.math.ceil(metres / cellEw).toInt()
     }
 }

@@ -72,6 +72,18 @@ class RoutePolylineTest {
     }
 
     @Test
+    fun aSameWayLegFarAwayDoesNotPullTheCarAheadAndAWrongJumpRecovers() {
+        // Parked facing north; the route goes south 2 km, then comes back north 500 m to the east.
+        val pts = (0 downTo -20).map { p(it * 100.0, 0.0) } + (-20..0).map { p(it * 100.0, 500.0) }
+        val r = RoutePolyline(pts)
+        val idx = r.locate(latAt(0.0), lonAt(0.0), headingDeg = 0.0)
+        assertTrue("car segment $idx should be the first leg, not the northbound one 500 m away", idx < 20)
+        // A hint far ahead (a wrong jump) comes back to where the car is once it's 200 m along.
+        val back = r.nearestSegment(latAt(-50.0), lonAt(0.0), hintIndex = 2, headingDeg = 180.0)
+        assertEquals(0, back)
+    }
+
+    @Test
     fun beyondThreeKilometresIsIgnored() {
         val r = RoutePolyline(straight(6_000.0))
         r.locate(latAt(0.0), lonAt(0.0))

@@ -253,12 +253,13 @@ class FixEstimator(private val config: Config = Config()) {
                 if (t != null && r != null && Geo.absAngleDiffDeg(t, r) > config.staleBearingTurnDeg) gpsBearingStale = true
             }
         }
-        val bAcc = f.bearingAccuracyDeg ?: config.gpsDefaultAccuracyDeg
+        // A reported accuracy of 0 (mock, simulated or car feeds) would weigh the bearing infinitely: NaN heading.
+        val bAcc = (f.bearingAccuracyDeg ?: config.gpsDefaultAccuracyDeg).coerceAtLeast(1.0)
         val gpsUsable = b != null && !gpsBearingStale && !still && speed > config.gpsMinMps && bAcc <= config.gpsMaxAccuracyDeg
 
         // --- Combine ---
         val track = ema
-        val tAcc = trackAccDeg
+        val tAcc = trackAccDeg?.coerceAtLeast(1.0)
         var heading: Double? = null
         var source = HeadingSource.NONE
         var hAcc: Double? = null

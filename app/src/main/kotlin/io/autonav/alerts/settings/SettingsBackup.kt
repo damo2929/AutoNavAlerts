@@ -201,18 +201,22 @@ class SettingsBackup @Inject constructor(
         fun bool(k: String, d: Boolean) = if (j.has(k) && !j.isNull(k)) j.optBoolean(k, d) else d
         val t = j.optJSONObject("templates")
         fun tpl(k: String, d: String) = t?.optString(k)?.takeIf { it.isNotEmpty() } ?: d
+        val first = j.optJSONObject("firstAlert")?.let { stage(it, set.firstAlert) } ?: set.firstAlert
+        val second = j.optJSONObject("secondAlert")?.let { stage(it, set.secondAlert) } ?: set.secondAlert
+        // The same checks as the set editor (§11.1): stages that fail them keep this phone's values.
+        val stagesOk = io.autonav.alerts.data.StageRules.problem(first, second) == null
         return set.copy(
             enabled = bool("enabled", set.enabled),
             showOnMap = bool("showOnMap", set.showOnMap),
             alertsEnabled = bool("alertsEnabled", set.alertsEnabled),
             soundEnabled = bool("soundEnabled", set.soundEnabled),
             defaultIconId = j.optString("icon").takeIf { it in iconIds } ?: set.defaultIconId,
-            minZoom = j.optDouble("minZoom").takeIf { !it.isNaN() }?.toFloat() ?: set.minZoom,
+            minZoom = j.optDouble("minZoom").takeIf { !it.isNaN() && it in 0.0..21.0 }?.toFloat() ?: set.minZoom,
             firstTemplate = tpl("first", set.firstTemplate),
             secondTemplate = tpl("second", set.secondTemplate),
             passingTemplate = tpl("passing", set.passingTemplate),
-            firstAlert = j.optJSONObject("firstAlert")?.let { stage(it, set.firstAlert) } ?: set.firstAlert,
-            secondAlert = j.optJSONObject("secondAlert")?.let { stage(it, set.secondAlert) } ?: set.secondAlert,
+            firstAlert = if (stagesOk) first else set.firstAlert,
+            secondAlert = if (stagesOk) second else set.secondAlert,
         )
     }
 

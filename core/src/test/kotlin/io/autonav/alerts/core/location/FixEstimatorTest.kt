@@ -156,6 +156,16 @@ class FixEstimatorTest {
     }
 
     @Test
+    fun zeroBearingAccuracyNeverGivesANaNHeading() {
+        // Mock, simulated and some car feeds report a bearing accuracy of exactly 0.
+        val est = FixEstimator()
+        run(est, feed(10.0, accM = 3.0, reportedSpeed = { 20.0 }, path = north(20.0)))
+        val out = run(est, feed(5.0, accM = 3.0, startMs = 10_100, reportedSpeed = { 20.0 }, bearing = { 2.0 }, bearingAcc = 0.0) { t -> (200.0 + 20.0 * t) to 0.0 })
+        assertTrue(out.all { it.headingDeg?.isNaN() != true })
+        assertTrue(Geo.absAngleDiffDeg(out.last().headingDeg!!, 2.0) < 3.0)
+    }
+
+    @Test
     fun stuckBearingIsIgnoredForTheRestOfTheSession() {
         // The emulator: bearing 0.0 on every fix while the car goes round a curve.
         val r = 200.0

@@ -194,6 +194,15 @@ class AlertTraceLog(
         if (dimmed) passages[poiId]?.let { it.dimmedAtD = it.lastD }
     }
 
+    /** Forgets passages of POIs no longer among the candidates, so the map can't grow for the whole process. */
+    @Synchronized
+    fun prune(keep: Set<Long>) {
+        passages.keys.retainAll(keep)
+    }
+
+    @Synchronized
+    fun reset() = passages.clear()
+
     private fun spokenWord(s: StageRec): String = when {
         s.spoken == true -> "spoken" + (s.delayMs?.let { "(+${"%.1f".format(it / 1000.0)} s)" } ?: "")
         s.outcome == "MUTED" -> "muted"
@@ -254,7 +263,17 @@ class AlertCoordinator @Inject constructor(
         fix = { _lastFix.value },
         sink = { tag, msg -> eventLog.record(EventLog.Channel.ALERT, tag, msg) },
     )
-    private val engine = AlertEngine(AlertEngine.Config(overspeedPct = io.autonav.alerts.settings.DEFAULT_OVERSPEED), trace)
+    private val engineConfig = AlertEngine.Config(overspeedPct = io.autonav.alerts.settings.DEFAULT_OVERSPEED)
+    private val engine = AlertEngine(engineConfig, trace)
+    /** The engine isn't thread-safe: fixes run on the collector, stop() on the caller's thread. */
+    private val engineLock = Any()
+    /**
+     * How far the candidates reach (DESIGN.md §4.3, §11): the engine looks 3 km ahead and a zone
+     * looks up to 5 km for its next camera, so the cells loaded must cover the larger of the two.
+     */
+    private val reachM = maxOf(engineConfig.maxLookaheadM, engineConfig.zoneGapM)
+    /** Bumped by every invalidation, so a reload that started before one doesn't undo it. */
+    private val cacheGen = java.util.concurrent.atomic.AtomicInteger()
     private var job: Job? = null
 
     @Volatile private var cacheCentre: Long = Long.MIN_VALUE
@@ -293,7 +312,7 @@ class AlertCoordinator @Inject constructor(
         tts.spokenCallback = { poiId, kind, spoken, delayMs, outcome -> trace.onSpoken(poiId, kind, spoken, delayMs, outcome) }
         location.start()
         job = scope.launch {
-            launch { repo.changes.collect { cacheCentre = Long.MIN_VALUE } }
+            launch { repo.changes.collect { invalidateCache() } }
             launch {
                 settings.settings.collect {
                     val prev = latest
@@ -306,7 +325,7 @@ class AlertCoordinator @Inject constructor(
                     }
                     if (prev == null || prev.alertLeadSeconds != it.alertLeadSeconds) {
                         leadSeconds = it.alertLeadSeconds
-                        cacheCentre = Long.MIN_VALUE // re-resolve the candidates on the next fix
+                        invalidateCache() // re-resolve the candidates on the next fix
                         alertsLog("lead=${it.alertLeadSeconds} s (1st ${it.alertLeadSeconds} s, 2nd ${it.alertLeadSeconds / 2.0} s)")
                     }
                     val muted = it.mutedUntilMs > System.currentTimeMillis() || !it.voiceOn
@@ -325,7 +344,9 @@ class AlertCoordinator @Inject constructor(
         job?.cancel()
         job = null
         location.stop()
-        engine.reset()
+        // A fix may still be mid-way through the engine on another thread: reset under the same lock.
+        synchronized(engineLock) { engine.reset() }
+        trace.reset()
         tts.spokenCallback = null
     }
 
@@ -348,7 +369,7 @@ class AlertCoordinator @Inject constructor(
     private suspend fun onFix(fix: Fix) {
         _lastFix.value = fix
         val cell = Grid.cellOf(fix.lat, fix.lon)
-        if (cell != cacheCentre) reload(cell)
+        if (cell != cacheCentre) reload(cell, fix.lat)
         val s = latest ?: settings.current().also { latest = it }
         val now = System.currentTimeMillis()
         val globallyMuted = s.mutedUntilMs > now || !s.voiceOn
@@ -357,11 +378,15 @@ class AlertCoordinator @Inject constructor(
         }
         // Mute never changes the candidates (§12.3): PASSING still fires and the card still shows.
         val candidates = if (quiet.isEmpty()) alertable else alertable.filter { it.id !in quiet }
-        val events = runCatching { engine.onFix(fix, candidates, guidance.routeMatcher) }
-            .onFailure { Log.e(TAG, "engine", it) }.getOrDefault(emptyList())
-        val verdicts = engine.classify()
+        val (events, verdicts, away) = synchronized(engineLock) {
+            Triple(
+                runCatching { engine.onFix(fix, candidates, guidance.routeMatcher) }
+                    .onFailure { Log.e(TAG, "engine", it) }.getOrDefault(emptyList()),
+                engine.classify(),
+                engine.facingAway(),
+            )
+        }
         if (verdicts != _verdicts.value) _verdicts.value = verdicts
-        val away = engine.facingAway()
         if (away != _facingAway.value) _facingAway.value = away
         // The speech staleness rule needs the live distance to the cameras being alerted on (§12.3).
         for ((id, v) in verdicts) if (v == Verdict.AHEAD_OK) byId[id]?.let { r ->
@@ -421,8 +446,15 @@ class AlertCoordinator @Inject constructor(
         }
     }
 
-    private suspend fun reload(cell: Long) {
-        val pois = repo.poisInCells(Grid.neighbourhood(cell, 2))
+    private fun invalidateCache() {
+        cacheGen.incrementAndGet()
+        cacheCentre = Long.MIN_VALUE
+    }
+
+    private suspend fun reload(cell: Long, lat: Double) {
+        val gen = cacheGen.get()
+        val (rows, cols) = Grid.reachCells(lat, reachM)
+        val pois = repo.poisInCells(Grid.neighbourhood(cell, rows, cols))
         val sets = repo.sets()
         val cats = repo.categories()
         val lead = leadSeconds
@@ -431,9 +463,10 @@ class AlertCoordinator @Inject constructor(
         byId = resolved.associateBy { it.poi.id }
         alertable = resolved.filter { it.alertsOn }.map { it.alert }
         // POIs that left the candidates (sets changed, data replaced) lose their approach state (§11 step 7).
-        engine.forgetExcept(alertable.map { it.id })
-        // Only now: if this is interrupted, the next fix reloads again.
-        cacheCentre = cell
+        synchronized(engineLock) { engine.forgetExcept(alertable.map { it.id }) }
+        // Only now: if this is interrupted, or invalidated meanwhile, the next fix reloads again.
+        if (cacheGen.get() == gen) cacheCentre = cell
+        trace.prune(byId.keys)
         _nearby.value = resolved
         Log.d(TAG, "Cache: ${resolved.size} POIs around cell $cell")
         alertsLog("cache n=${resolved.size} alertable=${alertable.size} cell=$cell lead=$lead s")

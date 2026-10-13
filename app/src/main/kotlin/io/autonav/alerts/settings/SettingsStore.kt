@@ -128,7 +128,9 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val pgwLastModified = stringPreferencesKey("pgw_last_modified")
     }
 
-    val settings: Flow<AppSettings> = ds.data.map { p ->
+    val settings: Flow<AppSettings> = ds.data.map { p -> read(p) }
+
+    private fun read(p: Preferences): AppSettings =
         AppSettings(
             units = p[K.units]?.let { runCatching { Units.valueOf(it) }.getOrNull() } ?: Units.IMPERIAL,
             voiceOn = p[K.voice] ?: true,
@@ -150,7 +152,6 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             speedSource = p[K.speedSource]?.let { runCatching { SpeedSource.valueOf(it) }.getOrNull() } ?: SpeedSource.CAR_WHEN_AVAILABLE,
             driveRecordingOn = p[K.driveRecording] ?: false,
         )
-    }
 
     val pgwState: Flow<PgwState> = ds.data.map { p ->
         PgwState(
@@ -163,9 +164,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun current(): AppSettings = settings.first()
     suspend fun currentPgw(): PgwState = pgwState.first()
 
+    /** Read-modify-write inside one DataStore transaction, so two updates at once can't lose either. */
     suspend fun update(block: (AppSettings) -> AppSettings) {
-        val s = block(current())
         ds.edit { p ->
+            val s = block(read(p))
             p[K.units] = s.units.name
             p[K.voice] = s.voiceOn
             p[K.chime] = s.chimeOn
