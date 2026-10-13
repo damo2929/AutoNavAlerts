@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez overlays false  # hide our overlays (true shows)
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez search true  # the empty search screen
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez layers true  # More → POI layers
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez more true    # the More screen
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es banner "'Speed camera'"  # a test alert banner for 8 s
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez ev true --ez tolls true  # route options
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez diag true  # last 100 lines of each debug log to logcat
@@ -216,6 +217,13 @@ class BenchReceiver : BroadcastReceiver() {
                 val b = session.surface.alertBanner ?: run { Log.w(TAG, "No map window"); return@post }
                 b.show(-1L, null, text, "300 yd · 30 mph", 8_000)
                 b.post { Log.i(TAG, "Banner at x=${b.left} y=${b.top} ${b.width}x${b.height} in ${(b.parent as android.view.View).width}x${(b.parent as android.view.View).height}") }
+            }
+            return
+        }
+        if (intent.getBooleanExtra("more", false)) {
+            Handler(Looper.getMainLooper()).post {
+                session.carContext.getCarService(androidx.car.app.ScreenManager::class.java)
+                    .push(io.autonav.alerts.car.screens.MoreScreen(session.carContext, session))
             }
             return
         }

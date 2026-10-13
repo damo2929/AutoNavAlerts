@@ -38,12 +38,16 @@ import kotlinx.coroutines.withContext
 
 /**
  * More: Recents, POI layers, mute, route options, satellite, Alerts and GPS (DESIGN.md §8). The GPS
- * and Alerts rows are live: a once-a-second ticker refreshes the template while the screen is
- * visible (the row titles don't change, so each refresh is a host "refresh", not a new template).
+ * and Alerts rows are live: a once-a-second ticker checks their text while the screen is visible and
+ * re-sends the template **only when a line has changed** (the row titles don't change, so each
+ * refresh is a host "refresh", not a new template). Re-sending an identical template made the host
+ * animate every row below the first change point once a second, a visible "shake" on a parked car
+ * (owner, bench, 2026-10-13).
  */
 class MoreScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var mutedUntil = 0L
     private var satellite = false
+    private var liveKey: List<String> = emptyList()
     private var ticker: Job? = null
 
     init {
@@ -57,7 +61,10 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
             override fun onStart(owner: LifecycleOwner) {
                 ticker?.cancel()
                 ticker = lifecycleScope.launch {
-                    while (isActive) { delay(1_000); invalidate() }
+                    while (isActive) {
+                        delay(1_000)
+                        if (liveTexts() != liveKey) invalidate()
+                    }
                 }
             }
 
@@ -68,18 +75,36 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
         })
     }
 
-    override fun onGetTemplate(): Template {
+    /** The lines that can change while the screen is open: mute state, the Alerts row, the GPS row. */
+    private fun liveTexts(): List<String> {
         val muted = mutedUntil > System.currentTimeMillis()
         val stats = session.deps.location().stats.value
         val alerts = session.deps.alerts()
         val aheadCount = alerts.verdicts.value.count { it.value == Verdict.AHEAD_OK }
         val awayCount = alerts.facingAway.value.size
+        return listOf(
+            if (muted) "Unmute alerts" else "Mute alerts for 30 min",
+            "Ahead $aheadCount · facing away $awayCount",
+            "Last: ${alerts.trace.lastStage ?: "no stage yet"} · ${alerts.trace.lastSuppress ?: "no suppress yet"}",
+            "Requested ${stats.requestedHz} Hz · actual ${"%.1f".format(stats.actualHz)} Hz · " +
+                "heading ${stats.headingDeg?.let { "%.0f°".format(it) } ?: "–"} (${stats.headingSrc.ifEmpty { "none" }}" +
+                "${stats.headingAccDeg?.let { " ±%.0f°".format(it) } ?: ""})",
+            "Engine ${"%.0f".format(stats.speedMph)} mph (${stats.speedSrc.ifEmpty { "none" }}) · " +
+                "dial ${stats.dialSpeedMph?.let { "%.0f mph (car)".format(it) } ?: "${"%.0f".format(stats.speedMph)} mph (${if (stats.speedFromCar) "car" else "phone"})"} · " +
+                "location ${if (stats.locationFromCar) "car" else "phone"}" +
+                (stats.accuracyM?.let { " ±%.0f m".format(it) } ?: ""),
+        )
+    }
+
+    override fun onGetTemplate(): Template {
+        val muted = mutedUntil > System.currentTimeMillis()
+        val live = liveTexts().also { liveKey = it }
         val list = ItemList.Builder()
             .addItem(Row.Builder().setTitle("Recents").setImage(CarUi.icon(carContext, R.drawable.ic_action_recents))
                 .setOnClickListener { screenManager.push(RecentsScreen(carContext, session)) }.build())
             .addItem(Row.Builder().setTitle("POI layers").setImage(CarUi.icon(carContext, R.drawable.ic_action_layers))
                 .setOnClickListener { screenManager.push(PoiLayersScreen(carContext, session)) }.build())
-            .addItem(Row.Builder().setTitle(if (muted) "Unmute alerts" else "Mute alerts for 30 min")
+            .addItem(Row.Builder().setTitle(live[0])
                 .setImage(CarUi.icon(carContext, if (muted) R.drawable.ic_action_volume_on else R.drawable.ic_action_volume_off))
                 .setOnClickListener {
                     lifecycleScope.launch {
@@ -113,23 +138,14 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                 )
             }
             .addItem(Row.Builder().setTitle("Alerts")
-                .addText("Ahead $aheadCount · facing away $awayCount")
-                .addText("Last: ${alerts.trace.lastStage ?: "no stage yet"} · ${alerts.trace.lastSuppress ?: "no suppress yet"}")
+                .addText(live[1])
+                .addText(live[2])
                 .setImage(CarUi.icon(carContext, R.drawable.ic_action_volume_on))
                 .setOnClickListener { screenManager.push(AlertsRecordsScreen(carContext, session.deps.tts())) }
                 .build())
             .addItem(Row.Builder().setTitle("GPS")
-                .addText(
-                    "Requested ${stats.requestedHz} Hz · actual ${"%.1f".format(stats.actualHz)} Hz · " +
-                        "heading ${stats.headingDeg?.let { "%.0f°".format(it) } ?: "–"} (${stats.headingSrc.ifEmpty { "none" }}" +
-                        "${stats.headingAccDeg?.let { " ±%.0f°".format(it) } ?: ""})",
-                )
-                .addText(
-                    "Engine ${"%.0f".format(stats.speedMph)} mph (${stats.speedSrc.ifEmpty { "none" }}) · " +
-                        "dial ${stats.dialSpeedMph?.let { "%.0f mph (car)".format(it) } ?: "${"%.0f".format(stats.speedMph)} mph (${if (stats.speedFromCar) "car" else "phone"})"} · " +
-                        "location ${if (stats.locationFromCar) "car" else "phone"}" +
-                        (stats.accuracyM?.let { " ±%.0f m".format(it) } ?: ""),
-                )
+                .addText(live[3])
+                .addText(live[4])
                 .build())
         return ListTemplate.Builder()
             .setHeader(Header.Builder().setTitle("More").setStartHeaderAction(Action.BACK).build())

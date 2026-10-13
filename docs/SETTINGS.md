@@ -317,7 +317,7 @@ PocketGPSWorld's tips are shown here: don't report warning signs or Traffic Mast
 |---|---|
 | **Mute alerts for 30 min / Unmute alerts** | Silences all POI speech for 30 minutes. Cards and notifications still show. While muted, the passing alert is silent too, because muting turns sound off. |
 | **POI layers** | Turns each set on or off, the same as the set switches on the phone's POIs and Cameras tabs. Camera markers carry a direction arrow where the data gives a bearing; cameras facing the other way are drawn dimmed (§3.3). |
-| **GPS** | Read-only and **live** (it updates once a second while open): the requested GPS rate (always 10 Hz) and the rate actually delivered, the speed the alert engine is using and the speed on the dial with where each comes from (car or phone), and your heading with its source (GPS bearing, track, or none when parked) |
+| **GPS** | Read-only and **live** (it updates once a second while open, and only when something changed, so the list doesn't flicker while parked): the requested GPS rate (always 10 Hz) and the rate actually delivered, the speed the alert engine is using and the speed on the dial with where each comes from (car or phone), and your heading with its source (GPS bearing, track, or none when parked) |
 | **Alerts** | Read-only and live: how many cameras are **ahead** and how many **facing away**, the **last stage** fired (which camera, distance, whether it was spoken) and the **last suppression** (which camera and why) |
 | **Mute 30 min** on an alert card | Silences that **one set** for 30 minutes |
 
