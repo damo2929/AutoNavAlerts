@@ -117,9 +117,21 @@ class NavigatorHolder @Inject constructor(
         return places
     }
 
+    private val keyListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    /**
+     * Runs [l] from [keyChanged], before the old Navigator is cleaned up, so guidance can stop on
+     * a live navigator (`GuidanceController` registers `stopGuidance(KEY_CHANGED)`, DESIGN.md §9.3).
+     */
+    fun onKeyChanged(l: () -> Unit) {
+        keyListeners += l
+    }
+
     /** Call after the user changes the key so the next use re-initialises. */
     fun keyChanged() {
         keyApplied = null
+        // Listeners first: they need the navigator that is about to go.
+        for (l in keyListeners) runCatching { l() }.onFailure { Log.w(TAG, "keyChanged listener", it) }
         _navigator.value?.cleanup()
         _navigator.value = null
     }

@@ -18,37 +18,68 @@ import androidx.car.app.model.MessageTemplate
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.model.RoutePreviewNavigationTemplate
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import io.autonav.alerts.App
 import io.autonav.alerts.BuildConfig
 import io.autonav.alerts.R
 import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.nav.RouteOption
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Route preview with ETA and distance, then Go (DESIGN.md §8). Uses RoutePreviewNavigationTemplate,
  * deprecated in Car App 1.7 in favour of MapWithContentTemplate, which needs car API level 7; the
  * older template keeps the preview working on older head units.
+ *
+ * Back (the header's `Action.BACK`, the error screen's Back, or the session ending with the
+ * preview up) reaches `onDestroy`, which abandons the preview unless guidance has started: the
+ * destination and its route are cleared (§8). While the screen is on screen `MapSurface.previewShowing`
+ * is set, so the follow watchdog leaves the route overview alone (§8, §16 row 22).
  */
 @Suppress("DEPRECATION")
 class RoutePreviewScreen(
     carContext: CarContext,
     private val session: NavSession,
     private val destination: Destination,
-) : Screen(carContext) {
+) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
     private var route: RouteOption? = null
     private var error: String? = null
     private var loading = true
+    private var started = false
 
     init {
+        lifecycle.addObserver(this)
         lifecycleScope.launch {
             error = deps.guidance().setDestination(destination)
             route = deps.guidance().currentRoute()
             loading = false
             invalidate()
         }
+    }
+
+    override fun onStart(owner: LifecycleOwner) {
+        session.surface.previewShowing = true
+        showing = this
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        session.surface.previewShowing = false
+        if (showing === this) showing = null
+    }
+
+    override fun onDestroy(owner: LifecycleOwner) {
+        session.surface.previewShowing = false
+        if (showing === this) showing = null
+        // Back, or the session ending: abandonPreview is a no-op once guidance runs (the Go path).
+        if (!started && !deps.guidance().guiding.value) deps.guidance().abandonPreview()
     }
 
     override fun onGetTemplate(): Template {
@@ -171,9 +202,30 @@ class RoutePreviewScreen(
         else -> ""
     }
 
+    /** The bench's `--ez go true`: Go on the showing preview (TESTING.md §3). */
+    fun go() = start(simulate = false)
+
+    /**
+     * Go. The destination is remembered in Recents first, from the app scope and not cancellable
+     * (a `lifecycleScope` insert was cancelled by `popToRoot()` and Recents stayed empty after a
+     * real drive, DESIGN.md §8), and awaited before guidance starts and the screen pops.
+     */
     private fun start(simulate: Boolean) {
-        lifecycleScope.launch { deps.places().remember(destination, destination.address) }
-        deps.guidance().startGuidance(simulate)
-        screenManager.popToRoot()
+        if (started) return
+        started = true
+        lifecycleScope.launch {
+            withContext(NonCancellable) {
+                App.appScope.async { runCatching { deps.places().remember(destination, destination.address) } }.await()
+            }
+            deps.eventLog().record(EventLog.Channel.NAV, "Guidance", "Places remember \"${destination.title}\"")
+            deps.guidance().startGuidance(simulate)
+            screenManager.popToRoot()
+        }
+    }
+
+    companion object {
+        /** The preview on screen, if any, for the debug bench's `--ez go true`. */
+        @Volatile var showing: RoutePreviewScreen? = null
+            private set
     }
 }

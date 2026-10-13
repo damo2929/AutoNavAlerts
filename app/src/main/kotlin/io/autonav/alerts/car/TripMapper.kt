@@ -38,19 +38,29 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
         return TravelEstimate.Builder(distance(meters), arrival).setRemainingTimeSeconds(seconds.toLong()).build()
     }
 
+    /**
+     * The trip for the host's cluster and rail (DESIGN.md §12.4): the current step with its
+     * estimate, the next step as a second `Step` (clusters that show two manoeuvres can), the
+     * destination with the trip's estimate, and the current road.
+     */
     fun trip(info: NavInfo, destinationName: String?): Trip? {
         val current = info.currentStep ?: return null
         val estimate = travelEstimate(info) ?: return null
-        val stepEstimate = TravelEstimate.Builder(
-            distance(info.distanceToCurrentStepMeters ?: 0),
-            DateTimeWithZone.create(System.currentTimeMillis() + (info.timeToCurrentStepSeconds ?: 0) * 1000L, TimeZone.getDefault()),
-        ).setRemainingTimeSeconds((info.timeToCurrentStepSeconds ?: 0).toLong()).build()
-        return Trip.Builder()
-            .addStep(step(current), stepEstimate)
-            .addDestination(Destination.Builder().setName(destinationName ?: "Destination").build(), estimate)
+        val toStepM = info.distanceToCurrentStepMeters ?: 0
+        val toStepS = info.timeToCurrentStepSeconds ?: 0
+        val b = Trip.Builder().addStep(step(current), stepEstimate(toStepM, toStepS))
+        info.remainingSteps?.firstOrNull()?.let { next ->
+            b.addStep(step(next), stepEstimate(toStepM + (next.distanceFromPrevStepMeters ?: 0), toStepS + (next.timeFromPrevStepSeconds ?: 0)))
+        }
+        return b.addDestination(Destination.Builder().setName(destinationName ?: "Destination").build(), estimate)
             .apply { current.simpleRoadName?.let { setCurrentRoad(it) } }
             .build()
     }
+
+    private fun stepEstimate(meters: Int, seconds: Int): TravelEstimate = TravelEstimate.Builder(
+        distance(meters.coerceAtLeast(0)),
+        DateTimeWithZone.create(System.currentTimeMillis() + seconds.coerceAtLeast(0) * 1000L, TimeZone.getDefault()),
+    ).setRemainingTimeSeconds(seconds.coerceAtLeast(0).toLong()).build()
 
     private fun step(s: StepInfo): Step {
         val icon = s.maneuverBitmap?.let { CarIcon.Builder(IconCompat.createWithBitmap(it)).build() }

@@ -10,7 +10,6 @@ import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
 import androidx.car.app.CarToast
 import androidx.car.app.model.Template
-import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.model.MessageInfo
 import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -23,6 +22,7 @@ import io.autonav.alerts.car.NavSession
 import io.autonav.alerts.car.TripMapper
 import io.autonav.alerts.nav.NavUnavailable
 import io.autonav.alerts.nav.NavUpdatesService
+import io.autonav.alerts.nav.StopReason
 import io.autonav.alerts.reports.toSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -31,7 +31,9 @@ import kotlinx.coroutines.launch
 
 /**
  * The map screen: free drive, or guidance with turn cards (DESIGN.md §8). Action strip:
- * Search · Report · Recents · More, with Stop replacing Recents while navigating.
+ * Search · Report · Recents · More; while navigating the first slot reads "Stop navigation",
+ * on arrival "Done", both through `stopGuidance(reason)` (§9.3). The host's trip feed is the
+ * session's `TripPublisher`, not this screen's (§9.3), so it never stalls while another screen is up.
  */
 class HomeScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
@@ -41,7 +43,6 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
     private var unavailable: NavUnavailable? = null
     private var lastInvalidate = 0L
     private var pendingInvalidate: Job? = null
-    private var tripActive = false
 
     init {
         lifecycle.addObserver(this)
@@ -56,22 +57,10 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
                 guiding = g as Boolean
                 arrived = a as Boolean
                 unavailable = u as NavUnavailable?
-                publishTrip()
                 invalidateThrottled()
             }
         }
         lifecycleScope.launch { deps.navigator().ensureNavigator(); invalidateThrottled() }
-    }
-
-    private fun publishTrip() {
-        val nm = carContext.getCarService(NavigationManager::class.java)
-        val info = navInfo
-        if (guiding && !tripActive) { runCatching { nm.navigationStarted() }; tripActive = true }
-        if (!guiding && tripActive) { runCatching { nm.navigationEnded() }; tripActive = false }
-        if (guiding && info != null && info.navState == NavState.ENROUTE) {
-            TripMapper(carContext, session.imperial).trip(info, deps.guidance().destination.value?.title)
-                ?.let { runCatching { nm.updateTrip(it) } }
-        }
     }
 
     private fun invalidateThrottled() {
@@ -146,9 +135,15 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
     // faded out after a few seconds (DESIGN.md §8).
     private fun actionStrip(): ActionStrip {
         val strip = ActionStrip.Builder()
-        if (guiding || arrived) {
-            strip.addAction(CarUi.textAction(carContext.getString(R.string.car_stop), persistent = true) {
-                deps.guidance().stopGuidance()
+        if (arrived) {
+            // "Done" at the destination: the one custom-title action the strip allows (DESIGN.md §8).
+            strip.addAction(CarUi.textAction(carContext.getString(R.string.car_done), persistent = true) {
+                deps.guidance().stopGuidance(StopReason.ARRIVED_DONE)
+                invalidate()
+            })
+        } else if (guiding) {
+            strip.addAction(CarUi.textAction(carContext.getString(R.string.car_stop_navigation), persistent = true) {
+                deps.guidance().stopGuidance(StopReason.ACTION_STRIP)
                 invalidate()
             })
         } else {

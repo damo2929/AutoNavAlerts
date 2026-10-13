@@ -69,14 +69,22 @@ class EcoRoutes @Inject constructor(
     private val http = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build()
     private val certHex by lazy { runCatching { keys.signingSha1().replace(":", "") }.getOrDefault("") }
 
-    /** The fastest and energy-efficient routes from (lat, lon) to the destination. Never throws. */
-    suspend fun route(fromLat: Double, fromLon: Double, dest: Destination, avoidTolls: Boolean): Result = withContext(Dispatchers.IO) {
+    /**
+     * The fastest and energy-efficient routes from (lat, lon) to the destination. Never throws.
+     * [headingDeg] is the car's heading when known (DESIGN.md §8.3a): sent as the origin's
+     * `location.heading`, so a re-ask mid-drive starts on our carriageway, not the one opposite.
+     */
+    suspend fun route(fromLat: Double, fromLon: Double, dest: Destination, avoidTolls: Boolean, headingDeg: Double? = null): Result = withContext(Dispatchers.IO) {
         val key = settings.mapsApiKey() ?: return@withContext Result.Unavailable("no Maps key")
         val destination = JSONObject().apply {
             if (dest.placeId != null) put("placeId", dest.placeId) else put("location", latLng(dest.lat, dest.lon))
         }
+        val origin = JSONObject().put("location", latLng(fromLat, fromLon).apply {
+            // The Routes API takes the heading as an integer 0–359 inside the location object.
+            headingDeg?.let { put("heading", ((it % 360 + 360) % 360).toInt()) }
+        })
         val body = JSONObject()
-            .put("origin", JSONObject().put("location", latLng(fromLat, fromLon)))
+            .put("origin", origin)
             .put("destination", destination)
             .put("travelMode", "DRIVE")
             .put("routingPreference", "TRAFFIC_AWARE_OPTIMAL")

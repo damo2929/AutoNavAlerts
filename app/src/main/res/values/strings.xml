@@ -6,4 +6,20 @@
     <string name="car_stop">Stop</string>
     <string name="car_go">Go</string>
     <string name="car_search_hint">Search places or addresses</string>
+    <string name="car_stop_navigation">Stop navigation</string>
+    <string name="car_done">Done</string>
+    <string name="car_nav_stopped_by_car">Navigation stopped by the car</string>
+    <string name="car_searching">Searching…</string>
+    <string name="car_no_results">No results for %1$s</string>
+    <string name="car_no_contact_results">No contacts with an address match</string>
+    <string name="car_contacts">Contacts</string>
+    <string name="car_contacts_hint">Drive to a contact\'s address</string>
+    <string name="car_search_contacts">Search contacts…</string>
+    <string name="car_search_contacts_hint">Search your contacts</string>
+    <string name="car_contacts_type_name">Type or say a contact\'s name</string>
+    <string name="car_search_empty">Search for a place or address</string>
+    <string name="car_no_contacts">No contacts with a postal address</string>
+    <string name="car_which_address">Which address for %1$s?</string>
+    <string name="car_contact_not_found">Couldn\'t find %1$s\'s address</string>
+    <string name="car_place_not_found">Couldn\'t find that place</string>
 </resources>

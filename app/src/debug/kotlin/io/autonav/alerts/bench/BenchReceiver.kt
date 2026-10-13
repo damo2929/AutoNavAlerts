@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es banner "'Speed camera'"  # a test alert banner for 8 s
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez ev true --ez tolls true  # route options
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez diag true  # last 100 lines of each debug log to logcat
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez go true    # Go on the route preview that's showing
  *   (add -p io.autonav.alerts: Android only delivers explicit broadcasts to manifest receivers)
  *   Every command lands in debug-nav.log as a `Bench` line (DESIGN.md §15.5).
  */
@@ -121,6 +122,20 @@ class BenchReceiver : BroadcastReceiver() {
         }
         val session = NavSession.active
         if (session == null) { Log.w(TAG, "No car session"); return }
+        if (intent.getBooleanExtra("go", false)) {
+            // Go on the showing route preview (DESIGN.md §15.5): remembers, starts guidance, pops.
+            val carDeps = io.autonav.alerts.car.CarDeps.from(context)
+            Handler(Looper.getMainLooper()).post {
+                val preview = RoutePreviewScreen.showing
+                if (preview == null) {
+                    Log.w(TAG, "No route preview showing (guiding=${carDeps.guidance().guiding.value}, dest=${carDeps.guidance().destination.value?.title})")
+                } else {
+                    Log.i(TAG, "Go on the preview for ${carDeps.guidance().destination.value?.title}")
+                    preview.go()
+                }
+            }
+            return
+        }
         if (intent.hasExtra("tworoutes")) {
             session.deps.guidance().debugTwoChoices = intent.getBooleanExtra("tworoutes", false)
             Log.i(TAG, "Two route rows: ${session.deps.guidance().debugTwoChoices}")

@@ -12,7 +12,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.App
+import io.autonav.alerts.core.geo.LatLngLike
 import io.autonav.alerts.core.osm.LimitIndex
+import io.autonav.alerts.core.osm.LimitLookahead
 import io.autonav.alerts.core.osm.OsmLimitFile
 import io.autonav.alerts.core.osm.OsmSpeedLimits
 import kotlinx.coroutines.Job
@@ -43,6 +45,8 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
 
     @Volatile private var reader: OsmLimitFile.Reader? = null
     @Volatile private var index: LimitIndex = LimitIndex.EMPTY
+    /** The lookahead over the current [index]; rebuilt when the index is replaced. */
+    @Volatile private var lookahead: Pair<LimitIndex, LimitLookahead>? = null
     private var loading: Job? = null
 
     /**
@@ -56,6 +60,21 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
             loading = App.appScope.launch { load(lat, lon) }
         }
         return idx.limitAt(lat, lon, heading)
+    }
+
+    /**
+     * The next change of limit on the road the car is on (DESIGN.md §8.4a, "Limit changes ahead"),
+     * from the tiles already in memory: along [routeAhead] when there is one (first point at the
+     * car, at least two points), else along the road by connectivity. Null with no data, no
+     * heading or no change within 600 m. Called once a second by `NavSession`, never per fix.
+     */
+    fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>?): LimitLookahead.Change? {
+        val idx = index
+        if (idx === LimitIndex.EMPTY) return null
+        if (!covers(idx, lat, lon) && loading?.isActive != true) loading = App.appScope.launch { load(lat, lon) }
+        val la = lookahead?.takeIf { it.first === idx }?.second ?: LimitLookahead(idx).also { lookahead = idx to it }
+        return runCatching { la.nextChange(lat, lon, headingDeg, routeAhead?.takeIf { it.size >= 2 }) }
+            .onFailure { Log.w(TAG, "lookahead: ${it.message}") }.getOrNull()
     }
 
     private fun covers(idx: LimitIndex, lat: Double, lon: Double): Boolean {

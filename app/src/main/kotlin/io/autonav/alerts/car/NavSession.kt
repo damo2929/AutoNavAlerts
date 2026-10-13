@@ -8,6 +8,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.car.app.AppManager
 import androidx.car.app.CarContext
+import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.Session
 import androidx.car.app.model.Action
@@ -22,9 +23,11 @@ import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import com.google.android.libraries.navigation.RoadSnappedLocationProvider
 import com.google.android.libraries.navigation.SpeedAlertOptions
 import com.google.android.libraries.navigation.SpeedAlertSeverity
 import io.autonav.alerts.App
+import io.autonav.alerts.R
 import io.autonav.alerts.alerts.ActiveAlert
 import io.autonav.alerts.alerts.AlertCoordinator
 import io.autonav.alerts.alerts.CarAlertSink
@@ -34,11 +37,16 @@ import io.autonav.alerts.car.screens.SearchScreen
 import io.autonav.alerts.core.alerts.AlertKind
 import io.autonav.alerts.core.alerts.Units
 import io.autonav.alerts.core.geo.Geo
+import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.map.MapSurface
 import io.autonav.alerts.map.PoiMarkerLayer
 import io.autonav.alerts.map.SpeedPanelView
 import io.autonav.alerts.nav.Destination
+import io.autonav.alerts.nav.LimitAnnouncer
+import io.autonav.alerts.nav.StopReason
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -49,6 +57,11 @@ class NavSession : Session(), DefaultLifecycleObserver {
     lateinit var surface: MapSurface
         private set
     private lateinit var markers: PoiMarkerLayer
+    private lateinit var eventLog: EventLog
+    private var tripPublisher: TripPublisher? = null
+    /** The SDK's road-snapped position, for the follow watchdog (DESIGN.md §8); registered once the navigator exists. */
+    private val sdkListener = RoadSnappedLocationProvider.LocationListener { loc -> surface.onSdkLocation(loc) }
+    private var sdkListenerAdded = false
 
     @Volatile private var speedingPct: Float = 0f
     @Volatile private var speedingSeverity = SpeedPanelView.Severity.NONE
@@ -57,6 +70,9 @@ class NavSession : Session(), DefaultLifecycleObserver {
         private set
     @Volatile private var speedPanelOn = true
     @Volatile private var osmLimitsOn = true
+    @Volatile private var announceLimits = true
+    @Volatile private var voiceOn = true
+    @Volatile private var mutedUntilMs = 0L
 
     init {
         lifecycle.addObserver(this)
@@ -65,12 +81,22 @@ class NavSession : Session(), DefaultLifecycleObserver {
     override fun onCreateScreen(intent: Intent): Screen {
         active = this
         deps = CarDeps.from(carContext)
+        eventLog = deps.eventLog()
+        eventLog.record(EventLog.Channel.NAV, "Session", "create api=${carContext.carAppApiLevel} host=${runCatching { carContext.hostInfo?.packageName }.getOrNull() ?: "?"}")
+        deps.driveRecorder().start("car")
         surface = MapSurface(carContext) { deps.navigator().applyApiKey() }
+        surface.guidingProvider = { deps.guidance().guiding.value }
         markers = PoiMarkerLayer(deps.icons(), (36 * carContext.resources.displayMetrics.density).toInt())
         surface.onMapReady = { m -> markers.map = m; m.setOnCameraIdleListener { redrawMarkers() } }
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(surface)
         carContext.getCarService(NavigationManager::class.java).setNavigationManagerCallback(object : NavigationManagerCallback {
-            override fun onStopNavigation() = deps.guidance().stopGuidance()
+            // The user stopped from the system UI, or another navigation app took over (DESIGN.md §9.3):
+            // logged and shown, so a host stop can be told from a bug.
+            override fun onStopNavigation() {
+                eventLog.record(EventLog.Channel.NAV, "Session", "hostStopNavigation guiding=${deps.guidance().guiding.value}")
+                runCatching { CarToast.makeText(carContext, carContext.getString(R.string.car_nav_stopped_by_car), CarToast.LENGTH_LONG).show() }
+                deps.guidance().stopGuidance(StopReason.HOST)
+            }
             override fun onAutoDriveEnabled() {
                 Log.i(TAG, "Auto drive enabled (DHU): starting simulation if a route is set")
                 deps.guidance().startGuidance(simulate = true)
@@ -81,6 +107,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         deps.tts().warmUp()
         deps.alerts().start(App.appScope)
         deps.dispatcher().carSink = CarAlertSink(::showCarAlert)
+        tripPublisher = TripPublisher(carContext, deps, { imperial }, eventLog).also { it.start(lifecycleScope) }
         startCollectors()
 
         val home = HomeScreen(carContext, this)
@@ -111,6 +138,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         if (intent.action != CarContext.ACTION_NAVIGATE && intent.action != Intent.ACTION_VIEW) return null
         val data: Uri = intent.data ?: return null
         val (latLon, query) = parseNavUri(data)
+        eventLog.record(EventLog.Channel.NAV, "Search", "NavigateIntent action=${intent.action} coords=${latLon != null} queryLen=${query?.length ?: 0}")
         return when {
             latLon != null -> RoutePreviewScreen(carContext, this, Destination(query ?: "Destination", latLon.first, latLon.second))
             !query.isNullOrBlank() -> SearchScreen(carContext, this, initialQuery = query)
@@ -127,6 +155,9 @@ class NavSession : Session(), DefaultLifecycleObserver {
                 imperial = it.units == Units.IMPERIAL
                 speedPanelOn = it.speedPanelOn
                 osmLimitsOn = it.osmLimitsOn
+                announceLimits = it.announceLimitChanges
+                voiceOn = it.voiceOn
+                mutedUntilMs = it.mutedUntilMs
                 if (surface.satellite != it.satelliteMap) surface.satellite = it.satelliteMap
             }
         }
@@ -144,6 +175,13 @@ class NavSession : Session(), DefaultLifecycleObserver {
                     else -> SpeedPanelView.Severity.NONE
                 }
             }
+            // The follow watchdog watches the SDK's own position, never our fix (DESIGN.md §8).
+            val provider = deps.navigator().roadSnappedProvider()
+            if (provider != null && !sdkListenerAdded) {
+                provider.addLocationListener(sdkListener)
+                sdkListenerAdded = true
+                eventLog.record(EventLog.Channel.NAV, "Session", "sdkLocationListener added")
+            }
         }
         // Every fix: redraw markers (DESIGN.md §8.1) and update the speed panel (§8.4).
         lifecycleScope.launch {
@@ -152,10 +190,17 @@ class NavSession : Session(), DefaultLifecycleObserver {
             }
                 .collect { (t, away) ->
                     val (fix, nearby, active) = t
-                    fix?.let { deps.driving().onSpeed(it.speedMps); surface.keepFollowing(it.lat, it.lon) }
+                    fix?.let { deps.driving().onSpeed(it.speedMps) }
                     markers.redraw(nearby, fix, active, away)
                     updateSpeedPanel(fix?.speedMps, active)
                 }
+        }
+        // Limit changes ahead (DESIGN.md §8.4a): once a second, never per fix.
+        lifecycleScope.launch {
+            while (isActive) {
+                delay(1_000)
+                runCatching { tickLimitAhead() }.onFailure { Log.w(TAG, "limitAhead", it) }
+            }
         }
     }
 
@@ -164,11 +209,45 @@ class NavSession : Session(), DefaultLifecycleObserver {
         markers.redraw(a.nearby.value, a.lastFix.value, a.active.value, a.facingAway.value)
     }
 
+    // --- Limit changes ahead (DESIGN.md §8.4a) --------------------------------------------------
+
+    private val limitAnnouncer = LimitAnnouncer()
+
+    /**
+     * The next change of limit on our road, from the OSM data on the phone and the route ahead:
+     * the panel's "→ 30" chevron, one `limitAhead` line per change, and one spoken announcement
+     * within max(300 m, speed × 12 s) when `announceLimitChanges` is on (voice on, not muted).
+     */
+    private fun tickLimitAhead() {
+        val panel = surface.speedPanel ?: return
+        val fix = deps.alerts().lastFix.value
+        val heading = fix?.heading
+        if (fix == null || heading == null || !osmLimitsOn) { setUpcoming(panel, null); return }
+        val route = deps.guidance().routePointsAhead()
+        val change = deps.speedLimits().nextChange(fix.lat, fix.lon, heading, route.takeIf { it.size >= 2 })
+        // Already under it (the panel shows that limit): nothing ahead to say.
+        val shown = lastLimit?.limit
+        if (change == null || change.newMph == shown) { setUpcoming(panel, null); return }
+        setUpcoming(panel, change.newMph)
+        eventLog.onChange("alerts.limitAhead", change.newMph to change.viaRoute, EventLog.Channel.ALERT, "Alerts") {
+            "limitAhead new=${change.newMph} d=${change.distanceM.toInt()} via=${if (change.viaRoute) "route" else "road"}"
+        }
+        if (!limitAnnouncer.shouldAnnounce(change.newMph, change.distanceM, fix.lat, fix.lon, fix.speedMps, heading)) return
+        val speak = announceLimits && voiceOn && mutedUntilMs <= System.currentTimeMillis()
+        eventLog.record(EventLog.Channel.ALERT, "Alerts", "limitAhead announce new=${change.newMph} d=${change.distanceM.toInt()} spd=${fix.speedMps.roundToInt()} speak=$speak")
+        if (speak) deps.tts().speak(LimitAnnouncer.text(change.newMph), 10, -1, false)
+    }
+
+    private fun setUpcoming(panel: SpeedPanelView, mph: Int?) {
+        if (panel.upcomingMph == mph) return
+        panel.post { panel.upcomingMph = mph }
+        if (mph == null) eventLog.onChange("alerts.limitAhead", null, EventLog.Channel.ALERT, "Alerts") { "limitAhead none" }
+    }
+
     private data class HeldLimit(val limit: Int, val source: SpeedPanelView.Source, val timeMs: Long, val lat: Double, val lon: Double)
     private var lastLimit: HeldLimit? = null
     private var pendingOsm: HeldLimit? = null
-    private var loggedLimit: Int? = -1
-    private var loggedSource: SpeedPanelView.Source? = null
+    private var shownLimit: Int? = null
 
     private fun updateSpeedPanel(speedMps: Double?, active: ActiveAlert?) {
         val panel = surface.speedPanel ?: return
@@ -221,9 +300,15 @@ class NavSession : Session(), DefaultLifecycleObserver {
             if (now - held.timeMs < 30_000 && moved < 300) { limit = held.limit; source = held.source } else lastLimit = null
         }
         val unit = if (imperial) "mph" else "km/h"
-        if (io.autonav.alerts.BuildConfig.DEBUG && (limit != loggedLimit || source != loggedSource)) {
-            loggedLimit = limit; loggedSource = source
-            Log.i(TAG, "Panel limit ${limit ?: "–"} (${if (limit == null) "none" else source.name}) at ${fix?.let { "%.5f,%.5f".format(it.lat, it.lon) }}, $shown $unit")
+        // `Panel limit n src=` only when it changes (DESIGN.md §15.5), and `limitChanged a→b` to the
+        // alert log when the shown limit flips, so the lookahead can be checked against what happened.
+        eventLog.onChange("panel.limit", (limit ?: -1) to source, EventLog.Channel.NAV, "Panel") {
+            "limit ${limit ?: "–"} src=${if (limit == null) "none" else source.name} at ${fix?.let { "%.5f,%.5f".format(it.lat, it.lon) } ?: "-"} $shown $unit"
+        }
+        val before = shownLimit
+        if (limit != before) {
+            shownLimit = limit
+            if (before != null && limit != null) eventLog.record(EventLog.Channel.ALERT, "Alerts", "limitChanged $before→$limit src=${source.name}")
         }
         panel.post { panel.update(shown, limit, source, speedingSeverity, unit) }
     }
@@ -272,7 +357,18 @@ class NavSession : Session(), DefaultLifecycleObserver {
         return true
     }
 
+    /**
+     * The car session ends. Guidance is NOT stopped here (DESIGN.md §9.3: it and the foreground
+     * service outlive the session); the logs are flushed so a kill right after loses nothing.
+     */
     override fun onDestroy(owner: LifecycleOwner) {
+        eventLog.record(EventLog.Channel.NAV, "Session", "destroy guiding=${deps.guidance().guiding.value}")
+        if (sdkListenerAdded) {
+            runCatching { deps.navigator().roadSnappedProvider()?.removeLocationListener(sdkListener) }
+            sdkListenerAdded = false
+        }
+        tripPublisher?.stop()
+        tripPublisher = null
         deps.carData().stop()
         deps.driving().carSessionOpen = false
         // End of drive: remind the user to check buffered reports on the phone (§8.5).
@@ -281,6 +377,8 @@ class NavSession : Session(), DefaultLifecycleObserver {
         deps.alerts().stop()
         markers.clear()
         surface.close()
+        deps.driveRecorder().stop()
+        eventLog.flush("session")
         if (active === this) active = null
     }
 
