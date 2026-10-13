@@ -105,7 +105,8 @@ class CarDataSource @Inject constructor(
             eventLog.onChange("carData.zero", zero, EventLog.Channel.NAV, "CarData") {
                 if (zero) "zeroFix raw=0 disp=${display ?: "-"}" else "speed raw=${raw ?: "-"} disp=${display ?: "-"}"
             }
-            val cs = CarSpeed(raw ?: display, display, SystemClock.elapsedRealtime())
+            // The dashboard figure reads a few % high: it is never passed off as the measured speed.
+            val cs = CarSpeed(raw, display, SystemClock.elapsedRealtime())
             _speed.value = cs
             driveRecorder.record(
                 DriveRecorder.Row(

@@ -332,6 +332,9 @@ class AlertCoordinator @Inject constructor(
                     eventLog.onChange("alerts.mute", muted, EventLog.Channel.ALERT, "Alerts") {
                         "mute global=$muted voiceOn=${it.voiceOn} until=${it.mutedUntilMs}"
                     }
+                    // Turning mute (or voice off) on stops what is being said and what waits (§12.3).
+                    val wasMuted = prev != null && (prev.mutedUntilMs > System.currentTimeMillis() || !prev.voiceOn)
+                    if (muted && !wasMuted && prev != null) tts.muteNow()
                 }
             }
             // One fix at a time; fixes that arrive meanwhile are dropped except the newest, so a

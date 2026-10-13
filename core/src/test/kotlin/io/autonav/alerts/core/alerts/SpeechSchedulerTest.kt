@@ -9,6 +9,7 @@ import io.autonav.alerts.core.alerts.SpeechScheduler.Utterance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -232,6 +233,23 @@ class SpeechSchedulerTest {
         assertEquals(listOf(Outcome.MUTED), outcomes(s))
         s.onFocus(a, granted = false, nowMs = 5)
         assertEquals(listOf(Outcome.MUTED, Outcome.FOCUS_DENIED), outcomes(s))
+    }
+
+    @Test
+    fun muteStopsWhatIsSpeakingAndWhatWaits() {
+        val s = SpeechScheduler()
+        s.offer(u(AlertKind.SECOND, poi = 1), 0)
+        val speaking = speak(s, 0)
+        s.offer(u(AlertKind.PASSING, poi = 1, queuedMs = 100), 100)
+        s.offer(u(AlertKind.FIRST, poi = 2, queuedMs = 100), 100)
+        assertTrue(s.muteAll(200))
+        assertTrue(s.waiting.isEmpty())
+        assertNull(s.speaking)
+        assertEquals(listOf(Outcome.MUTED, Outcome.MUTED, Outcome.MUTED), outcomes(s))
+        // A late callback for the muted utterance changes nothing.
+        s.onDone(speaking, 300)
+        assertEquals(3, s.records().size)
+        assertFalse(s.muteAll(400))
     }
 
     @Test

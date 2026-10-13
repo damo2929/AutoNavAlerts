@@ -135,9 +135,26 @@ class SpeechScheduler(private val config: Config = Config()) {
         return out
     }
 
-    /** The car's latest distance to a POI, for the staleness rule. */
+    /** The car's latest distance to a POI, for the staleness rule; kept only while it has speech queued. */
     fun onDistance(poiId: Long, distanceM: Double) {
-        distances[poiId] = distanceM
+        if (queue.any { it.poiId == poiId } || current?.poiId == poiId) distances[poiId] = distanceM
+    }
+
+    /**
+     * Mute pressed (DESIGN.md §12.3): what is speaking and everything waiting is recorded as MUTED
+     * and dropped, PASSING included (mute silences speech only; the cards still show). Returns
+     * whether something was speaking, so the caller stops the engine.
+     */
+    fun muteAll(nowMs: Long): Boolean {
+        val speakingNow = current
+        if (speakingNow != null) {
+            record(Record(speakingNow, Outcome.MUTED, nowMs, startMs = currentStartMs ?: currentSpeakMs))
+            finish(nowMs)
+        }
+        for (u in queue.toList()) record(Record(u, Outcome.MUTED, nowMs))
+        queue.clear()
+        distances.clear()
+        return speakingNow != null
     }
 
     fun next(nowMs: Long, channelBusy: Boolean): Decision {
@@ -246,6 +263,12 @@ class SpeechScheduler(private val config: Config = Config()) {
     private fun record(r: Record) {
         ring.addLast(r)
         while (ring.size > config.ringSize) ring.removeFirst()
+        // A finished utterance needs no retry/defer bookkeeping, nor its POI's distance once nothing else waits.
+        if (r.outcome != Outcome.DEFERRED && r.outcome != Outcome.FOCUS_DENIED) {
+            retried.remove(r.utterance.id)
+            deferred.remove(r.utterance.id)
+            if (queue.none { it.poiId == r.utterance.poiId }) distances.remove(r.utterance.poiId)
+        }
     }
 
     companion object {

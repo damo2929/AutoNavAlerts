@@ -11,6 +11,7 @@ import android.media.AudioPlaybackConfiguration
 import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
@@ -55,6 +56,12 @@ class NavTts @Inject constructor(
     private var currentEngineId: String? = null
     private var lastRecord: Record? = null
     private var toastShown = false
+    /** The engine failed to start: queued speech falls back to the chime until a retry succeeds. */
+    private var initFailed = false
+    private var initAttempts = 0
+    /** Consecutive engine errors; two in a row restart the engine (a dead TTS service). */
+    private var engineErrors = 0
+    private var tone: ToneGenerator? = null
 
     private val _records = MutableStateFlow<List<Record>>(emptyList())
     /** The scheduler's decisions, oldest first, at most 50 (More → Alerts, Diagnostics). */
@@ -74,13 +81,29 @@ class NavTts @Inject constructor(
 
     private val pumpRunnable = Runnable { pump() }
     private val watchdogRunnable = Runnable { onWatchdog() }
+    private val retryInitRunnable = Runnable { warmUp() }
 
     fun warmUp() {
         if (tts != null) return
+        main.removeCallbacks(retryInitRunnable)
+        initAttempts++
         tts = TextToSpeech(context) { status ->
             main.post {
                 ready = status == TextToSpeech.SUCCESS
-                if (!ready) { log("init failed status=$status"); return@post }
+                if (!ready) {
+                    // Never leave a dead engine in place: shut it down, chime meanwhile, and try again later.
+                    initFailed = true
+                    runCatching { tts?.shutdown() }
+                    tts = null
+                    val retryMs = RETRY_INIT_MS.getOrElse(initAttempts - 1) { RETRY_INIT_MS.last() }
+                    log("init failed status=$status attempt=$initAttempts retry in ${retryMs / 1000} s")
+                    main.postDelayed(retryInitRunnable, retryMs)
+                    pump()
+                    return@post
+                }
+                initFailed = false
+                initAttempts = 0
+                engineErrors = 0
                 val engine = tts ?: return@post
                 val lang = pickLanguage(engine)
                 engine.setAudioAttributes(attrs)
@@ -110,6 +133,9 @@ class NavTts @Inject constructor(
     fun shutdown() {
         main.removeCallbacks(pumpRunnable)
         main.removeCallbacks(watchdogRunnable)
+        main.removeCallbacks(retryInitRunnable)
+        runCatching { tone?.release() }
+        tone = null
         tts?.shutdown()
         tts = null
         ready = false
@@ -137,6 +163,20 @@ class NavTts @Inject constructor(
             }
             syncRecords()
             pump()
+        }
+    }
+
+    /**
+     * Mute pressed (DESIGN.md §12.3): stops what is being said and drops what is waiting, PASSING
+     * included, each recorded as MUTED. Mute silences speech only: the cards still show.
+     */
+    fun muteNow() {
+        main.post {
+            val wasSpeaking = scheduler.muteAll(now())
+            if (wasSpeaking) runCatching { tts?.stop() }
+            clearCurrent()
+            log("mute: stopped=${wasSpeaking}")
+            afterTerminal()
         }
     }
 
@@ -193,7 +233,7 @@ class NavTts @Inject constructor(
                 val u = forEngineId(id) ?: return@post
                 scheduler.onInterrupted(u, now())
                 clearCurrent()
-                log("interrupted $kindOf poi=${u.poiId} byHost=$interrupted")
+                log("interrupted ${u.kind} poi=${u.poiId} byHost=$interrupted")
                 afterTerminal()
             }
         }
@@ -207,7 +247,6 @@ class NavTts @Inject constructor(
             main.post { forEngineId(id)?.let { engineError(it, -1) } }
         }
 
-        private val kindOf: String get() = current?.kind?.name ?: "?"
     }
 
     private fun forEngineId(id: String?): Utterance? = if (id != null && id == currentEngineId) current else null
@@ -233,13 +272,23 @@ class NavTts @Inject constructor(
 
     private fun pump() {
         main.removeCallbacks(pumpRunnable)
-        if (!ready) return
+        if (!ready) {
+            // No engine (it failed to start): each waiting alert goes through the error path, so it is
+            // retried once and then chimed, never left queued and silent for the whole drive.
+            if (initFailed && current == null) {
+                val d = scheduler.next(now(), channelBusy = false)
+                if (d is Decision.Speak) { current = d.utterance; engineError(d.utterance, ERROR_NO_ENGINE) }
+                else if (d is Decision.Wait) main.postDelayed(pumpRunnable, max(50L, d.untilMs - now()))
+            }
+            return
+        }
         val now = now()
         // Our own voice shows on the channel too: only look while we aren't speaking.
         val busy = current == null && sdkSpeaking()
         when (val d = scheduler.next(now, channelBusy = busy)) {
             is Decision.Speak -> start(d.utterance, d.waitedMs, busy)
-            is Decision.Wait -> main.postDelayed(pumpRunnable, max(50L, d.untilMs - now))
+            // While we speak, onDone/onStop/the watchdog pump again: no polling loop meanwhile.
+            is Decision.Wait -> if (d.reason != "speaking") main.postDelayed(pumpRunnable, max(50L, d.untilMs - now))
             Decision.Idle -> if (current == null) abandonFocus()
             else -> Unit
         }
@@ -255,25 +304,33 @@ class NavTts @Inject constructor(
         val granted = requestFocus()
         scheduler.onFocus(u, granted, now())
         if (!granted) log("focus=denied ${u.kind} poi=${u.poiId}")
-        if (u.chime) runCatching {
-            ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80).startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
-        }
+        if (u.chime) beep(180)
         val delay = if (u.chime) 250L else 0L
         main.postDelayed({
             if (current?.id != u.id) return@postDelayed
             val r = runCatching { engine.speak(u.text, TextToSpeech.QUEUE_FLUSH, null, engineId) }.getOrDefault(TextToSpeech.ERROR)
-            if (r != TextToSpeech.SUCCESS) engineError(u, r) else scheduleWatchdog()
+            if (r != TextToSpeech.SUCCESS) engineError(u, r) else { engineErrors = 0; scheduleWatchdog() }
         }, delay)
         scheduleWatchdog()
     }
 
     private fun engineError(u: Utterance, code: Int) {
         clearCurrent()
+        // Two errors in a row from a running engine: its service has most likely died. Start a new one.
+        if (code != ERROR_NO_ENGINE && ++engineErrors >= 2 && tts != null) {
+            log("engine restart after $engineErrors errors")
+            runCatching { tts?.shutdown() }
+            tts = null
+            ready = false
+            engineErrors = 0
+            initFailed = true
+            main.post(retryInitRunnable)
+        }
         when (val d = scheduler.onEngineError(u, code, now())) {
             is Decision.Retry -> { log("error status=$code ${u.kind} poi=${u.poiId} retry"); pump() }
             is Decision.Fallback -> {
                 log("error status=${d.code} ${u.kind} poi=${u.poiId} fallback=chime")
-                runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80).startTone(ToneGenerator.TONE_PROP_BEEP2, 300) }
+                beep(300)
                 if (!toastShown) {
                     toastShown = true
                     runCatching { Toast.makeText(context, "Speech failed: alerts are shown and chimed", Toast.LENGTH_LONG).show() }
@@ -334,6 +391,7 @@ class NavTts @Inject constructor(
         if (terminal) spokenCallback?.invoke(u.poiId, u.kind, r.outcome == Outcome.SPOKEN, r.waitedMs, r.outcome.name)
     }
 
+    /** Kept only when granted: a refused request isn't "held", so the next utterance asks again. */
     private fun requestFocus(): Boolean {
         focus?.let { return true }
         val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
@@ -341,8 +399,17 @@ class NavTts @Inject constructor(
             .setWillPauseWhenDucked(false)
             .build()
         val r = runCatching { audio.requestAudioFocus(req) }.getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
-        focus = req
-        return r == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        val granted = r == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        if (granted) focus = req
+        return granted
+    }
+
+    /** One tone generator for the whole session (each one holds a native AudioTrack), released in [shutdown]. */
+    private fun beep(ms: Int) {
+        runCatching {
+            val t = tone ?: ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80).also { tone = it }
+            t.startTone(ToneGenerator.TONE_PROP_BEEP2, ms)
+        }
     }
 
     private fun abandonFocus() {
@@ -352,11 +419,19 @@ class NavTts @Inject constructor(
 
     private fun log(msg: String) = eventLog.record(EventLog.Channel.ALERT, "Tts", msg)
 
-    private fun now() = System.currentTimeMillis()
+    /** Monotonic: a clock change (NTP, GPS time, a time zone) must never stall or rush speech. */
+    private fun now() = SystemClock.elapsedRealtime()
+
+    /** A record's time ([Record.atMs], on [now]'s clock) as wall-clock milliseconds, for display. */
+    fun wallMs(atMs: Long): Long = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - atMs)
 
     companion object {
         /** An utterance the engine still calls "speaking" is cut off only after this long (DESIGN.md §12.3). */
         private const val WATCHDOG_HARD_CAP_MS = 15_000L
+        /** Waits before trying a failed engine again: 5 s, 30 s, then every minute. */
+        private val RETRY_INIT_MS = longArrayOf(5_000, 30_000, 60_000)
+        /** engineError code when there is no engine at all (init failed). */
+        private const val ERROR_NO_ENGINE = -100
 
         /** One line for a record: `KIND poi=… OUTCOME waited=…`. */
         fun describe(r: Record): String {
