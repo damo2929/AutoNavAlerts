@@ -154,7 +154,7 @@ The terminal the DHU runs in is also a console: type `help` there for its comman
      - `--record out.csv`: writes every fix sent, in the app's drive-recording layout.
      - `--replay file (at X× the reported speed is scaled by X too, so motion and the time-based alert distances agree).csv [--speed X]`: drives the emulator from a phone **drive recording** (Settings → Diagnostics, docs/SETTINGS.md §1.8) at real time or X×. Only position and speed can be injected; bearing and accuracy are covered by the JVM replay (G10).
      - `--bearing` (**experimental**): tries to send a heading through the emulator's gRPC `setGps`; falls back to `geo fix` (no heading) if the image doesn't take it.
-   - **Scenarios:** `tools/scenario.sh <name>` runs a scripted drive with the options above and says what to look for in the logs (§7):
+   - **Scenarios:** `tools/scenario.sh <name>` imports the scenario's test cameras through the bench hook (`--es import`, step 5a), runs a scripted drive with the options above and says what to look for in the logs (§7):
      | Scenario | What it does | Pass when |
      |---|---|---|
      | `parked-then-go` | Parks 60 s with noise, routes somewhere (preview), presses Go (`--ez go true`), then drives | No `Guidance stop` in `debug-nav` for 5 minutes; `watchdog skip (preview)` then `skip (guiding)` |
@@ -171,6 +171,7 @@ The terminal the DHU runs in is also a console: type `help` there for its comman
    - `… --ez go true`: presses **Go** on the route preview that's showing (so a script can start guidance)
    - `… --ez engine true`: writes the alert engine's snapshot to `alert-debug` and logcat (the same as Settings → Diagnostics → Engine now: last fix, stats, cache, route state, mutes, the 5 nearest POIs with their verdicts, the speech queue)
    - `… --ez diag true`: prints the last 100 lines of each debug log to logcat
+   - `… --es import "<file>"`: imports a POI file from the app's own `files/bench/` folder (a debug app can't read `/sdcard/Download` without a storage grant). Put it there first: `adb -e push f.gpx /data/local/tmp/ && adb -e shell run-as io.autonav.alerts mkdir -p files/bench && adb -e shell run-as io.autonav.alerts cp /data/local/tmp/f.gpx files/bench/`. A `.csv` uses the scenario layout `lat,lon,name,speed,heading,dir` (override with `--es csvcols "0,1,2,3,4,5"`). Re-importing a file replaces its set. logcat `Bench: Import f.gpx: 3 imported, 0 skipped, set=36`. `tools/scenario.sh` imports its cameras this way, so no phone-side import is needed
    - The DHU's `screenshot` command shows the result. Taps by a person on the DHU window work as normal.
 6. **Or with the emulator's own controls:** open the emulator's **Extended controls (⋯) → Location → Routes**, plan a route (or load a GPX/KML under **Single points → Load GPX/KML**), set the playback speed, and press **Play route**. The phone's GPS then moves along it, so camera alerts work in **free drive**, without the Simulate button.
 
