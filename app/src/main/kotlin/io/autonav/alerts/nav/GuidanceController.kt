@@ -114,7 +114,9 @@ class GuidanceController @Inject constructor(
     val routeMatcher = RouteMatcher { lat, lon ->
         val p = polyline ?: return@RouteMatcher null
         if (!_guiding.value) return@RouteMatcher null
-        p.locate(lat, lon)
+        // With the heading: a route that doubles back along this road (the SDK's U-turn route from a
+        // parked car) must not pin the car to the leg going the other way (bench, 2026-10-13).
+        p.locate(lat, lon, lastHeading)
         p.distanceToRouteM(lat, lon).coerceAtMost(10_000.0)
     }
 

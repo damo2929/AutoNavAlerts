@@ -31,35 +31,54 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
     var carIndex: Int = 0
         private set
 
-    /** Updates [carIndex] from the car's position and returns it. */
-    fun locate(carLat: Double, carLon: Double): Int {
-        carIndex = nearestSegment(carLat, carLon, carIndex)
+    /**
+     * Updates [carIndex] from the car's position and returns it. With [headingDeg], only segments
+     * running the car's way (bearing within [sameWayDeg] of the heading) count, so a route that
+     * doubles back along the same road (the SDK's U-turn route from a parked car, 2026-10-13) can't
+     * pin the car to the leg going the other way, which sits a few metres from the one it's on.
+     */
+    fun locate(carLat: Double, carLon: Double, headingDeg: Double? = null): Int {
+        carIndex = nearestSegment(carLat, carLon, carIndex, headingDeg = headingDeg)
         return carIndex
     }
 
     /**
      * The segment nearest the car, searched from a little before [hintIndex]: first within
      * [windowM] along the route (taken if within [snapM]), else over the whole rest of the route.
+     * With [headingDeg], segments more than [sameWayDeg] off the heading are skipped; if that
+     * leaves nothing (a short route of turns), the search is repeated without the heading.
      */
-    fun nearestSegment(carLat: Double, carLon: Double, hintIndex: Int, windowM: Double = 500.0, snapM: Double = 50.0): Int {
+    fun nearestSegment(
+        carLat: Double, carLon: Double, hintIndex: Int,
+        windowM: Double = 500.0, snapM: Double = 50.0,
+        headingDeg: Double? = null, sameWayDeg: Double = 90.0,
+    ): Int {
         if (segments == 0) return 0
         val start = (hintIndex - 2).coerceIn(0, segments - 1)
-        var best = start
+        var best = -1
         var bestD = Double.MAX_VALUE
         var i = start
+        fun sameWay(seg: Int) = headingDeg == null || Geo.absAngleDiffDeg(segBearing(seg), headingDeg) <= sameWayDeg
         while (i < segments && cum[i] - cum[start] <= windowM) {
-            val d = segDistance(i, carLat, carLon)
-            if (d < bestD) { bestD = d; best = i }
+            if (sameWay(i)) {
+                val d = segDistance(i, carLat, carLon)
+                if (d < bestD) { bestD = d; best = i }
+            }
             i++
         }
-        if (bestD <= snapM) return best
+        if (best >= 0 && bestD <= snapM) return best
         while (i < segments) {
-            val d = segDistance(i, carLat, carLon)
-            if (d < bestD) { bestD = d; best = i }
+            if (sameWay(i)) {
+                val d = segDistance(i, carLat, carLon)
+                if (d < bestD) { bestD = d; best = i }
+            }
             i++
         }
-        return best
+        if (best >= 0) return best
+        return if (headingDeg != null) nearestSegment(carLat, carLon, hintIndex, windowM, snapM, null, sameWayDeg) else start
     }
+
+    private fun segBearing(i: Int) = Geo.bearingDeg(lat[i], lon[i], lat[i + 1], lon[i + 1])
 
     /**
      * Cross-track distance from (lat, lon) to the segments from [fromIndex] onward for [aheadM]

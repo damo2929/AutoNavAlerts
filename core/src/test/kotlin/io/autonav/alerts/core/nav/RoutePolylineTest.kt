@@ -50,6 +50,28 @@ class RoutePolylineTest {
     }
 
     @Test
+    fun headingPicksTheLegRunningOurWayWhenTheRouteDoublesBack() {
+        // The SDK's U-turn route from a parked car (bench, 2026-10-13): north 0→2000 on x=0 (the wrong
+        // carriageway), round at the top, then south 2000→-2000 on x=10, i.e. 10 m from the outbound leg.
+        val pts = (0..20).map { p(it * 100.0, 0.0) } + p(2_050.0, 5.0) + (20 downTo -20).map { p(it * 100.0, 10.0) }
+        val r = RoutePolyline(pts)
+        // The car never went north: it's at the start, heading south (180°), on the southbound leg.
+        val idx = r.locate(latAt(0.0), lonAt(10.0), headingDeg = 180.0)
+        assertTrue("car segment $idx should be on the southbound leg", idx >= 21)
+        // A southbound camera 440 m ahead at (-440, 10) is on the route ahead, not kilometres off it.
+        assertEquals(0.0, r.distanceToRouteM(latAt(-440.0), lonAt(10.0)), 0.5)
+        // Without a heading the nearest segment is the outbound leg, and the 3 km window ahead of it never
+        // reaches that camera: the bench's "offRoad lateral=1204 allowed=50" for a camera 440 m away.
+        val blind = RoutePolyline(pts)
+        val blindIdx = blind.locate(latAt(0.0), lonAt(10.0))
+        assertTrue("blind segment $blindIdx", blindIdx < 21)
+        assertTrue(blind.distanceToRouteM(latAt(-440.0), lonAt(10.0)) > 50.0)
+        // A heading that matches no segment (route of turns at 90° to it) falls back to the plain search.
+        val fallback = RoutePolyline(straight(1_000.0))
+        assertEquals(0, fallback.locate(latAt(0.0), lonAt(0.0), headingDeg = 90.0))
+    }
+
+    @Test
     fun beyondThreeKilometresIsIgnored() {
         val r = RoutePolyline(straight(6_000.0))
         r.locate(latAt(0.0), lonAt(0.0))

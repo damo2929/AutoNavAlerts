@@ -90,10 +90,11 @@ class NavTts @Inject constructor(
     }
 
     private fun pickLanguage(engine: TextToSpeech): String {
-        val wanted = Locale.getDefault()
+        // British English first (owner, 2026-10-13; DESIGN.md §12.3), then the phone's own language, then any English.
+        val wanted = Locale.UK
         var r = engine.setLanguage(wanted)
         if (r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED) return wanted.toLanguageTag()
-        for (fallback in listOf(Locale.UK, Locale.ENGLISH)) {
+        for (fallback in listOf(Locale.getDefault(), Locale.ENGLISH)) {
             r = engine.setLanguage(fallback)
             if (r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED) {
                 log("language ${wanted.toLanguageTag()} unavailable (status=$r), using ${fallback.toLanguageTag()}")

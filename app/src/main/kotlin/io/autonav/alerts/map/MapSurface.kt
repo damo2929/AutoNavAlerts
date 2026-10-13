@@ -26,6 +26,7 @@ import io.autonav.alerts.diag.EventLog
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.model.FollowMyLocationOptions
+import com.google.android.libraries.navigation.NavigationView
 import com.google.android.libraries.navigation.NavigationViewForAuto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -140,7 +141,7 @@ class MapSurface(
         view.onCreate(null)
         view.onStart()
         view.onResume()
-        disableSdkControls(view)
+        val sdkControlsOff = disableSdkControls(view, "resume")
         val panel = SpeedPanelView(pres.context)
         root.addView(panel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.END
@@ -188,6 +189,7 @@ class MapSurface(
             // camera sits at 18. Capping the zoom keeps traffic on screen on both (DESIGN.md §8).
             m.setMaxZoomPreference(MAX_ZOOM)
             log("ready type=${m.mapType} traffic=${m.isTrafficEnabled} maxZoom=$MAX_ZOOM followZoom=$followZoom")
+            if (!sdkControlsOff) disableSdkControls(view, "final")
             following = true
             follow(m)
             _map.value = m
@@ -342,14 +344,40 @@ class MapSurface(
      * looked up by reflection, like `IncidentReporting`: a future SDK that adds them gets them
      * turned off with no code change, and the log says which were found.
      */
-    private fun disableSdkControls(view: NavigationViewForAuto) {
-        val off = ArrayList<String>()
-        val missing = ArrayList<String>()
-        for (name in SDK_CONTROL_SETTERS) {
-            runCatching { view.javaClass.getMethod(name, java.lang.Boolean.TYPE).invoke(view, false) }
-                .onSuccess { off += name }.onFailure { missing += name }
+    /**
+     * Turns the SDK's own on-map controls off (DESIGN.md §8 step 6): no touch reaches the SDK view,
+     * so its ETA card, header, recenter, speedometer, trip bar and limit icon would be dead and
+     * overlap ours. `NavigationViewForAuto` has no setters, but it wraps the phone `NavigationView`,
+     * which has them all. Returns false when that child isn't there yet (the caller retries on map ready).
+     */
+    private fun disableSdkControls(view: NavigationViewForAuto, attempt: String): Boolean {
+        val inner = findNavigationView(view)
+        if (inner == null) {
+            if (attempt == "final") log("sdkControls missing: no NavigationView inside NavigationViewForAuto ($attempt)")
+            return false
         }
-        log("sdkControls off=$off missing=$missing")
+        val off = ArrayList<String>()
+        val failed = ArrayList<String>()
+        val setters: List<Pair<String, () -> Unit>> = listOf(
+            "setHeaderEnabled" to { inner.setHeaderEnabled(false) },
+            "setEtaCardEnabled" to { inner.setEtaCardEnabled(false) },
+            "setRecenterButtonEnabled" to { inner.setRecenterButtonEnabled(false) },
+            "setSpeedometerEnabled" to { inner.setSpeedometerEnabled(false) },
+            "setTripProgressBarEnabled" to { inner.setTripProgressBarEnabled(false) },
+            "setSpeedLimitIconEnabled" to { inner.setSpeedLimitIconEnabled(false) },
+        )
+        for ((name, call) in setters) runCatching(call).onSuccess { off += name }.onFailure { failed += name }
+        log("sdkControls off=$off${if (failed.isEmpty()) "" else " failed=$failed"} ($attempt)")
+        return true
+    }
+
+    private fun findNavigationView(root: android.view.ViewGroup): NavigationView? {
+        for (i in 0 until root.childCount) {
+            val c = root.getChildAt(i)
+            if (c is NavigationView) return c
+            if (c is android.view.ViewGroup) findNavigationView(c)?.let { return it }
+        }
+        return null
     }
 
     /** Google incident reporting on the car screen, if a future Navigation SDK supports it (§16 #21). */
@@ -452,9 +480,6 @@ class MapSurface(
         /** The order of [mapButtons], for the tap log. */
         private val MAP_BUTTON_NAMES = listOf("zoomIn", "zoomOut", "recenter")
         /** `NavigationView`'s setters for its on-map controls; absent from `NavigationViewForAuto` in SDK 8.0.0. */
-        private val SDK_CONTROL_SETTERS = listOf(
-            "setHeaderEnabled", "setEtaCardEnabled", "setRecenterButtonEnabled", "setSpeedometerEnabled", "setTripProgressBarEnabled",
-        )
         /** Room left either side of the banner for the speed panel (two 64 dp boxes and gaps). */
         private const val SPEED_PANEL_CLEAR_DP = 170
         /** Height kept clear at the top for the host's action strip (its buttons end at 88 px on a 160 dpi DHU). */
