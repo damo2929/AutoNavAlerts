@@ -56,15 +56,16 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 ### 3.1 Hard rules (owner-set; never drop, loosen, bypass or default around)
 
 1. **Camera direction** (DESIGN.md §1.3, §11 step 3; CHECKPOINT.md §5). A camera alerts only when it faces the car's direction of travel: its bearing within 45° of the car's heading **or** of the bearing from the car to the camera, and it must still be ahead. ONE_WAY/BOTH semantics are fixed. A camera with a bearing in its data is never treated as "any direction". Opposite-facing cameras are drawn dimmed with their arrow, never hidden, and never alert. The heading must stay reliable (track heading, not a stale GPS bearing). Any change to alerts, importers, reports, zones, heading or markers must keep this and keep its tests passing (`camera_30DegBend_directionPassesViaBearingToCamera`, `oppositeCameraStillRejectedOnABend`, the wrong-way scenario).
-2. **Every on-screen button on the car map is on the right-hand side only** (§8). Satellite pill, zoom, recenter, anything added later: down the right edge under the action strip. Speed panel bottom-right. Nothing of ours on the left. Check every layout change with a DHU screenshot.
-3. **Never a built-in or fallback Maps API key** (§1.4). Each user's Maps use is billed to their own Google account. No manifest key, no `local.properties` key, no SDK call before `applyApiKey()`.
-4. **PocketGPSWorld data never enters the repo, the app build, tests or fixtures** (§5.2, §6.4). Each user downloads their own watermarked copy with their own login. Fixtures are made up.
-5. **Signing key stays in the private repo** `damo2929/autonavalerts-signing`, never here (§13.3).
-6. **Review and Send of camera reports happen on the phone only, never in the car or while driving.** One tap captures in the car; no auto-send (§8.5).
-7. **Every file in a PGW or zip download becomes its own set; never merge.** No set-name prompt on import; names from file names, icons from matching `.bmp`/`.png` (§5, §5.2a).
-8. **Kotlin only**; Android Auto and the Navigation SDK through the Car App Library; all car UI from navigation-family templates (§1.3, §8).
-9. **Design first.** Any design change is written into DESIGN.md before the code changes, with the date and "owner" where it was the owner's decision.
-10. **Apache 2.0 with an SPDX header in every source file**; commits by `Damien Dye <damien@damiendye.uk>`, never the croit address.
+2. **Nothing is shown on the car screen that doesn't work** (§1.3, §8; owner, 2026-10-13). No touch reaches the Navigation SDK's view on Android Auto, so its own ETA card, header, recenter, speedometer, trip bar and limit icon are dead and must be turned off and hidden; ours exist only where they take a tap or show live data. After any change to the car map or its screens, take a DHU screenshot during guidance (`tools/bench.sh dhu screenshot`) and check it yourself, before reporting done. Don't wait to be told.
+3. **Every on-screen button on the car map is on the right-hand side only** (§8). Satellite pill, zoom, recenter, anything added later: down the right edge under the action strip. Speed panel bottom-right. Nothing of ours on the left. Check every layout change with a DHU screenshot.
+4. **Never a built-in or fallback Maps API key** (§1.4). Each user's Maps use is billed to their own Google account. No manifest key, no `local.properties` key, no SDK call before `applyApiKey()`.
+5. **PocketGPSWorld data never enters the repo, the app build, tests or fixtures** (§5.2, §6.4). Each user downloads their own watermarked copy with their own login. Fixtures are made up.
+6. **Signing key stays in the private repo** `damo2929/autonavalerts-signing`, never here (§13.3).
+7. **Review and Send of camera reports happen on the phone only, never in the car or while driving.** One tap captures in the car; no auto-send (§8.5).
+8. **Every file in a PGW or zip download becomes its own set; never merge.** No set-name prompt on import; names from file names, icons from matching `.bmp`/`.png` (§5, §5.2a).
+9. **Kotlin only**; Android Auto and the Navigation SDK through the Car App Library; all car UI from navigation-family templates (§1.3, §8).
+10. **Design first.** Any design change is written into DESIGN.md before the code changes, with the date and "owner" where it was the owner's decision.
+11. **Apache 2.0 with an SPDX header in every source file**; commits by `Damien Dye <damien@damiendye.uk>`, never the croit address.
 
 ### 3.2 Other fixed behaviours to preserve
 
