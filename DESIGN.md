@@ -1206,6 +1206,8 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    3. Contacts (optional, for navigating to contacts' addresses)
    4. Navigation SDK Terms & Conditions dialog (`NavigationApi.showTermsAndConditionsDialog`)
    5. Android Auto setup checklist (developer mode, unknown sources), with deep links
+
+   **Once setup is complete** (key saved, the required permissions granted including background location, terms accepted) the four setup sections **collapse into one "Setup" row** ("✓ Maps key saved, permissions allowed, navigation terms accepted" with **Show**), so the settings proper start at the top of the tab (owner, 2026-10-13: a cleaner Settings tab). Show expands them again; they stay expanded while anything is missing.
 2. **Reports**: the end-of-drive review (§8.5). Per report: type (guessed from the comment), position nudges, speed limit with its source, direction (heading ± and One way / Both), comment transcript with Play recording, then Send / Send all / Save / Discard / Browser. Send is disabled while connected to the car or moving.
 3. **POI sets** (POIs tab): **only POI files you imported by hand** (source FILE). A card per set showing the name, source, count, last updated, and an on/off switch; swipe left to delete, tap to edit. Button: Import file. Camera sets never appear here.
 4. **Import flow**: pick file → auto-detect format (shown, can be overridden) → the CSV wizard if needed (§5.7) → name the set → choose the default icon and template → progress → result report.
@@ -1230,12 +1232,11 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - They're **batched by camera type**, taken from the set name before " · ": e.g. the OV2 download's "PGW fixed cameras · 20 mph", "· 30 mph"… form one **PGW fixed cameras** group. Groups are ordered by source (PGW, then PGW_PENDING, then REPORT) and by name within a source, so the PGW groups are alphabetical and pending mobile sites come last, then My reports. Sets inside a group are sorted by the number after "· " (20, 30 … 70 mph), then by name for those without one.
    - Each group shows its total cameras and number of sets, a **group switch** (turns every set in the group on or off; on while any set in it is on) and an expand arrow. Expanded, it lists the sets as on the POIs tab: switch, tap to edit, swipe left to delete.
    - A summary line above the groups gives the total, e.g. "19,826 cameras in 33 sets".
-9. **Settings**:
-   - Units: mph/km/h and miles/km.
+9. **Settings** (one scrolling page of cards, in this order; **every control has at most one short line of help** on the phone, the full explanation lives in docs/SETTINGS.md; owner, 2026-10-13):
+   - **Car screen**: units (mph/km/h and miles/km), speed panel show/hide, **Satellite map in the car**.
    - Alerts: voice on/off, chime on/off, overspeed %, the **alert lead-time slider** ("First alert: N s ahead · second alert at N/2 s", 15–60 s, with the worked distances at 30/50/70 mph; §11.1), **Announce speed limit changes ahead** (on; §8.4a), and the default stage modes and floors for new sets.
    - Over-limit warning: −5% to +20% slider, default −0.1%.
    - Speed and location source: car when available / phone only (§10.6).
-   - Speed panel: show/hide; **Satellite map in the car**.
    - Routing: **Avoid tolls** (on), **Energy-efficient routes (EV)** (off) (§8.3a).
    - **Speed limits (OpenStreetMap)** (§8.4a): show switch, **Download on Wi-Fi only**, Download/Update with progress and Cancel, the data's date, roads and size, Delete, and the attribution.
    - Backup: save / restore the settings file (§13.4).
@@ -1248,7 +1249,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - "Hidden places" list (tombstones), where entries can be restored.
    - "Manage in Google My Activity" link.
    - **Contacts**: permission status; "Clear contact location cache".
-11. **Diagnostics** (Settings → Diagnostics, between Backup and About; §15.5; 2026-10-12): for each of the two debug logs a status line (size, oldest entry), **Show last 200 lines** (monospace, scrollable), **Save** (`CreateDocument("text/plain")`, `autonavalerts-<name>-YYYY-MM-DD.log`), **Share** (via `FileProvider`, `${applicationId}.diag`) and **Clear**; **Engine now** (shows and records `AlertCoordinator.snapshot()`); the speech record ring (§12.3); the **Drive recording** switch and its Save. About shows the build stamp (§1.3).
+11. **Diagnostics** (Settings → Diagnostics, between Backup and About, **folded behind Show/Hide**: collapsed, the card is one line, "Two debug logs always on · drive recording on/off"; owner, 2026-10-13; §15.5; 2026-10-12): for each of the two debug logs a status line (size, oldest entry), **Show last 200 lines** (monospace, scrollable), **Save** (`CreateDocument("text/plain")`, `autonavalerts-<name>-YYYY-MM-DD.log`), **Share** (via `FileProvider`, `${applicationId}.diag`) and **Clear**; **Engine now** (shows and records `AlertCoordinator.snapshot()`); the speech record ring (§12.3); the **Drive recording** switch and its Save. About shows the build stamp (§1.3).
 
 ### 13.1 Creating the Maps API key with the phone's Google account
 The **Create a key with my Google account** button (Settings tab, Google Maps API key section) makes the user's own key in their own Google Cloud account, with no Cloud Console visit (except to add billing the first time).

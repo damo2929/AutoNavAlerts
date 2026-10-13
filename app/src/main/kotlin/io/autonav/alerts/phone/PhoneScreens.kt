@@ -166,6 +166,19 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
     val bgLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
 
+    // Re-read on every result and whenever the app comes back to the front (e.g. from Settings).
+    val st = remember(refresh) { PermState.read(ctx) }
+    // Setup done: the four sections fold into one row, so the settings start at the top (DESIGN.md §13 item 1).
+    val complete = hasKey && termsOk && st.missingForeground().isEmpty() && st.background
+    var showSetup by remember { mutableStateOf(false) }
+    if (complete) Section("Setup") {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("✓ Maps key saved, permissions allowed, navigation terms accepted.", Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
+            TextButton(onClick = { showSetup = !showSetup }) { Text(if (showSetup) "Hide" else "Show") }
+        }
+    }
+    if (complete && !showSetup) return
+
     Section("Google Maps API key") {
         if (hasKey) Text("✓ Your key is saved.", color = MaterialTheme.colorScheme.primary)
         else Text("No key yet: the map, search and navigation won't work until you add one.",
@@ -187,8 +200,6 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
     }
 
     Section("Permissions") {
-        // Re-read on every result and whenever the app comes back to the front (e.g. from Settings).
-        val st = remember(refresh) { PermState.read(ctx) }
         PermLine("Location (needed)", st.fine)
         PermLine("Location all the time (recommended)", st.background)
         PermLine("Notifications (needed for alerts behind other apps)", st.notifications)
@@ -1089,11 +1100,13 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
     Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
         SetupSections(activity, deps)
-        Section("Units") {
+        Section("Car screen") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(s.units == Units.IMPERIAL, { set { it.copy(units = Units.IMPERIAL) } }, label = { Text("mph, miles, yards") })
                 FilterChip(s.units == Units.METRIC, { set { it.copy(units = Units.METRIC) } }, label = { Text("km/h, km, m") })
             }
+            SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
+            SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
         }
         Section("Alerts") {
             SwitchRow("Voice", s.voiceOn) { v -> set { it.copy(voiceOn = v) } }
@@ -1101,8 +1114,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             OverLimitSlider(s.overspeedPct) { p -> set { it.copy(overspeedPct = p) } }
             AlertLeadSlider(s.alertLeadSeconds, s.units) { n -> set { it.copy(alertLeadSeconds = n) } }
             SwitchRow("Announce speed limit changes ahead", s.announceLimitChanges) { v -> set { it.copy(announceLimitChanges = v) } }
-            Text("Says the new limit once as you approach a change, from the OpenStreetMap limits on the phone.",
-                style = MaterialTheme.typography.bodySmall)
+            Text("Spoken once per change, from the OpenStreetMap limits on the phone.", style = MaterialTheme.typography.bodySmall)
         }
         Section("Speed and location source") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1111,25 +1123,17 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                 FilterChip(s.speedSource == io.autonav.alerts.settings.SpeedSource.PHONE_GPS,
                     { set { it.copy(speedSource = io.autonav.alerts.settings.SpeedSource.PHONE_GPS) } }, label = { Text("Phone only") })
             }
-            Text("Uses the car's own speed and GPS from Android Auto when the car shares them, and falls back to the phone otherwise. The map itself always follows the phone's location.",
-                style = MaterialTheme.typography.bodySmall)
-        }
-        Section("Speed panel") {
-            SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
-            SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
+            Text("The car's own speed and GPS through Android Auto when it shares them, else the phone.", style = MaterialTheme.typography.bodySmall)
         }
         Section("Routing") {
             SwitchRow("Avoid tolls", s.avoidTolls) { v -> set { it.copy(avoidTolls = v) } }
             SwitchRow("Energy-efficient routes (EV)", s.evEfficientRoutes) { v -> set { it.copy(evEfficientRoutes = v) } }
-            Text("With energy-efficient routes on, the route preview offers both the fastest route and Google's energy-efficient " +
-                "route for an electric car, and you pick one before Go. They come from the Routes API on your own Maps key " +
-                "(billed to you like the rest). If that isn't available, the fastest route is used and the preview says why. " +
-                "Changes apply to the next route.", style = MaterialTheme.typography.bodySmall)
+            Text("With EV routes on, the preview offers Fastest and Energy-efficient (Routes API on your key) and you pick before Go.",
+                style = MaterialTheme.typography.bodySmall)
         }
         Section("Speed limits (OpenStreetMap)") { OsmLimitsSection(activity, deps, s) { b -> set(b) } }
         if (io.autonav.alerts.BuildConfig.DEBUG) Section("Bench testing (debug builds)") {
-            Text("Speed of the Simulate drive on the car screen. 1× is real time; alerts are tested at the speed shown.",
-                style = MaterialTheme.typography.bodySmall)
+            Text("Speed of the Simulate drive on the car screen; 1× is real time.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(1f, 2f, 4f).forEach { v -> FilterChip(s.simulationSpeed == v, { set { it.copy(simulationSpeed = v) } }, label = { Text("${v.roundToInt()}×") }) }
             }
@@ -1142,9 +1146,9 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                     Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
                 }
             }
-            Text("Saves your settings, your Maps API key, your PocketGPSWorld login and each camera set's alert settings to a JSON file you choose, and restores them from one. Camera data, reports and places aren't included.",
+            Text("Settings, your Maps key, your PocketGPSWorld login and each camera set's alert settings, as a JSON file. Not camera data, reports or places.",
                 style = MaterialTheme.typography.bodySmall)
-            Text("The file includes your Maps API key and PocketGPSWorld password in plain text. Keep it somewhere private.",
+            Text("The file holds your key and password in plain text: keep it private.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             Button(onClick = { saver.launch(io.autonav.alerts.settings.SettingsBackup.fileName()) }) { Text("Save settings backup…") }
 
@@ -1199,7 +1203,16 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                 )
             }
         }
-        Section("Diagnostics") { DiagnosticsSection(activity, deps, s) { b -> set(b) } }
+        // Folded: one line when closed, the developer panel when open (DESIGN.md §13 item 11).
+        var showDiag by remember { mutableStateOf(false) }
+        Section("Diagnostics") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Two debug logs always on · drive recording ${if (s.driveRecordingOn) "on" else "off"}", Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium)
+                TextButton(onClick = { showDiag = !showDiag }) { Text(if (showDiag) "Hide" else "Show") }
+            }
+            if (showDiag) DiagnosticsSection(activity, deps, s) { b -> set(b) }
+        }
         Section("About") {
             Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
             Text("Build ${io.autonav.alerts.BuildConfig.GIT_COMMIT}" + if (io.autonav.alerts.BuildConfig.DEBUG) " (debug)" else "",
@@ -1233,7 +1246,7 @@ private fun OsmLimitsSection(
     var stats by remember { mutableStateOf<io.autonav.alerts.osm.SpeedLimitRepository.Stats?>(null) }
     LaunchedEffect(progress?.finished) { stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { deps.speedLimits.stats() } }
 
-    Text("Shows the road's posted limit on the car's speed panel (grey dot) when Google hasn't given one. The UK's limits are downloaded once to the phone; nothing is looked up online while driving.",
+    Text("Fills the speed panel's limit (grey dot) when Google hasn't given one. Downloaded once; nothing is looked up while driving.",
         style = MaterialTheme.typography.bodySmall)
     SwitchRow("Show OpenStreetMap limits", s.osmLimitsOn) { v -> set { it.copy(osmLimitsOn = v) } }
     val p = progress
@@ -1247,11 +1260,11 @@ private fun OsmLimitsSection(
         Button(onClick = { deps.speedLimits.download(s.osmWifiOnly) }) {
             Text(if (stats == null) "Download speed limits for the UK" else "Update speed limits")
         }
-        Text((if (s.osmWifiOnly) "About 1.1 GB, on Wi-Fi only." else "About 1.1 GB, over mobile data too: check your allowance.") + " It carries on in the background with a notification; the result on the phone is about 30 MB.",
+        Text((if (s.osmWifiOnly) "About 1.1 GB on Wi-Fi only" else "About 1.1 GB, over mobile data too") + ", in the background; about 30 MB kept on the phone.",
             style = MaterialTheme.typography.bodySmall)
     }
     stats?.let { st ->
-        Text("OpenStreetMap data from ${st.dataDate} · ${"%,d".format(st.roads)} roads · ${st.bytes / 1_000_000} MB. Update every few months for new limits.",
+        Text("Data from ${st.dataDate} · ${"%,d".format(st.roads)} roads · ${st.bytes / 1_000_000} MB. Update every few months.",
             style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { deps.speedLimits.delete(); stats = null }) { Text("Delete downloaded limits") }
     }
@@ -1355,9 +1368,8 @@ private fun DiagnosticsSection(
 ) {
     val scope = rememberCoroutineScope()
     var refresh by remember { mutableIntStateOf(0) }
-    Text("The app always keeps two debug logs, so a drive that goes wrong leaves evidence. debug-nav: routes, the map, " +
-        "navigation and the location feed. alert-debug: alerts and what was done at each camera. Lines are written in " +
-        "15-second blocks; each file is capped at 1 MB with one rotation.", style = MaterialTheme.typography.bodySmall)
+    Text("debug-nav: routes, the map and the location feed. alert-debug: every camera and alert. 15-second blocks, 1 MB each.",
+        style = MaterialTheme.typography.bodySmall)
     for (ch in EventLog.Channel.entries) key(ch) { DiagLogCard(activity, deps, ch, refresh) }
 
     var snapshot by remember { mutableStateOf<String?>(null) }
@@ -1390,9 +1402,7 @@ private fun DiagnosticsSection(
 
     HorizontalDivider()
     SwitchRow("Drive recording", s.driveRecordingOn) { v -> set { it.copy(driveRecordingOn = v) } }
-    Text("Records every GPS fix the app receives (phone and car, with speed, bearing, accuracy and which one was used) " +
-        "to a CSV file, so a drive can be replayed on the bench exactly as the phone saw it. About 1–8 MB an hour; " +
-        "the newest 3 recordings are kept. Not in the settings backup, and off again after a reinstall.",
+    Text("Every GPS fix to a CSV, for replaying a drive on the bench. About 1–8 MB an hour; the newest 3 are kept.",
         style = MaterialTheme.typography.bodySmall)
     var latest by remember { mutableStateOf<File?>(null) }
     var recording by remember { mutableStateOf(false) }
@@ -1413,10 +1423,8 @@ private fun DiagnosticsSection(
     OutlinedButton(enabled = latest != null, onClick = { latest?.let { csvSaver.launch(it.name) } }) { Text("Save drive recording…") }
 
     HorizontalDivider()
-    Text("Privacy. The logs and recordings stay on the phone only, in private app storage, and are excluded from cloud " +
-        "backup. They contain where you drove (sampled positions, destination names) and which cameras you passed. " +
-        "Nothing is sent anywhere unless you press Save or Share; what you then do with the file is up to you. " +
-        "Uninstalling the app deletes them.", style = MaterialTheme.typography.bodySmall)
+    Text("Logs and recordings stay on the phone (private storage, no cloud backup) and contain where you drove. Nothing leaves unless you Save or Share.",
+        style = MaterialTheme.typography.bodySmall)
 }
 
 /** One debug log: status, Show last 200 lines, Save…, Share. */

@@ -8,6 +8,8 @@ The phone app has four tabs along the bottom: **POIs · Cameras · Reports · Se
 
 ## 1. Settings tab
 
+One scrolling page of cards. Once setup is complete (§2) its four sections collapse to a single **Setup** row with **Show**. **Units** and **Speed panel** share one card, **Car screen**. **Diagnostics** is folded behind **Show** and is one line when closed. Each control carries at most one short line of help on the phone; the detail is here.
+
 ### 1.1 Units
 | Control | Options | Default | What it changes |
 |---|---|---|---|
@@ -130,7 +132,7 @@ The app name and version, **by Damien Dye**, the **build** line (the git commit 
 ---
 
 ## 2. Setup (the first sections of the Settings tab)
-These come above the settings in §1, in this order: **Google Maps API key**, **Permissions**, **Navigation terms**, **Android Auto**. Until the key is saved and the terms are accepted, the app opens on this tab (unless another tab was asked for, e.g. from a notification).
+These come above the settings in §1, in this order: **Google Maps API key**, **Permissions**, **Navigation terms**, **Android Auto**. Until the key is saved and the terms are accepted, the app opens on this tab (unless another tab was asked for, e.g. from a notification). Once the key is saved, the required permissions (including location all the time) are allowed and the terms accepted, the four sections collapse into one **Setup** row ("✓ Maps key saved, permissions allowed, navigation terms accepted"); **Show** opens them again, for example to remove the key or clear contact locations.
 
 
 | Item | What it does | Notes |
