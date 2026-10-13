@@ -120,6 +120,34 @@ class BenchReceiver : BroadcastReceiver() {
             App.appScope.launch(kotlinx.coroutines.Dispatchers.IO) { Log.i(TAG, "OSM $cmd: ${repo.stats()}") }
             return
         }
+        intent.getStringExtra("import")?.let { name ->
+            // Import a POI file from the app's own files/bench/ folder (put there with
+            //   adb push f /data/local/tmp/f && adb shell run-as io.autonav.alerts sh -c 'mkdir -p files/bench && cp /data/local/tmp/f files/bench/'
+            // because a debug app can't read /sdcard/Download without a storage grant). A .csv uses the
+            // scenario layout lat,lon,name,speed,heading,dir (0-based columns; override with --es csvcols "0,1,2,3,4,5").
+            // Re-importing the same file name replaces that set (TESTING.md §3 step 5, scenarios).
+            val file = java.io.File(context.filesDir, "bench/$name")
+            if (!file.isFile) { Log.w(TAG, "Import: no such file ${file.path}"); return }
+            val cols = (intent.getStringExtra("csvcols") ?: "0,1,2,3,4,5").split(',').map { it.trim().toInt() }
+            val profile = if (name.endsWith(".csv", true)) io.autonav.alerts.core.poi.importers.CsvProfile(
+                latCol = cols[0], lonCol = cols[1], nameCol = cols.getOrNull(2), speedCol = cols.getOrNull(3),
+                bearingCol = cols.getOrNull(4), dirTypeCol = cols.getOrNull(5),
+            ) else null
+            val pending = goAsync()
+            io.autonav.alerts.App.appScope.launch {
+                try {
+                    val pois = io.autonav.alerts.car.CarDeps.from(context).pois()
+                    val existing = pois.sets().values.firstOrNull { it.name == file.nameWithoutExtension || it.name == file.name }
+                    val out = pois.importFile(android.net.Uri.fromFile(file), csvProfile = profile, replaceSetId = existing?.id)
+                    val msg = "Import $name: ${if (out.failed) "FAILED " else ""}${out.imported} imported, ${out.skipped} skipped, set=${out.setId} ${out.message}"
+                    Log.i(TAG, msg)
+                    eventLog.record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Bench", msg)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Import $name failed", t)
+                } finally { pending.finish() }
+            }
+            return
+        }
         if (intent.getBooleanExtra("engine", false)) {
             // The alert engine's snapshot (DESIGN.md §15.5): the same text as Settings → Diagnostics → Engine now,
             // to alert-debug and logcat. Needs no car session.

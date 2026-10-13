@@ -60,13 +60,19 @@ trap stop_drive EXIT
 trap 'stop_drive; exit 130' INT TERM   # Ctrl+C or kill stops drive.py too
 
 cameras() {
-  echo "Cameras: tools/scenarios/$1.gpx$([ -f "tools/scenarios/$1.csv" ] && echo " and $1.csv")"
-  run "$ADB" -e push "tools/scenarios/$1.gpx" /sdcard/Download/ >/dev/null
-  echo "  Import on the phone: POIs tab → Import → Download/$1.gpx (course = direction of travel, as TESTING.md §4)"
-  if [ -f "tools/scenarios/$1.csv" ]; then
-    run "$ADB" -e push "tools/scenarios/$1.csv" /sdcard/Download/ >/dev/null
-    echo "  …and Download/$1.csv with columns Lat 0, Lon 1, Name 2, Speed 3, Heading 4, Dir 5 (the both-ways camera)"
-  fi
+  # Imported through the debug bench hook (BenchReceiver --es import), from the app's own files/bench/
+  # folder: a debug app can't read /sdcard/Download without a storage grant, but run-as can write there.
+  # Re-running replaces the set of the same name. Course/heading = direction of travel (TESTING.md §4).
+  echo "Cameras: tools/scenarios/$1.gpx$([ -f "tools/scenarios/$1.csv" ] && echo " and $1.csv") → imported by the bench hook"
+  run "$ADB" -e shell run-as $PKG mkdir -p files/bench
+  for f in "$1.gpx" "$1.csv"; do
+    [ -f "tools/scenarios/$f" ] || continue
+    run "$ADB" -e push "tools/scenarios/$f" "/data/local/tmp/$f" >/dev/null
+    run "$ADB" -e shell run-as $PKG cp "/data/local/tmp/$f" "files/bench/$f"
+    bench --es import "$f" >/dev/null   # a .csv uses columns lat,lon,name,speed,heading,dir
+    pause 3 "importing $f for"
+  done
+  [ -n "$DRY" ] || "$ADB" -e logcat -d -s Bench:I 2>/dev/null | grep "Import " | tail -2
 }
 
 # Line counts of the two debug logs, so the end of the run can show just this scenario's lines.
