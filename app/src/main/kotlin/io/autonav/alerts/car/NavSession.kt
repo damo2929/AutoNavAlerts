@@ -185,13 +185,14 @@ class NavSession : Session(), DefaultLifecycleObserver {
         }
         // Every fix: redraw markers (DESIGN.md §8.1) and update the speed panel (§8.4).
         lifecycleScope.launch {
-            combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active, deps.alerts().facingAway) { f, n, a, away ->
-                Triple(f, n, a) to away
+            combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active, deps.alerts().facingAway, deps.alerts().verdicts) { f, n, a, away, verdicts ->
+                Triple(f, n, a) to (away to verdicts)
             }
-                .collect { (t, away) ->
+                .collect { (t, av) ->
                     val (fix, nearby, active) = t
+                    val (away, verdicts) = av
                     fix?.let { deps.driving().onSpeed(it.speedMps) }
-                    markers.redraw(nearby, fix, active, away)
+                    markers.redraw(nearby, fix, active, away, verdicts)
                     updateSpeedPanel(fix?.speedMps, active)
                 }
         }
@@ -206,7 +207,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
 
     private fun redrawMarkers() {
         val a = deps.alerts()
-        markers.redraw(a.nearby.value, a.lastFix.value, a.active.value, a.facingAway.value)
+        markers.redraw(a.nearby.value, a.lastFix.value, a.active.value, a.facingAway.value, a.verdicts.value)
     }
 
     // --- Limit changes ahead (DESIGN.md §8.4a) --------------------------------------------------

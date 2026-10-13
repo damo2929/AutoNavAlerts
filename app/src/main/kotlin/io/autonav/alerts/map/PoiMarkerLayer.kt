@@ -156,23 +156,18 @@ class PoiMarkerLayer(
 
     /**
      * ACTIVE for the camera being alerted on; otherwise the engine's verdict (AHEAD_OK → AHEAD,
-     * WRONG_DIRECTION → FACING_AWAY, the rest OTHER). Until verdicts are passed in, `facingAway`
-     * marks the dimmed ones and the old on-screen "ahead" test colours the rest (transitional:
-     * removed once NavSession passes the verdict map).
+     * WRONG_DIRECTION → FACING_AWAY, the rest OTHER). The engine is the one source of truth for
+     * "ahead" (DESIGN.md §8.1); the layer has no direction test of its own. `facingAway` is the
+     * engine's own set, kept as a belt-and-braces for a POI the verdict map hasn't seen.
      */
     private fun emphasisOf(r: ResolvedPoi, state: State): Emphasis {
         val active = state.active
         if (active?.poiId == r.poi.id && System.currentTimeMillis() - active.timeMs < 15_000) return Emphasis.ACTIVE
-        if (state.verdicts.isNotEmpty()) {
-            return when (state.verdicts[r.poi.id]) {
-                Verdict.AHEAD_OK -> Emphasis.AHEAD
-                Verdict.WRONG_DIRECTION -> Emphasis.FACING_AWAY
-                else -> if (r.poi.id in state.facingAway) Emphasis.FACING_AWAY else Emphasis.OTHER
-            }
+        return when (state.verdicts[r.poi.id]) {
+            Verdict.AHEAD_OK -> Emphasis.AHEAD
+            Verdict.WRONG_DIRECTION -> Emphasis.FACING_AWAY
+            else -> if (r.poi.id in state.facingAway) Emphasis.FACING_AWAY else Emphasis.OTHER
         }
-        if (r.poi.id in state.facingAway) return Emphasis.FACING_AWAY
-        val fix = state.fix
-        return if (fix != null && isAhead(fix, r)) Emphasis.AHEAD else Emphasis.OTHER
     }
 
     private fun hasArrow(r: ResolvedPoi): Boolean = r.poi.bearing != null && r.poi.directionType != DirectionType.ANY
@@ -196,19 +191,6 @@ class PoiMarkerLayer(
         if (descriptors.size > 256) descriptors.clear()
         return descriptors.getOrPut("$iconKey:$emphasis") {
             BitmapDescriptorFactory.fromBitmap(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx))
-        }
-    }
-
-    /** Transitional fallback for callers that don't pass verdicts yet; emphasis only, never an alert decision. */
-    private fun isAhead(fix: Fix, r: ResolvedPoi): Boolean {
-        val h = fix.heading ?: return false
-        if (Geo.distanceM(fix.lat, fix.lon, r.poi.lat, r.poi.lon) > 3_000) return false
-        if (Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, r.poi.lat, r.poi.lon), h) > 45) return false
-        val b = r.poi.bearing?.toDouble() ?: return true
-        return when (r.poi.directionType) {
-            DirectionType.ANY -> true
-            DirectionType.ONE_WAY -> Geo.absAngleDiffDeg(b, h) <= 45
-            DirectionType.BOTH -> Geo.absAngleDiffDeg(b, h) <= 45 || Geo.absAngleDiffDeg(b + 180, h) <= 45
         }
     }
 

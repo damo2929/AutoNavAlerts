@@ -120,6 +120,17 @@ class BenchReceiver : BroadcastReceiver() {
             App.appScope.launch(kotlinx.coroutines.Dispatchers.IO) { Log.i(TAG, "OSM $cmd: ${repo.stats()}") }
             return
         }
+        if (intent.getBooleanExtra("engine", false)) {
+            // The alert engine's snapshot (DESIGN.md §15.5): the same text as Settings → Diagnostics → Engine now,
+            // to alert-debug and logcat. Needs no car session.
+            val text = io.autonav.alerts.car.CarDeps.from(context).alerts().snapshot()
+            text.lines().filter { it.isNotBlank() }.forEach { line ->
+                eventLog.record(io.autonav.alerts.diag.EventLog.Channel.ALERT, "Engine", line)
+                Log.i(TAG, "Engine: $line")
+            }
+            eventLog.flush("bench")
+            return
+        }
         val session = NavSession.active
         if (session == null) { Log.w(TAG, "No car session"); return }
         if (intent.getBooleanExtra("go", false)) {
