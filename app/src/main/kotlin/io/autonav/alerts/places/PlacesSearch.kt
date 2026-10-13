@@ -15,6 +15,7 @@ import com.google.android.libraries.places.api.net.SearchByTextRequest
 import io.autonav.alerts.data.AppDatabase
 import io.autonav.alerts.data.PlaceEntity
 import io.autonav.alerts.data.PlaceKind
+import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.nav.NavigatorHolder
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -33,6 +34,7 @@ private suspend fun <T> Task<T>.awaitOrNull(): T? = suspendCancellableCoroutine 
 class PlacesSearch @Inject constructor(
     private val holder: NavigatorHolder,
     private val db: AppDatabase,
+    private val eventLog: EventLog,
 ) {
     private var token: AutocompleteSessionToken? = null
 
@@ -52,19 +54,26 @@ class PlacesSearch @Inject constructor(
         }
     }
 
+    /** Places Text Search; every call is logged `Search Places textSearch n= ms= status=OK|empty|error` (DESIGN.md §15.5). */
     suspend fun textSearch(query: String, near: Location?): List<SearchHit> {
-        val client = holder.placesClient() ?: return emptyList()
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val client = holder.placesClient() ?: run { log(0, t0, "error noClient"); return emptyList() }
         val fields = listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.FORMATTED_ADDRESS, Place.Field.LOCATION)
         val req = SearchByTextRequest.builder(query, fields).setMaxResultCount(6).apply {
             near?.let { setLocationBias(CircularBounds.newInstance(LatLng(it.latitude, it.longitude), 50_000.0)) }
         }.build()
-        val resp = client.searchByText(req).awaitOrNull() ?: return emptyList()
-        return resp.places.mapNotNull { p ->
+        val resp = client.searchByText(req).awaitOrNull() ?: run { log(0, t0, "error"); return emptyList() }
+        val hits = resp.places.mapNotNull { p ->
             val loc = p.location ?: return@mapNotNull null
             val d = near?.let { n -> FloatArray(1).also { Location.distanceBetween(n.latitude, n.longitude, loc.latitude, loc.longitude, it) }[0].toInt() }
             SearchHit(p.id, p.displayName ?: "Place", p.formattedAddress, d, loc.latitude, loc.longitude)
         }
+        log(hits.size, t0, if (hits.isEmpty()) "empty" else "OK")
+        return hits
     }
+
+    private fun log(n: Int, t0: Long, status: String) =
+        eventLog.record(EventLog.Channel.NAV, "Search", "Places textSearch n=$n ms=${android.os.SystemClock.elapsedRealtime() - t0} status=$status")
 
     /** Resolves a hit to a destination, fetching its location if needed (ends the session token). */
     suspend fun resolve(hit: SearchHit): Destination? {

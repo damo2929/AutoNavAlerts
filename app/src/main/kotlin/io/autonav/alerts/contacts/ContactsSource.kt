@@ -73,6 +73,42 @@ class ContactsSource @Inject constructor(
         out.sortedWith(compareBy({ it.first }, { it.second.name.lowercase() })).take(limit).map { it.second }
     }
 
+    /**
+     * Every contact address, for `ContactsScreen` (DESIGN.md §8.3): the ones located before
+     * first, most recently located first (from the `contact_geocode` cache, by its `updatedAt`),
+     * then the rest A–Z by name; at most [limit]. Reads the address book once per call.
+     */
+    suspend fun all(limit: Int): List<ContactAddress> = withContext(Dispatchers.IO) {
+        if (!available || limit <= 0) return@withContext emptyList()
+        val out = ArrayList<ContactAddress>()
+        runCatching {
+            context.contentResolver.query(
+                StructuredPostal.CONTENT_URI,
+                arrayOf(StructuredPostal._ID, StructuredPostal.DISPLAY_NAME_PRIMARY, StructuredPostal.TYPE, StructuredPostal.LABEL, StructuredPostal.FORMATTED_ADDRESS),
+                null, null,
+                "${StructuredPostal.DISPLAY_NAME_PRIMARY} COLLATE NOCASE",
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val name = c.getString(1) ?: continue
+                    val address = c.getString(4)?.replace('\n', ',')?.replace(Regex(""",\s*"""), ", ")?.trim()?.takeIf { it.isNotBlank() } ?: continue
+                    val label = StructuredPostal.getTypeLabel(context.resources, c.getInt(2), c.getString(3)).toString()
+                    out += ContactAddress(c.getLong(0), name, label, address)
+                }
+            }
+        }.onFailure { Log.w(TAG, "contacts query", it) }
+        // When each address was last located: a plain query on the cache table, keyed like `locate`.
+        val usedAt = HashMap<String, Long>()
+        runCatching {
+            db.query("SELECT `key`, updatedAt FROM contact_geocode", null).use { c ->
+                while (c.moveToNext()) usedAt[c.getString(0)] = c.getLong(1)
+            }
+        }.onFailure { Log.w(TAG, "contact_geocode query", it) }
+        out.sortedWith(
+            compareByDescending<ContactAddress> { usedAt[ContactMatch.key(it.address)] ?: Long.MIN_VALUE }
+                .thenBy { it.name.lowercase() }.thenBy { it.label },
+        ).take(limit)
+    }
+
     /** Where [a] is: from the cache if found in the last 90 days, else by Places text search. */
     suspend fun locate(a: ContactAddress, near: Location?): Located {
         val key = ContactMatch.key(a.address)

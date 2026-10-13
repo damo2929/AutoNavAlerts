@@ -11,6 +11,8 @@ import androidx.car.app.model.ItemList
 import androidx.car.app.model.Row
 import androidx.car.app.model.SearchTemplate
 import androidx.car.app.model.Template
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
 import io.autonav.alerts.car.NavSession
@@ -18,6 +20,7 @@ import io.autonav.alerts.contacts.ContactAddress
 import io.autonav.alerts.contacts.Located
 import io.autonav.alerts.data.PlaceEntity
 import io.autonav.alerts.data.PlaceKind
+import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.places.SearchHit
 import kotlinx.coroutines.Job
@@ -26,27 +29,43 @@ import kotlinx.coroutines.launch
 
 /**
  * Places search with recents in the empty state (DESIGN.md §8, §8.2), and contacts' addresses
- * above the Places results (§8.3). [contactsOnly] is the Contacts entry: no Places results.
+ * above the Places results (§8.3). [contactsOnly] is the typed contacts search: no Places results.
+ * [initialChoice] opens straight on "Which address for …?" for a contact whose address matched
+ * several places (from `ContactsScreen`).
+ *
+ * Every text change and submit is logged to `debug-nav` (`Search textChanged/submitted len=`).
+ * The host delivers spoken input through the same `onSearchSubmitted` as a typed Enter and
+ * doesn't say which it was, so voice isn't a separate line here; Assistant's "navigate to …"
+ * arrives as the navigate intent (`Search NavigateIntent`, §9.1).
  */
 class SearchScreen(
     carContext: CarContext,
     private val session: NavSession,
     initialQuery: String? = null,
     private val contactsOnly: Boolean = false,
-) : Screen(carContext) {
+    initialChoice: Pair<ContactAddress, List<SearchHit>>? = null,
+) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
     private var query = initialQuery.orEmpty()
     private var hits: List<SearchHit> = emptyList()
     private var contacts: List<Pair<ContactAddress, Int?>> = emptyList()
     /** Several places matched a contact's address: pick one (§8.3). */
-    private var choosing: Pair<ContactAddress, List<SearchHit>>? = null
+    private var choosing: Pair<ContactAddress, List<SearchHit>>? = initialChoice
     private var recents: List<PlaceEntity> = emptyList()
-    private var loading = false
+    /** A submit is running: the list shows "Searching…" until the results arrive. */
+    private var searching = false
+    /** The last submitted text, for "No results for …". */
+    private var submitted: String? = null
     private var job: Job? = null
 
     init {
-        lifecycleScope.launch { recents = deps.places().recents(6); invalidate() }
+        lifecycle.addObserver(this)
         if (query.isNotBlank()) submit(query)
+    }
+
+    /** Recents reload each time the screen comes back (a Go on the preview adds one, §8). */
+    override fun onResume(owner: LifecycleOwner) {
+        lifecycleScope.launch { recents = deps.places().recents(6); invalidate() }
     }
 
     override fun onGetTemplate(): Template {
@@ -57,7 +76,7 @@ class SearchScreen(
             options.forEach { h ->
                 list.addItem(
                     Row.Builder().setTitle(h.subtitle ?: h.title)
-                        .addText("Which address for ${contact.name}?" + (h.distanceM?.let { " · " + CarUi.formatDistance(it, session.imperial) } ?: ""))
+                        .addText(carContext.getString(R.string.car_which_address, contact.name) + (h.distanceM?.let { " · " + CarUi.formatDistance(it, session.imperial) } ?: ""))
                         .setOnClickListener {
                             lifecycleScope.launch {
                                 deps.contacts().remember(contact, h)
@@ -81,15 +100,19 @@ class SearchScreen(
                 )
             }
             if (!contactsOnly && deps.contacts().available) {
+                // Contacts (DESIGN.md §8.3): the list of contacts with an address, recently used first.
                 list.addItem(
-                    Row.Builder().setTitle("Contacts").addText("Drive to a contact's address")
+                    Row.Builder().setTitle(carContext.getString(R.string.car_contacts)).addText(carContext.getString(R.string.car_contacts_hint))
                         .setImage(CarUi.icon(carContext, R.drawable.ic_action_contact))
-                        .setOnClickListener { screenManager.push(SearchScreen(carContext, session, contactsOnly = true)) }
+                        .setOnClickListener { screenManager.push(ContactsScreen(carContext, session)) }
                         .build(),
                 )
             }
-            if (recents.isEmpty() && !deps.contacts().available) list.setNoItemsMessage("Search for a place or address")
-            if (contactsOnly) list.setNoItemsMessage("Type or say a contact's name")
+            if (recents.isEmpty() && !deps.contacts().available) list.setNoItemsMessage(carContext.getString(R.string.car_search_empty))
+            if (contactsOnly) list.setNoItemsMessage(carContext.getString(R.string.car_contacts_type_name))
+        } else if (searching) {
+            // Never a silent empty list (DESIGN.md §8): the submit is running.
+            list.addItem(Row.Builder().setTitle(carContext.getString(R.string.car_searching)).build())
         } else {
             contacts.forEach { (c, distance) ->
                 list.addItem(
@@ -111,12 +134,19 @@ class SearchScreen(
                         .build(),
                 )
             }
-            if (hits.isEmpty() && contacts.isEmpty() && !loading) list.setNoItemsMessage(if (contactsOnly) "No contacts with an address match" else "No results")
+            if (hits.isEmpty() && contacts.isEmpty()) {
+                list.setNoItemsMessage(
+                    if (contactsOnly) carContext.getString(R.string.car_no_contact_results)
+                    else carContext.getString(R.string.car_no_results, submitted ?: query),
+                )
+            }
         }
         return SearchTemplate.Builder(object : SearchTemplate.SearchCallback {
             override fun onSearchTextChanged(searchText: String) {
+                log("textChanged len=${searchText.length}")
                 query = searchText
                 choosing = null
+                searching = false
                 job?.cancel()
                 if (searchText.isBlank()) { hits = emptyList(); contacts = emptyList(); invalidate(); return }
                 job = lifecycleScope.launch {
@@ -130,26 +160,30 @@ class SearchScreen(
                 }
             }
 
+            // Typed Enter and the host's voice input both land here; the host doesn't say which.
             override fun onSearchSubmitted(searchText: String) = submit(searchText)
         })
             .setHeaderAction(Action.BACK)
             .setInitialSearchText(query)
-            .setSearchHint(if (contactsOnly) "Search your contacts" else carContext.getString(R.string.car_search_hint))
+            .setSearchHint(carContext.getString(if (contactsOnly) R.string.car_search_contacts_hint else R.string.car_search_hint))
             .setShowKeyboardByDefault(contactsOnly || (query.isBlank() && recents.isEmpty()))
-            .apply { if (loading) setLoading(true) else setItemList(list.build()) }
+            .setItemList(list.build())
             .build()
     }
 
     private fun submit(text: String) {
+        log("submitted len=${text.length} contactsOnly=$contactsOnly")
         query = text
+        submitted = text
         job?.cancel()
-        loading = true
-        invalidate()
+        searching = true
         choosing = null
+        invalidate()
         job = lifecycleScope.launch {
             contacts = findContacts(text)
             hits = if (contactsOnly) emptyList() else deps.places().textSearch(text, deps.location().lastLocation.value)
-            loading = false
+            searching = false
+            log("results contacts=${contacts.size} places=${hits.size}")
             invalidate()
         }
     }
@@ -166,7 +200,7 @@ class SearchScreen(
             when (val r = deps.contacts().locate(c, deps.location().lastLocation.value)) {
                 is Located.Found -> go(r.destination.copy(address = r.address))
                 is Located.Choose -> { choosing = c to r.options; invalidate() }
-                Located.NotFound -> CarToast.makeText(carContext, "Couldn't find ${c.name}'s address", CarToast.LENGTH_SHORT).show()
+                Located.NotFound -> CarToast.makeText(carContext, carContext.getString(R.string.car_contact_not_found, c.name), CarToast.LENGTH_SHORT).show()
             }
         }
     }
@@ -175,7 +209,7 @@ class SearchScreen(
         lifecycleScope.launch {
             val dest = deps.places().resolve(h)
             if (dest == null) {
-                CarToast.makeText(carContext, "Couldn't find that place", CarToast.LENGTH_SHORT).show()
+                CarToast.makeText(carContext, carContext.getString(R.string.car_place_not_found), CarToast.LENGTH_SHORT).show()
             } else {
                 go(dest)
             }
@@ -185,4 +219,6 @@ class SearchScreen(
     private fun go(dest: Destination) {
         screenManager.push(RoutePreviewScreen(carContext, session, dest))
     }
+
+    private fun log(msg: String) = deps.eventLog().record(EventLog.Channel.NAV, "Search", msg)
 }
