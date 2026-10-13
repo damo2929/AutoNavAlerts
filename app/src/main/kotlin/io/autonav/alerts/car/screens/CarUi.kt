@@ -19,6 +19,9 @@ object CarUi {
     fun icon(ctx: CarContext, @DrawableRes res: Int): CarIcon =
         CarIcon.Builder(IconCompat.createWithResource(ctx, res)).build()
 
+    /** A bitmap as a car icon, drawn as-is (pair it with `Row.IMAGE_TYPE_SMALL` so the host doesn't tint it). */
+    fun icon(bmp: android.graphics.Bitmap): CarIcon = CarIcon.Builder(IconCompat.createWithBitmap(bmp)).build()
+
     /** [persistent]: the host keeps it on screen instead of fading it out on the map (DESIGN.md §8). */
     fun action(ctx: CarContext, @DrawableRes res: Int, title: String? = null, persistent: Boolean = false, onClick: () -> Unit): Action =
         Action.Builder().setIcon(icon(ctx, res)).apply { title?.let { setTitle(it) } }

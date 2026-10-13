@@ -45,10 +45,13 @@ data class RouteOption(val index: Int, val seconds: Int, val meters: Int, val de
 
 /**
  * Who ended guidance (DESIGN.md §9.3): every stop is logged with its caller so a route that
- * vanishes on a drive can be traced. `SESSION_DESTROY` is defined but not used: the car session
- * ending keeps guidance running (§9.3); the owner decides after the next drive's logs.
+ * vanishes on a drive can be traced. `HOST` is the normal end of a route: the X on the host's
+ * travel-estimate card is the one cancel on the car screen (§8; owner, 2026-10-13), and it arrives
+ * as `onStopNavigation`, the same callback a host-initiated stop uses. `SESSION_DESTROY` is defined
+ * but not used: the car session ending keeps guidance running (§9.3); the owner decides after the
+ * next drive's logs.
  */
-enum class StopReason { ACTION_STRIP, HOST, ARRIVED_DONE, KEY_CHANGED, SESSION_DESTROY, BENCH }
+enum class StopReason { HOST, KEY_CHANGED, SESSION_DESTROY, BENCH }
 
 /**
  * Destination, preview, guidance and route geometry on top of the [Navigator] (DESIGN.md §8,

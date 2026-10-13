@@ -11,6 +11,7 @@ import androidx.car.app.model.Header
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.MessageTemplate
+import androidx.car.app.model.CarIcon
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 import androidx.car.app.model.Toggle
@@ -27,11 +28,13 @@ import io.autonav.alerts.data.PlaceEntity
 import io.autonav.alerts.data.PlaceKind
 import io.autonav.alerts.data.PoiSetEntity
 import io.autonav.alerts.nav.Destination
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * More: Recents, POI layers, mute, route options, satellite, Alerts and GPS (DESIGN.md §8). The GPS
@@ -163,12 +166,25 @@ class RouteOptionsScreen(carContext: CarContext, private val session: NavSession
     }
 }
 
-/** Show/hide each POI set, and switch its alerts on or off. */
+/**
+ * Show/hide each POI set, and switch its alerts on or off. Each row carries the set's own map icon
+ * (its default icon, the one its markers use unless a category overrides it), so the list reads like
+ * the map (owner, 2026-10-13).
+ */
 class PoiLayersScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var sets: List<PoiSetEntity>? = null
+    private var icons: Map<String, CarIcon> = emptyMap()
 
     init {
-        lifecycleScope.launch { sets = session.deps.pois().activeSets.first(); invalidate() }
+        lifecycleScope.launch {
+            val s = session.deps.pois().activeSets.first()
+            icons = withContext(Dispatchers.IO) {
+                val px = (ICON_DP * carContext.resources.displayMetrics.density).toInt().coerceAtLeast(48)
+                s.map { it.defaultIconId }.distinct().associateWith { CarUi.icon(session.deps.icons().bitmap(it, px)) }
+            }
+            sets = s
+            invalidate()
+        }
     }
 
     override fun onGetTemplate(): Template {
@@ -183,6 +199,7 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
         s.take(limit).forEach { set ->
             list.addItem(
                 Row.Builder().setTitle(set.name)
+                    .apply { icons[set.defaultIconId]?.let { setImage(it, Row.IMAGE_TYPE_SMALL) } }
                     .addText("${set.poiCount} POIs · alerts ${if (set.alertsEnabled) "on" else "off"}")
                     .setToggle(Toggle.Builder { on -> update(set.copy(enabled = on)) }.setChecked(set.enabled).build())
                     .build(),
@@ -198,6 +215,8 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
             invalidate()
         }
     }
+
+    private companion object { const val ICON_DP = 48 }
 }
 
 /**

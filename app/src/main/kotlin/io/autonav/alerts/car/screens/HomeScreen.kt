@@ -22,7 +22,6 @@ import io.autonav.alerts.car.NavSession
 import io.autonav.alerts.car.TripMapper
 import io.autonav.alerts.nav.NavUnavailable
 import io.autonav.alerts.nav.NavUpdatesService
-import io.autonav.alerts.nav.StopReason
 import io.autonav.alerts.reports.toSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -133,24 +132,18 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
 
     // Every action here is persistent: the user wants the top-right buttons always on screen, not
     // faded out after a few seconds (DESIGN.md §8).
+    /**
+     * Search · Report · Recents · More (DESIGN.md §8). Nothing of ours stops a route: the host's own
+     * travel-estimate card (bottom-left) carries Google's X, which reaches us as
+     * `NavigationManagerCallback.onStopNavigation` and is the one cancel on the car screen (owner,
+     * 2026-10-13). Recents leaves the strip while a route is set, to keep the screen estate; it stays
+     * under More and in Search's empty state.
+     */
     private fun actionStrip(): ActionStrip {
         val strip = ActionStrip.Builder()
-        if (arrived) {
-            // "Done" at the destination: the one custom-title action the strip allows (DESIGN.md §8).
-            strip.addAction(CarUi.textAction(carContext.getString(R.string.car_done), persistent = true) {
-                deps.guidance().stopGuidance(StopReason.ARRIVED_DONE)
-                invalidate()
-            })
-        } else if (guiding) {
-            strip.addAction(CarUi.textAction(carContext.getString(R.string.car_stop_navigation), persistent = true) {
-                deps.guidance().stopGuidance(StopReason.ACTION_STRIP)
-                invalidate()
-            })
-        } else {
-            strip.addAction(CarUi.action(carContext, R.drawable.ic_action_search, persistent = true) {
-                screenManager.push(SearchScreen(carContext, session))
-            })
-        }
+        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_search, persistent = true) {
+            screenManager.push(SearchScreen(carContext, session))
+        })
         strip.addAction(CarUi.action(carContext, R.drawable.ic_action_report, persistent = true) { openReport() })
         if (!guiding && !arrived) {
             strip.addAction(CarUi.action(carContext, R.drawable.ic_action_recents, persistent = true) {

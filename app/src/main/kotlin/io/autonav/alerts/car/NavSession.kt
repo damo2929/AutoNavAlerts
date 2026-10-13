@@ -90,11 +90,10 @@ class NavSession : Session(), DefaultLifecycleObserver {
         surface.onMapReady = { m -> markers.map = m; m.setOnCameraIdleListener { redrawMarkers() } }
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(surface)
         carContext.getCarService(NavigationManager::class.java).setNavigationManagerCallback(object : NavigationManagerCallback {
-            // The user stopped from the system UI, or another navigation app took over (DESIGN.md §9.3):
-            // logged and shown, so a host stop can be told from a bug.
+            // The X on the host's travel-estimate card (the one cancel on the car screen, DESIGN.md §8),
+            // the system UI, or another navigation app taking over (§9.3): logged, then guidance stops.
             override fun onStopNavigation() {
                 eventLog.record(EventLog.Channel.NAV, "Session", "hostStopNavigation guiding=${deps.guidance().guiding.value}")
-                runCatching { CarToast.makeText(carContext, carContext.getString(R.string.car_nav_stopped_by_car), CarToast.LENGTH_LONG).show() }
                 deps.guidance().stopGuidance(StopReason.HOST)
             }
             override fun onAutoDriveEnabled() {

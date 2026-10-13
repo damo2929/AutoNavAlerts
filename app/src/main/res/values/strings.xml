@@ -3,12 +3,8 @@
     <string name="app_name">AutoNavAlerts</string>
     <string name="car_setup_title">Finish setup on your phone</string>
     <string name="car_arrived">You have arrived</string>
-    <string name="car_stop">Stop</string>
     <string name="car_go">Go</string>
     <string name="car_search_hint">Search places or addresses</string>
-    <string name="car_stop_navigation">Stop navigation</string>
-    <string name="car_done">Done</string>
-    <string name="car_nav_stopped_by_car">Navigation stopped by the car</string>
     <string name="car_searching">Searching…</string>
     <string name="car_no_results">No results for %1$s</string>
     <string name="car_no_contact_results">No contacts with an address match</string>
