@@ -148,7 +148,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         val strip = ActionStrip.Builder()
         if (guiding || arrived) {
             strip.addAction(CarUi.textAction(carContext.getString(R.string.car_stop), persistent = true) {
-                deps.guidance().stopGuidance()
+                deps.guidance().stopGuidance(if (arrived) io.autonav.alerts.nav.StopReason.ARRIVED_DONE else io.autonav.alerts.nav.StopReason.ACTION_STRIP)
                 invalidate()
             })
         } else {

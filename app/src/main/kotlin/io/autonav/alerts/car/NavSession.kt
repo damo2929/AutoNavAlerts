@@ -70,7 +70,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         surface.onMapReady = { m -> markers.map = m; m.setOnCameraIdleListener { redrawMarkers() } }
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(surface)
         carContext.getCarService(NavigationManager::class.java).setNavigationManagerCallback(object : NavigationManagerCallback {
-            override fun onStopNavigation() = deps.guidance().stopGuidance()
+            override fun onStopNavigation() = deps.guidance().stopGuidance(io.autonav.alerts.nav.StopReason.HOST)
             override fun onAutoDriveEnabled() {
                 Log.i(TAG, "Auto drive enabled (DHU): starting simulation if a route is set")
                 deps.guidance().startGuidance(simulate = true)
