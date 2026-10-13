@@ -10,6 +10,8 @@ import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.location.Location
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
@@ -18,6 +20,9 @@ import androidx.car.app.CarContext
 import androidx.car.app.SurfaceCallback
 import androidx.car.app.SurfaceContainer
 import io.autonav.alerts.R
+import io.autonav.alerts.car.CarDeps
+import io.autonav.alerts.core.nav.FollowWatchdog
+import io.autonav.alerts.diag.EventLog
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.model.FollowMyLocationOptions
@@ -45,7 +50,15 @@ class MapSurface(
     private val applyKey: suspend () -> Boolean,
 ) : SurfaceCallback {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val main = Handler(Looper.getMainLooper())
+    private val eventLog: EventLog by lazy { CarDeps.from(carContext).eventLog() }
     private var setup: Job? = null
+    /** Free-drive-only follow check against the SDK's own position (DESIGN.md §8). */
+    private val watchdog = FollowWatchdog()
+    /** Set by `RoutePreviewScreen` while it's on screen: the route overview moves the camera on purpose. */
+    @Volatile var previewShowing = false
+    /** Whether guidance is running (the watchdog never acts then); set by `NavSession`. */
+    @Volatile var guidingProvider: () -> Boolean = { false }
     private var display: VirtualDisplay? = null
     private var presentation: Presentation? = null
     private var navView: NavigationViewForAuto? = null
@@ -75,8 +88,6 @@ class MapSurface(
      */
     private var followZoom: Float = MAX_ZOOM
     private var container: SurfaceContainer? = null
-    private var lastRefollow = 0L
-    private var refollowsInARow = 0
 
     /** The satellite toggle at the top right of the map (DESIGN.md §8), or null before the map exists. */
     private var mapTypeButton: MapTypeButtonView? = null
@@ -103,17 +114,17 @@ class MapSurface(
 
     override fun onSurfaceAvailable(container: SurfaceContainer) {
         setup?.cancel()
-        setup = scope.launch { if (applyKey()) attach(container) }
+        setup = scope.launch { if (applyKey()) attach(container, "surfaceAvailable") }
     }
 
     @SuppressLint("MissingPermission")
-    private fun attach(container: SurfaceContainer) {
-        val surface = container.surface ?: return
+    private fun attach(container: SurfaceContainer, reason: String) {
+        val surface = container.surface ?: run { log("attach ($reason) skipped: no surface"); return }
         release()
         this.container = container
-        refollowsInARow = 0
         surfaceWidth = container.width
         surfaceHeight = container.height
+        log("surface ${surfaceWidth}×$surfaceHeight dpi=${container.dpi} ($reason)")
         val dm = carContext.getSystemService(DisplayManager::class.java)
         val vd = dm.createVirtualDisplay(
             "autonav-map", container.width, container.height, container.dpi, surface,
@@ -129,6 +140,7 @@ class MapSurface(
         view.onCreate(null)
         view.onStart()
         view.onResume()
+        disableSdkControls(view)
         val panel = SpeedPanelView(pres.context)
         root.addView(panel, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.END
@@ -166,7 +178,6 @@ class MapSurface(
         pres.show()
         presentation = pres
         navView = view
-        IncidentReporting.enableButton(view)
         view.getMapAsync { m ->
             runCatching { m.isMyLocationEnabled = true }
             m.uiSettings.isCompassEnabled = false
@@ -176,7 +187,7 @@ class MapSurface(
             // The road map stops drawing traffic above zoom 17 in towns (satellite keeps it), and the follow
             // camera sits at 18. Capping the zoom keeps traffic on screen on both (DESIGN.md §8).
             m.setMaxZoomPreference(MAX_ZOOM)
-            Log.i(TAG, "Map ready: type ${m.mapType}, traffic ${m.isTrafficEnabled}, max zoom $MAX_ZOOM")
+            log("ready type=${m.mapType} traffic=${m.isTrafficEnabled} maxZoom=$MAX_ZOOM followZoom=$followZoom")
             following = true
             follow(m)
             _map.value = m
@@ -197,7 +208,7 @@ class MapSurface(
     }
 
     override fun onVisibleAreaChanged(area: Rect) {
-        Log.i(TAG, "Visible area $area (stable $stableArea, surface ${surfaceWidth}x$surfaceHeight)")
+        log("visible $area stable=$stableArea surface=${surfaceWidth}×$surfaceHeight")
         visibleArea = area
         applyPadding()
     }
@@ -209,31 +220,46 @@ class MapSurface(
 
     /** A tap on the map: the satellite toggle switches the map type; the alert banner dismisses the alert. */
     override fun onClick(x: Float, y: Float) {
-        Log.i(TAG, "Tap at ${x.toInt()},${y.toInt()}")
         mapTypeButton?.let { t ->
             if (t.isShown && hit(t, x, y)) {
+                log("tap ${x.toInt()},${y.toInt()} hit=satellite")
                 onSatelliteToggle?.invoke(!satellite)
                 return
             }
         }
-        mapButtons.firstOrNull { it.isShown && hit(it, x, y) }?.let { it.onTap(); return }
-        val b = alertBanner ?: return
-        if (b.showing == null) return
-        if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) b.hide()
+        val i = mapButtons.indexOfFirst { it.isShown && hit(it, x, y) }
+        if (i >= 0) {
+            log("tap ${x.toInt()},${y.toInt()} hit=${MAP_BUTTON_NAMES.getOrElse(i) { "button$i" }}")
+            mapButtons[i].onTap()
+            return
+        }
+        val b = alertBanner
+        if (b != null && b.showing != null && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) {
+            log("tap ${x.toInt()},${y.toInt()} hit=banner")
+            b.hide()
+            return
+        }
+        log("tap ${x.toInt()},${y.toInt()} hit=none")
     }
 
     private fun hit(v: android.view.View, x: Float, y: Float) = x >= v.left && x <= v.right && y >= v.top && y <= v.bottom
 
     override fun onScroll(distanceX: Float, distanceY: Float) {
         val m = _map.value ?: return
-        following = false
+        followOff("scroll")
         m.moveCamera(CameraUpdateFactory.scrollBy(distanceX, distanceY))
     }
 
     override fun onFling(velocityX: Float, velocityY: Float) {
         val m = _map.value ?: return
-        following = false
+        followOff("fling")
         m.animateCamera(CameraUpdateFactory.scrollBy(-velocityX / 10f, -velocityY / 10f))
+    }
+
+    /** The user panned: follow mode ends until Recenter (logged once per pan, not per event). */
+    private fun followOff(how: String) {
+        if (following) log("followOff ($how)")
+        following = false
     }
 
     override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
@@ -257,6 +283,7 @@ class MapSurface(
 
     fun recenter() {
         val m = _map.value ?: return
+        log("recenter wasFollowing=$following")
         following = true
         followZoom = MAX_ZOOM
         follow(m)
@@ -274,31 +301,55 @@ class MapSurface(
     val isFollowing: Boolean get() = following
 
     /**
-     * Called with every fix. After a big jump in position (a tunnel exit, or the bench's GPS
-     * playback starting somewhere new) the SDK's map can stop following the car. If the map is
-     * meant to follow but its centre is far from the car, follow again; if that doesn't bring it
-     * back, rebuild the map on the same surface.
+     * The follow watchdog (DESIGN.md §8), fed the SDK's own road-snapped position by `NavSession`
+     * (never our fix, which may be the car's GPS while the SDK map follows the phone's). Core
+     * [FollowWatchdog] decides: nothing while panned, guiding or on the route preview; on a miss
+     * (camera target more than 500 m from the SDK position) follow again at the chosen zoom; a
+     * rebuild only after three misses 5 s apart. Also keeps Google traffic on (§8, always on).
+     * Every decision goes to `debug-nav`; skips only when their reason changes (SDK fixes are ~1 Hz).
      */
-    fun keepFollowing(lat: Double, lon: Double) {
-        val m = _map.value ?: return
-        // Google traffic is always on (DESIGN.md §8): put it back if anything (guidance, a map type
-        // change, the SDK) turned it off.
+    fun onSdkLocation(loc: Location) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { onSdkLocation(loc) }; return }
+        val m = _map.value ?: run { eventLog.onChange("map.watchdog", "no map", EventLog.Channel.NAV, "Map") { "watchdog skip (no map)" }; return }
         if (!m.isTrafficEnabled) m.isTrafficEnabled = true
-        if (!following) return
         val now = SystemClock.elapsedRealtime()
-        if (now - lastRefollow < REFOLLOW_INTERVAL_MS) return
+        val ageMs = if (loc.elapsedRealtimeNanos > 0) (now - loc.elapsedRealtimeNanos / 1_000_000).coerceAtLeast(0)
+            else (System.currentTimeMillis() - loc.time).coerceAtLeast(0)
         val target = m.cameraPosition.target
         val d = FloatArray(1)
-        Location.distanceBetween(target.latitude, target.longitude, lat, lon, d)
-        if (d[0] < LOST_METRES) { refollowsInARow = 0; return }
-        lastRefollow = now
-        if (++refollowsInARow > 1) {
-            Log.i(TAG, "Map still ${d[0].toInt()} m from the car: rebuilding it")
-            container?.let(::attach)
-        } else {
-            Log.i(TAG, "Map is ${d[0].toInt()} m from the car: following again")
-            follow(m)
+        Location.distanceBetween(target.latitude, target.longitude, loc.latitude, loc.longitude, d)
+        when (val r = watchdog.check(now, following, guidingProvider(), previewShowing, ageMs, d[0])) {
+            is FollowWatchdog.Decision.None ->
+                eventLog.onChange("map.watchdog", r.reason, EventLog.Channel.NAV, "Map") { "watchdog skip (${r.reason}) d=${d[0].toInt()} age=${ageMs}ms" }
+            is FollowWatchdog.Decision.Refollow -> {
+                eventLog.onChange("map.watchdog", "refollow", EventLog.Channel.NAV, "Map") { "watchdog miss" }
+                log("refollow d=${r.distanceM.toInt()} age=${ageMs}ms zoom=$followZoom misses=${watchdog.misses}")
+                follow(m)
+            }
+            is FollowWatchdog.Decision.Rebuild -> {
+                eventLog.onChange("map.watchdog", "rebuild", EventLog.Channel.NAV, "Map") { "watchdog miss (third)" }
+                log("rebuild d=${r.distanceM.toInt()} age=${ageMs}ms")
+                container?.let { attach(it, "watchdog rebuild d=${r.distanceM.toInt()}") }
+            }
         }
+    }
+
+    /**
+     * The SDK's own on-map controls (header, ETA card, recenter, speedometer, trip progress bar)
+     * must be off: no touch reaches the SDK view on Android Auto, so they'd be dead and overlap
+     * ours (DESIGN.md §8, §16 row 23). Navigation SDK 8.0.0's `NavigationViewForAuto` has none of
+     * the `set*Enabled` setters that `NavigationView` has (checked in the 8.0.0 jar), so they are
+     * looked up by reflection, like `IncidentReporting`: a future SDK that adds them gets them
+     * turned off with no code change, and the log says which were found.
+     */
+    private fun disableSdkControls(view: NavigationViewForAuto) {
+        val off = ArrayList<String>()
+        val missing = ArrayList<String>()
+        for (name in SDK_CONTROL_SETTERS) {
+            runCatching { view.javaClass.getMethod(name, java.lang.Boolean.TYPE).invoke(view, false) }
+                .onSuccess { off += name }.onFailure { missing += name }
+        }
+        log("sdkControls off=$off missing=$missing")
     }
 
     /** Google incident reporting on the car screen, if a future Navigation SDK supports it (§16 #21). */
@@ -393,11 +444,17 @@ class MapSurface(
         display = null
     }
 
+    private fun log(msg: String) = eventLog.record(EventLog.Channel.NAV, "Map", msg)
+
     companion object {
         private const val TAG = "MapSurface"
-        private const val LOST_METRES = 500f
         private const val MIN_FOLLOW_ZOOM = 3f
-        private const val REFOLLOW_INTERVAL_MS = 5_000L
+        /** The order of [mapButtons], for the tap log. */
+        private val MAP_BUTTON_NAMES = listOf("zoomIn", "zoomOut", "recenter")
+        /** `NavigationView`'s setters for its on-map controls; absent from `NavigationViewForAuto` in SDK 8.0.0. */
+        private val SDK_CONTROL_SETTERS = listOf(
+            "setHeaderEnabled", "setEtaCardEnabled", "setRecenterButtonEnabled", "setSpeedometerEnabled", "setTripProgressBarEnabled",
+        )
         /** Room left either side of the banner for the speed panel (two 64 dp boxes and gaps). */
         private const val SPEED_PANEL_CLEAR_DP = 170
         /** Height kept clear at the top for the host's action strip (its buttons end at 88 px on a 160 dpi DHU). */

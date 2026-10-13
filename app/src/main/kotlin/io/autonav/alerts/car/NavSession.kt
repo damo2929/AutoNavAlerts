@@ -152,7 +152,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
             }
                 .collect { (t, away) ->
                     val (fix, nearby, active) = t
-                    fix?.let { deps.driving().onSpeed(it.speedMps); surface.keepFollowing(it.lat, it.lon) }
+                    fix?.let { deps.driving().onSpeed(it.speedMps) }
                     markers.redraw(nearby, fix, active, away)
                     updateSpeedPanel(fix?.speedMps, active)
                 }

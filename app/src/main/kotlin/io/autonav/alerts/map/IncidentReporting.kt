@@ -3,7 +3,6 @@
 
 package io.autonav.alerts.map
 
-import android.util.Log
 import android.view.View
 
 /**
@@ -16,19 +15,9 @@ import android.view.View
  * SDK adds them, the feature switches on with no code change, and stays hidden until then.
  */
 object IncidentReporting {
-    private const val TAG = "IncidentReporting"
-
     /** True if this SDK's car view has the reporting API at all. */
     fun supportedBySdk(view: View): Boolean =
         runCatching { view.javaClass.getMethod("showReportIncidentsPanel") }.isSuccess
-
-    /** Shows Google's own report button on the car map, if the SDK supports it. */
-    fun enableButton(view: View) {
-        runCatching {
-            view.javaClass.getMethod("setReportIncidentButtonEnabled", java.lang.Boolean.TYPE).invoke(view, true)
-            Log.i(TAG, "Incident reporting button enabled on Android Auto")
-        }.onFailure { Log.i(TAG, "Incident reporting not supported on Android Auto by this Navigation SDK") }
-    }
 
     /** True when reporting can be used right now (active navigation, supported country). */
     fun availableNow(view: View): Boolean = runCatching {
