@@ -35,8 +35,6 @@ class OsmSpeedLimitsTest {
     @Test
     fun tilesRoundTripAndCoverARadius() {
         val k = OsmSpeedLimits.tileKey(53.3785, -1.4634)
-        val box = OsmSpeedLimits.tileBox(k)
-        assertTrue(box[0] <= 53.3785 && 53.3785 < box[2] && box[1] <= -1.4634 && -1.4634 < box[3])
         assertEquals(9, OsmSpeedLimits.around(53.3785, -1.4634).toSet().size)
         val near = OsmSpeedLimits.within(53.3785, -1.4634, 25.0)
         assertEquals(k, near.first())

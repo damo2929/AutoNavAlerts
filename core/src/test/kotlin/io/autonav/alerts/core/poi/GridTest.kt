@@ -35,17 +35,4 @@ class GridTest {
     fun nearPolesNeighbourhoodIsClipped() {
         assertEquals(15, Grid.neighbourhood(Grid.cellOf(89.999, 0.0)).size)
     }
-
-    @Test
-    fun viewportCellsAndCap() {
-        val cells = Grid.cellsInBounds(53.805, -1.555, 53.825, -1.535)!!
-        assertEquals(3 * 3, cells.size)
-        assertNull(Grid.cellsInBounds(50.0, -5.0, 55.0, 0.0))
-    }
-
-    @Test
-    fun viewportAcrossAntimeridian() {
-        val cells = Grid.cellsInBounds(0.0, 179.98, 0.005, -179.98)!!
-        assertEquals(5, cells.size)
-    }
 }

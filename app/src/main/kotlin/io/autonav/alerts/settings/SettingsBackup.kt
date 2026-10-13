@@ -8,7 +8,6 @@ import android.net.Uri
 import io.autonav.alerts.BuildConfig
 import io.autonav.alerts.core.alerts.DistanceMode
 import io.autonav.alerts.core.alerts.Units
-import io.autonav.alerts.core.location.RateCurve
 import io.autonav.alerts.core.pgw.PgwDownload
 import io.autonav.alerts.data.IconRepository
 import io.autonav.alerts.data.PoiRepository
@@ -178,15 +177,6 @@ class SettingsBackup @Inject constructor(
     private fun applySettings(cur: AppSettings, j: JSONObject): AppSettings {
         fun bool(k: String, d: Boolean) = if (j.has(k) && !j.isNull(k)) j.optBoolean(k, d) else d
         fun num(o: JSONObject, k: String) = o.optDouble(k).takeIf { !it.isNaN() }
-        val rate = j.optJSONObject("gpsRate")?.let { r ->
-            runCatching {
-                RateCurve(
-                    minMph = num(r, "minMph") ?: cur.rateCurve.minMph,
-                    maxMph = num(r, "maxMph") ?: cur.rateCurve.maxMph,
-                    maxHz = r.optInt("maxHz", cur.rateCurve.maxHz),
-                )
-            }.getOrNull()
-        } ?: cur.rateCurve
         return cur.copy(
             units = j.optString("units").let { n -> Units.entries.firstOrNull { it.name == n } } ?: cur.units,
             voiceOn = bool("voiceOn", cur.voiceOn),
@@ -194,7 +184,6 @@ class SettingsBackup @Inject constructor(
             overspeedPct = (num(j, "overspeedPct") ?: cur.overspeedPct).coerceIn(-0.05, 0.20),
             alertLeadSeconds = (num(j, "alertLeadSeconds")?.toInt() ?: cur.alertLeadSeconds).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
             announceLimitChanges = bool("announceLimitChanges", cur.announceLimitChanges),
-            rateCurve = rate,
             speedSource = j.optString("speedSource").let { n -> SpeedSource.entries.firstOrNull { it.name == n } } ?: cur.speedSource,
             speedPanelOn = bool("speedPanelOn", cur.speedPanelOn),
             satelliteMap = bool("satelliteMap", cur.satelliteMap),

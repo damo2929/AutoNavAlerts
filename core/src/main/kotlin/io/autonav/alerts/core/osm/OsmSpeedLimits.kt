@@ -75,13 +75,6 @@ object OsmSpeedLimits {
 
     private fun tileKey(row: Int, col: Int): Long = (row.toLong() shl 32) or (col.toLong() and 0xffffffffL)
 
-    /** (south, west, north, east) of a tile. */
-    fun tileBox(key: Long): DoubleArray {
-        val row = (key shr 32).toInt()
-        val col = key.toInt()
-        return doubleArrayOf(row * TILE_DEG, col * TILE_DEG, (row + 1) * TILE_DEG, (col + 1) * TILE_DEG)
-    }
-
     /** The tile at (lat, lon) and its 8 neighbours. */
     fun around(lat: Double, lon: Double): List<Long> {
         val r = floor(lat / TILE_DEG).toInt()

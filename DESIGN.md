@@ -1002,7 +1002,7 @@ The phone's GPS is **always asked for 10 fixes a second** (`AdaptiveLocationSour
 - **Chip limits**: many phone GPS chips deliver 1–5 Hz at most; FLP then delivers what it can and that's accepted. The rate actually delivered (a moving average of the time between fixes) is shown in the car's **More → GPS** row. The request is never lowered.
 - **Speed** (`FixEstimator` in `:core`, its speed half; the heading half is §10.6a): the median of the last 3 `Location.speed` values when `hasSpeed()`; **a reported 0 is a real 0**. Displacement ÷ time is used **only when the fix carries no speed** (`!hasSpeed()`), against a reference fix at least **1 s** old, and only when the displacement exceeds max(3 m, the fix's accuracy) **on two fixes in a row** (one jitter spike can't become a speed); the displacement speed is itself the **median of its last 3 windows**, and standing still for 5 s re-anchors the reference so drift can't build up (as built, 2026-10-13); fixes with accuracy > 30 m are ignored. (Before, a reported 0 with 10 Hz jitter became distance ÷ 0.1 s: 1 m of jitter read as 22 mph while parked, which fed the engine, the panel, the report guard and the heading; found 2026-10-12.) The `Fix` records `speedSource` (gps / displacement / carRaw / simulated).
 - **Power**: 10 Hz all the time costs more battery than the old adaptive rate, mostly when slow or parked with the car screen open (§14). The car is normally charging the phone.
-- The old rate curve (`RateCurve`, `AdaptiveRateController` in `:core`, and the stored `gpsMinMph`/`gpsMaxMph`/`gpsMaxHz` values) is no longer used by the app; the Settings controls for it are gone.
+- The old speed-dependent rate curve (`RateCurve`, `AdaptiveRateController` and the stored `gps_min_mph`/`gps_max_mph`/`gps_max_hz` values) was **deleted** on 2026-10-13 (code shrink); a backup file's old `gpsRate` block is ignored on restore. The median-of-three `SpeedSmoother` it held now lives with `FixEstimator`.
 
 ### 10.5 Lifecycle
 Runs while the foreground service is up (§9.3). It stops when the car session ends and there's no guidance, or when every set has alerts turned off. In that last case it does nothing until a set's alerts are turned back on.
@@ -1409,13 +1409,7 @@ After that, users never set anything up: they press **Create a key with my Googl
 - **Grid**: cell maths at the equator, 52°N, the antimeridian and near the poles. The viewport cell list, and the 400-cell cap.
 - **Template renderer**: every placeholder; the rules for dropping missing pieces; spoken vs display units; the order overrides apply in.
 - **FixEstimator** (`:core`, 2026-10-12): **HeadingEstimatorTest** (adaptive chord, circular EMA, GPS-bearing blending by inverse variance, the stale-bearing guard, heading null after 30 s under 1 m/s, `resetTrack` on gap/jump/handover) and **SpeedEstimatorTest** (median of 3; displacement speed only without `hasSpeed()`, reference ≥ 1 s old, jitter below max(3 m, accuracy) ignored; a reported 0 stays 0).
-- **AdaptiveRateController** (the old rate curve in `:core`, no longer used by the app, §10.2; fake clock + fake FLP):
-  - 0 and 9.9 mph → 1 Hz, and 10 mph → 1 Hz
-  - 30 mph → 5.5 Hz, rounded to step 6 (5.5 rounds half up to 6)
-  - 50 and 80 mph → 10 Hz
-  - ±1 mph jitter at a step boundary → no re-request within 2 s
-  - a steady new step for 2 s → exactly one re-request
-  - the actual-rate drop rule
+- **SpeedSmoother** (median of three, used by `FixEstimator`): `SpeedSmootherTest`.
 - **PoiAlertEngine**, with synthetic tracks built by a track generator:
   - straight approach at 30 and 70 mph (trigger distance in TIME and FIXED modes)
   - passing the POI and then coming back on a second pass (dedup clears)

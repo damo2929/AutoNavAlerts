@@ -7,6 +7,7 @@ import android.content.Context
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.App
+import io.autonav.alerts.core.diag.DriveLog
 import io.autonav.alerts.settings.SettingsStore
 import java.io.BufferedWriter
 import java.io.File
@@ -38,12 +39,14 @@ class DriveRecorder @Inject constructor(
     private val eventLog: EventLog,
     settings: SettingsStore,
 ) {
-    /** One CSV row; blank cells for nulls. Column order is [HEADER]. */
+    /**
+     * One CSV row: kind [DriveLog.KIND_FIX] or [DriveLog.KIND_SPEED], src [DriveLog.SRC_PHONE] /
+     * [DriveLog.SRC_CAR] / [DriveLog.SRC_SIM]. Written by [DriveLog.format], so replay reads exactly
+     * what was recorded (G9/G10).
+     */
     data class Row(
         val tMs: Long,
-        /** What this row is: `phone`, `car` (a car fix) or `carSpeed` (a car speed report). */
         val kind: String,
-        /** Which feed it came from: `phone` or `car`. */
         val src: String,
         /** Whether the app used it (false for a phone fix dropped while car GPS was fresh). */
         val used: Boolean,
@@ -52,7 +55,7 @@ class DriveRecorder @Inject constructor(
         val accM: Float? = null,
         val spdMps: Float? = null,
         val brgDeg: Float? = null,
-        val hasBrg: Boolean? = null,
+        val hasBrg: Boolean = false,
         val altM: Double? = null,
         /** The fix's own timestamp (Location.time), as opposed to [tMs] when the app saw it. */
         val fixTMs: Long? = null,
@@ -63,10 +66,12 @@ class DriveRecorder @Inject constructor(
         val carRawMps: Double? = null,
         val carDispMps: Double? = null,
     ) {
-        fun toCsv(): String = listOf(
-            tMs, kind, src, if (used) 1 else 0, lat, lon, accM, spdMps, brgDeg,
-            hasBrg?.let { if (it) 1 else 0 }, altM, fixTMs, engSpdMps, engHdgDeg, hdgSrc, carRawMps, carDispMps,
-        ).joinToString(",") { it?.toString() ?: "" }
+        fun toCsv(): String = DriveLog.format(
+            DriveLog.RecordedFix(
+                tMs, kind, src, used, lat, lon, accM?.toDouble(), spdMps?.toDouble(), brgDeg?.toDouble(), hasBrg,
+                altM, fixTMs, engSpdMps, engHdgDeg, hdgSrc, carRawMps, carDispMps,
+            ),
+        )
     }
 
     private val dir = File(context.filesDir, "diag")
@@ -96,9 +101,6 @@ class DriveRecorder @Inject constructor(
 
     /** True while a file is open. */
     val isRecording: Boolean get() = synchronized(this) { writer != null }
-
-    /** The file being written now, or null. */
-    val currentFile: File? get() = synchronized(this) { current }
 
     /** A session wants recording; a file opens if the setting is on (now or later). */
     @Synchronized
@@ -164,11 +166,11 @@ class DriveRecorder @Inject constructor(
         while (f.exists()) f = File(dir, "$PREFIX$stamp-${n++}$SUFFIX")
         try {
             val w = BufferedWriter(OutputStreamWriter(FileOutputStream(f, true), Charsets.UTF_8), 16 * 1024)
-            w.write(HEADER)
+            w.write(DriveLog.HEADER)
             w.newLine()
             writer = w
             current = f
-            bytes = HEADER.length + 1L
+            bytes = DriveLog.HEADER.length + 1L
         } catch (e: Exception) {
             Log.w(TAG, "drive recording couldn't open ${f.name}: $e")
             eventLog.record(EventLog.Channel.NAV, "Drive", "recording failed to open file=${f.name} error=$e")
@@ -191,8 +193,6 @@ class DriveRecorder @Inject constructor(
     }
 
     companion object {
-        /** The column order, exactly as DESIGN.md §15.5 lists it; `DriveLog` in core parses the same. */
-        const val HEADER = "t_ms,kind,src,used,lat,lon,acc_m,spd_mps,brg_deg,has_brg,alt_m,fix_t_ms,eng_spd_mps,eng_hdg_deg,hdg_src,car_raw_mps,car_disp_mps"
         const val KEEP = 3
         const val MAX_BYTES = 50L * 1024 * 1024
         const val PREFIX = "drive-"

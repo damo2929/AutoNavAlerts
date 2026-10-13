@@ -17,14 +17,10 @@ object PgwConfig {
     const val SUBMIT_PATH = "modules.php?name=Cameras&op=SubmitCamera"
     const val RSS_URL = "https://www.pocketgpsworld.com/speed-camera-rss.php"
 
-    /** iGO, UK, single file with all cameras. */
-    const val PACKAGE_UK_IGO_SINGLE = 61
-
     /** iGO, UK, consolidated by type (one file per camera type): the package the app uses. */
     const val PACKAGE_UK_IGO_BY_TYPE = 288
 
-    /** TomTom OV2, UK, consolidated by type (2) / speed zoned complete (1). No direction data. */
-    const val PACKAGE_UK_OV2_BY_TYPE = 2
+    /** TomTom OV2, UK, speed zoned complete. No direction data. */
     const val PACKAGE_UK_OV2_SPEED_ZONED = 1
 
     /** Kept for callers that want the default package id. */
@@ -42,8 +38,6 @@ object PgwConfig {
 
     val ZIP_LINK = Regex("""(?:https?://www\.pocketgpsworld\.com)?/?temp/users/pgpsw-speed-cams-[A-Za-z0-9]+-\(\d+-\d+\)\.zip""")
 
-    const val MAIN_FILE = "pocketgps_uk_sc.txt"
-    const val PENDING_MOBILE_FILE = "pocketgps_uk_pmobile.txt"
     const val RELEASE_FILE = "Release.txt"
 }
 
@@ -84,9 +78,6 @@ object PgwPages {
         val path = m.value.substringAfter("pocketgpsworld.com").trimStart('/')
         return PgwConfig.BASE + path
     }
-
-    fun hasDownloadForm(html: String): Boolean =
-        Jsoup.parse(html).select("input[name=op][value=DownloadPackage]").isNotEmpty()
 
     /** Per-user hidden fields of the submission form (never logged or stored). */
     fun submitHiddenFields(html: String): Map<String, String> {

@@ -208,10 +208,7 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
         val s = sets ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
         val list = ItemList.Builder()
         if (s.isEmpty()) list.setNoItemsMessage("No POI sets yet. Import or sync on your phone.")
-        val limit = runCatching {
-            carContext.getCarService(androidx.car.app.constraints.ConstraintManager::class.java)
-                .getContentLimit(androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
-        }.getOrDefault(6)
+        val limit = CarUi.listLimit(carContext)
         s.take(limit).forEach { set ->
             list.addItem(
                 Row.Builder().setTitle(set.name)
@@ -245,10 +242,7 @@ class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Scr
 
     override fun onGetTemplate(): Template {
         val header = Header.Builder().setTitle("Alerts").setStartHeaderAction(Action.BACK).build()
-        val limit = runCatching {
-            carContext.getCarService(androidx.car.app.constraints.ConstraintManager::class.java)
-                .getContentLimit(androidx.car.app.constraints.ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
-        }.getOrDefault(6)
+        val limit = CarUi.listLimit(carContext)
         val list = ItemList.Builder()
         if (records.isEmpty()) list.setNoItemsMessage("No alerts spoken yet")
         val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)

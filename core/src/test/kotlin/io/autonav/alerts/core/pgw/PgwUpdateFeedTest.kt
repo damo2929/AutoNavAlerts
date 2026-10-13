@@ -64,10 +64,8 @@ class PgwUpdateFeedTest {
     }
 
     @Test
-    fun versionFromReleaseTxtAndZipName() {
+    fun versionFromReleaseTxt() {
         assertEquals(24 to 101, PgwUpdateFeed.versionFromReleaseTxt("Speed Camera Database\r\n\r\nVersion 24.101 (07 Oct 26)\r\n"))
-        assertEquals(24 to 101, PgwUpdateFeed.versionFromZipName("/temp/users/pgpsw-speed-cams-aBcDe-(24-101).zip"))
-        assertNull(PgwUpdateFeed.versionFromZipName("other.zip"))
     }
 
     @Test

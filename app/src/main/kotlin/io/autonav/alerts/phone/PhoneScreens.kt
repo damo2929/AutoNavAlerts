@@ -82,7 +82,6 @@ import io.autonav.alerts.core.alerts.DistanceMode
 import io.autonav.alerts.core.alerts.TemplateValues
 import io.autonav.alerts.core.alerts.Units
 import io.autonav.alerts.core.geo.Geo
-import io.autonav.alerts.core.location.RateCurve
 import io.autonav.alerts.core.pgw.PgwConfig
 import io.autonav.alerts.core.poi.SpeedUnit
 import io.autonav.alerts.core.poi.importers.CsvImporter
@@ -110,6 +109,13 @@ import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.roundToInt
+import io.autonav.alerts.core.pgw.PgwDownload
+import io.autonav.alerts.core.poi.DirectionType
+import io.autonav.alerts.data.LimitSource
+import io.autonav.alerts.settings.AppSettings
+import io.autonav.alerts.settings.PgwState
+import io.autonav.alerts.settings.SettingsBackup
+import io.autonav.alerts.settings.SpeedSource
 
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
@@ -801,8 +807,8 @@ private fun TemplateField(deps: PhoneDeps, label: String, value: String, units: 
 fun CameraDbScreen(deps: PhoneDeps) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val state by deps.settings.pgwState.collectAsState(initial = io.autonav.alerts.settings.PgwState())
-    val settings by deps.settings.settings.collectAsState(initial = io.autonav.alerts.settings.AppSettings())
+    val state by deps.settings.pgwState.collectAsState(initial = PgwState())
+    val settings by deps.settings.settings.collectAsState(initial = AppSettings())
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var hasLogin by remember { mutableStateOf(false) }
@@ -844,10 +850,10 @@ fun CameraDbScreen(deps: PhoneDeps) {
         }
         Section("Download format") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                io.autonav.alerts.core.pgw.PgwDownload.entries.forEach { d ->
+                PgwDownload.entries.forEach { d ->
                     FilterChip(settings.pgwDownload == d, {
                         scope.launch { deps.settings.update { it.copy(pgwDownload = d) } }
-                    }, label = { Text(d.label + if (d == io.autonav.alerts.core.pgw.PgwDownload.DEFAULT) " (recommended)" else "") })
+                    }, label = { Text(d.label + if (d == PgwDownload.DEFAULT) " (recommended)" else "") })
                 }
             }
             Text(settings.pgwDownload.detail, style = MaterialTheme.typography.bodySmall)
@@ -1022,15 +1028,15 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
 
             // Speed limit (with where it came from)
             val src = when (r.limitSource) {
-                io.autonav.alerts.data.LimitSource.GOOGLE -> "from Google"
-                io.autonav.alerts.data.LimitSource.CAMERA -> "from camera data"
-                io.autonav.alerts.data.LimitSource.USER -> "set by you"
-                io.autonav.alerts.data.LimitSource.NONE -> "unknown"
+                LimitSource.GOOGLE -> "from Google"
+                LimitSource.CAMERA -> "from camera data"
+                LimitSource.USER -> "set by you"
+                LimitSource.NONE -> "unknown"
             }
             Text("Speed limit: ${r.speedLimit?.let { "$it mph" } ?: "not set"} ($src)", style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(20, 30, 40, 50, 60, 70).forEach { v ->
-                    FilterChip(r.speedLimit == v, { save(r.copy(speedLimit = v, limitSource = io.autonav.alerts.data.LimitSource.USER)) }, label = { Text("$v") })
+                    FilterChip(r.speedLimit == v, { save(r.copy(speedLimit = v, limitSource = LimitSource.USER)) }, label = { Text("$v") })
                 }
             }
 
@@ -1038,7 +1044,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
             Text("Direction of travel: ${r.heading?.roundToInt()?.let { "$it° (${compass(it)})" } ?: "unknown"}", style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 fun turn(by: Int) = save(r.copy(heading = (((r.heading ?: 0f) + by) % 360 + 360) % 360, directionType =
-                    if (r.directionType == io.autonav.alerts.core.poi.DirectionType.ANY) io.autonav.alerts.core.poi.DirectionType.ONE_WAY else r.directionType))
+                    if (r.directionType == DirectionType.ANY) DirectionType.ONE_WAY else r.directionType))
                 OutlinedButton(onClick = { turn(-45) }) { Text("−45°") }
                 OutlinedButton(onClick = { turn(-5) }) { Text("−5°") }
                 OutlinedButton(onClick = { turn(5) }) { Text("+5°") }
@@ -1046,10 +1052,10 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
                 OutlinedButton(onClick = { turn(180) }) { Text("Reverse") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(r.directionType == io.autonav.alerts.core.poi.DirectionType.ONE_WAY,
-                    { save(r.copy(directionType = io.autonav.alerts.core.poi.DirectionType.ONE_WAY)) }, label = { Text("One way") })
-                FilterChip(r.directionType == io.autonav.alerts.core.poi.DirectionType.BOTH,
-                    { save(r.copy(directionType = io.autonav.alerts.core.poi.DirectionType.BOTH)) }, label = { Text("Both ways") })
+                FilterChip(r.directionType == DirectionType.ONE_WAY,
+                    { save(r.copy(directionType = DirectionType.ONE_WAY)) }, label = { Text("One way") })
+                FilterChip(r.directionType == DirectionType.BOTH,
+                    { save(r.copy(directionType = DirectionType.BOTH)) }, label = { Text("Both ways") })
             }
 
             // Comment (speech-to-text from the car, editable)
@@ -1094,9 +1100,9 @@ private fun compass(deg: Int): String = listOf("N", "NE", "E", "SE", "S", "SW", 
 
 @Composable
 fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
-    val s by deps.settings.settings.collectAsState(initial = io.autonav.alerts.settings.AppSettings())
+    val s by deps.settings.settings.collectAsState(initial = AppSettings())
     val scope = rememberCoroutineScope()
-    fun set(block: (io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) = scope.launch { deps.settings.update(block) }
+    fun set(block: (AppSettings) -> AppSettings) = scope.launch { deps.settings.update(block) }
     Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
         SetupSections(activity, deps)
@@ -1118,10 +1124,10 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
         }
         Section("Speed and location source") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(s.speedSource == io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE,
-                    { set { it.copy(speedSource = io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE) } }, label = { Text("Car when available") })
-                FilterChip(s.speedSource == io.autonav.alerts.settings.SpeedSource.PHONE_GPS,
-                    { set { it.copy(speedSource = io.autonav.alerts.settings.SpeedSource.PHONE_GPS) } }, label = { Text("Phone only") })
+                FilterChip(s.speedSource == SpeedSource.CAR_WHEN_AVAILABLE,
+                    { set { it.copy(speedSource = SpeedSource.CAR_WHEN_AVAILABLE) } }, label = { Text("Car when available") })
+                FilterChip(s.speedSource == SpeedSource.PHONE_GPS,
+                    { set { it.copy(speedSource = SpeedSource.PHONE_GPS) } }, label = { Text("Phone only") })
             }
             Text("The car's own speed and GPS through Android Auto when it shares them, else the phone.", style = MaterialTheme.typography.bodySmall)
         }
@@ -1150,10 +1156,10 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                 style = MaterialTheme.typography.bodySmall)
             Text("The file holds your key and password in plain text: keep it private.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            Button(onClick = { saver.launch(io.autonav.alerts.settings.SettingsBackup.fileName()) }) { Text("Save settings backup…") }
+            Button(onClick = { saver.launch(SettingsBackup.fileName()) }) { Text("Save settings backup…") }
 
             // Restore: read and check the file, show what's in it, then apply on confirm (DESIGN.md §13.4).
-            var preview by remember { mutableStateOf<io.autonav.alerts.settings.SettingsBackup.Preview?>(null) }
+            var preview by remember { mutableStateOf<SettingsBackup.Preview?>(null) }
             var restoreMessage by remember { mutableStateOf<String?>(null) }
             val opener = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                 if (uri != null) scope.launch {
@@ -1239,8 +1245,8 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
  */
 @Composable
 private fun OsmLimitsSection(
-    activity: Activity, deps: PhoneDeps, s: io.autonav.alerts.settings.AppSettings,
-    set: ((io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) -> Unit,
+    activity: Activity, deps: PhoneDeps, s: AppSettings,
+    set: ((AppSettings) -> AppSettings) -> Unit,
 ) {
     val progress by deps.speedLimits.progress.collectAsState()
     var stats by remember { mutableStateOf<io.autonav.alerts.osm.SpeedLimitRepository.Stats?>(null) }
@@ -1363,8 +1369,8 @@ private fun pctLabel(p: Double): String {
 private fun DiagnosticsSection(
     activity: Activity,
     deps: PhoneDeps,
-    s: io.autonav.alerts.settings.AppSettings,
-    set: ((io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) -> Unit,
+    s: AppSettings,
+    set: ((AppSettings) -> AppSettings) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var refresh by remember { mutableIntStateOf(0) }

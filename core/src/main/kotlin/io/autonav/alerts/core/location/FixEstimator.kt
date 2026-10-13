@@ -285,3 +285,17 @@ class FixEstimator(private val config: Config = Config()) {
         )
     }
 }
+
+/** Median of the last three speed samples (DESIGN.md §10.3). */
+class SpeedSmoother(private val window: Int = 3) {
+    private val samples = ArrayDeque<Double>()
+
+    fun add(mps: Double): Double {
+        samples.addLast(mps)
+        while (samples.size > window) samples.removeFirst()
+        val sorted = samples.sorted()
+        return sorted[sorted.size / 2]
+    }
+
+    fun reset() = samples.clear()
+}

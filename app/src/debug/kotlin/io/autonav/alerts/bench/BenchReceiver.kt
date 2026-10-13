@@ -221,26 +221,17 @@ class BenchReceiver : BroadcastReceiver() {
             return
         }
         if (intent.getBooleanExtra("more", false)) {
-            Handler(Looper.getMainLooper()).post {
-                session.carContext.getCarService(androidx.car.app.ScreenManager::class.java)
-                    .push(io.autonav.alerts.car.screens.MoreScreen(session.carContext, session))
-            }
+            push(session) { io.autonav.alerts.car.screens.MoreScreen(session.carContext, session) }
             return
         }
         if (intent.getBooleanExtra("layers", false)) {
             // More → POI layers: each set with its map icon (DESIGN.md §8).
-            Handler(Looper.getMainLooper()).post {
-                session.carContext.getCarService(androidx.car.app.ScreenManager::class.java)
-                    .push(io.autonav.alerts.car.screens.PoiLayersScreen(session.carContext, session))
-            }
+            push(session) { io.autonav.alerts.car.screens.PoiLayersScreen(session.carContext, session) }
             return
         }
         if (intent.getBooleanExtra("search", false)) {
             // The search screen with nothing typed: Home, Work, then recents (DESIGN.md §8.2).
-            Handler(Looper.getMainLooper()).post {
-                session.carContext.getCarService(androidx.car.app.ScreenManager::class.java)
-                    .push(io.autonav.alerts.car.screens.SearchScreen(session.carContext, session))
-            }
+            push(session) { io.autonav.alerts.car.screens.SearchScreen(session.carContext, session) }
             return
         }
         intent.getStringExtra("contact")?.let { pickContact(session, it); return }
@@ -258,6 +249,13 @@ class BenchReceiver : BroadcastReceiver() {
     }
 
     /** Same as tapping the first matching contact row in Search (DESIGN.md §8.3). */
+    /** Pushes a car screen on the main thread (for screenshots). */
+    private fun push(session: NavSession, screen: () -> androidx.car.app.Screen) {
+        Handler(Looper.getMainLooper()).post {
+            session.carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(screen())
+        }
+    }
+
     private fun pickContact(session: NavSession, name: String) {
         val pending = goAsync()
         App.appScope.launch(Dispatchers.Main) {

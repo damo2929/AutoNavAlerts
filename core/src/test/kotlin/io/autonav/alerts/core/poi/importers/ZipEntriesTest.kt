@@ -38,7 +38,7 @@ class ZipEntriesTest {
     private val igo = "X,Y,Type,Speed,DirType,Direction\n-1.5,53.8,1,30,1,90\n".toByteArray()
 
     @Test
-    fun readsAllEntriesAndPicksPgwFiles() {
+    fun readsAllEntriesInOrder() {
         val bytes = zip(
             "_Need_Help.htm" to "<html/>".toByteArray(),
             "Release.txt" to "Version 24.101 (07 Oct 26)".toByteArray(),
@@ -47,16 +47,6 @@ class ZipEntriesTest {
         )
         val entries = ZipEntries.read(bytes)
         assertEquals(listOf("_Need_Help.htm", "Release.txt", "pocketgps_uk_sc.txt", "pocketgps_uk_pmobile.txt"), entries.keys.toList())
-        val (main, pending) = ZipEntries.pgwFiles(entries)
-        assertNotNull(main)
-        assertNotNull(pending)
-    }
-
-    @Test
-    fun matchesOtherRegionsAndCase() {
-        val (main, pending) = ZipEntries.pgwFiles(mapOf("PocketGPS_EUR_SC.TXT" to igo, "pocketgps_eur_PMOBILE.txt" to igo))
-        assertNotNull(main)
-        assertNotNull(pending)
     }
 
     @Test

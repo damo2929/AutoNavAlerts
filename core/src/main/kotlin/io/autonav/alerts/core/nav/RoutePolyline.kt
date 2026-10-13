@@ -24,7 +24,6 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
     }
 
     val size: Int get() = lat.size
-    val lengthM: Double get() = if (cum.isEmpty()) 0.0 else cum.last()
     val segments: Int get() = maxOf(0, lat.size - 1)
 
     /** The segment the car was last located on. */

@@ -15,7 +15,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.BuildConfig
 import io.autonav.alerts.core.alerts.Units
-import io.autonav.alerts.core.location.RateCurve
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -45,7 +44,6 @@ data class AppSettings(
     val alertLeadSeconds: Int = DEFAULT_ALERT_LEAD_SECONDS,
     /** Say the new limit once as the car approaches a change of limit (DESIGN.md §8.4a). */
     val announceLimitChanges: Boolean = true,
-    val rateCurve: RateCurve = RateCurve(),
     val pgwAutoSync: Boolean = true,
     val pgwWifiOnly: Boolean = false,
     val speedPanelOn: Boolean = true,
@@ -97,9 +95,6 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val overspeed = doublePreferencesKey("overspeed_pct")
         val alertLead = intPreferencesKey("alert_lead_seconds")
         val announceLimits = booleanPreferencesKey("announce_limit_changes")
-        val gpsMinMph = doublePreferencesKey("gps_min_mph")
-        val gpsMaxMph = doublePreferencesKey("gps_max_mph")
-        val gpsMaxHz = intPreferencesKey("gps_max_hz")
         val pgwAuto = booleanPreferencesKey("pgw_auto")
         val pgwWifi = booleanPreferencesKey("pgw_wifi_only")
         val speedPanel = booleanPreferencesKey("speed_panel")
@@ -141,9 +136,6 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             overspeedPct = (p[K.overspeed] ?: DEFAULT_OVERSPEED).coerceIn(-0.05, 0.20),
             alertLeadSeconds = (p[K.alertLead] ?: DEFAULT_ALERT_LEAD_SECONDS).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
             announceLimitChanges = p[K.announceLimits] ?: true,
-            rateCurve = runCatching {
-                RateCurve(minMph = p[K.gpsMinMph] ?: 10.0, maxMph = p[K.gpsMaxMph] ?: 50.0, maxHz = p[K.gpsMaxHz] ?: 10)
-            }.getOrDefault(RateCurve()),
             pgwAutoSync = p[K.pgwAuto] ?: true,
             pgwWifiOnly = p[K.pgwWifi] ?: false,
             speedPanelOn = p[K.speedPanel] ?: true,
@@ -180,9 +172,6 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             p[K.overspeed] = s.overspeedPct
             p[K.alertLead] = s.alertLeadSeconds
             p[K.announceLimits] = s.announceLimitChanges
-            p[K.gpsMinMph] = s.rateCurve.minMph
-            p[K.gpsMaxMph] = s.rateCurve.maxMph
-            p[K.gpsMaxHz] = s.rateCurve.maxHz
             p[K.pgwAuto] = s.pgwAutoSync
             p[K.pgwWifi] = s.pgwWifiOnly
             p[K.speedPanel] = s.speedPanelOn

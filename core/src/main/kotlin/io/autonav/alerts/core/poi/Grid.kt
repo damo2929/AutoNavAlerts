@@ -13,7 +13,6 @@ object Grid {
     const val CELL_DEG = 0.01
     const val ROWS = 18_000L
     const val COLS = 36_000L
-    const val MAX_VIEWPORT_CELLS = 400
 
     fun row(lat: Double): Long = floor((lat + 90.0) / CELL_DEG).toLong().coerceIn(0, ROWS - 1)
     fun col(lon: Double): Long = floor((lon + 180.0) / CELL_DEG).toLong().mod(COLS)
@@ -33,29 +32,6 @@ object Grid {
             if (r < 0 || r >= ROWS) continue
             for (dc in -radius..radius) {
                 out += r * COLS + (c0 + dc).mod(COLS)
-            }
-        }
-        return out
-    }
-
-    /**
-     * Cells covering a bounding box, or null if more than [MAX_VIEWPORT_CELLS] would be needed
-     * (zoomed too far out to query). Handles boxes crossing the antimeridian (west > east).
-     */
-    fun cellsInBounds(south: Double, west: Double, north: Double, east: Double): List<Long>? {
-        val rMin = row(minOf(south, north))
-        val rMax = row(maxOf(south, north))
-        val cMin = col(west)
-        val cMax = col(east)
-        val colCount = if (cMax >= cMin) cMax - cMin + 1 else (COLS - cMin) + cMax + 1
-        val total = (rMax - rMin + 1) * colCount
-        if (total > MAX_VIEWPORT_CELLS) return null
-        val out = ArrayList<Long>(total.toInt())
-        for (r in rMin..rMax) {
-            var c = cMin
-            repeat(colCount.toInt()) {
-                out += r * COLS + c
-                c = (c + 1).mod(COLS)
             }
         }
         return out

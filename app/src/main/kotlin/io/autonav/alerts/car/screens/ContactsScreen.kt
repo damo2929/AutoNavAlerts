@@ -6,7 +6,6 @@ package io.autonav.alerts.car.screens
 import androidx.car.app.CarContext
 import androidx.car.app.CarToast
 import androidx.car.app.Screen
-import androidx.car.app.constraints.ConstraintManager
 import androidx.car.app.model.Action
 import androidx.car.app.model.Header
 import androidx.car.app.model.ItemList
@@ -49,9 +48,7 @@ class ContactsScreen(carContext: CarContext, private val session: NavSession) : 
     }
 
     /** The host's list limit, less the "Search contacts…" row. */
-    private fun limit(): Int = runCatching {
-        carContext.getCarService(ConstraintManager::class.java).getContentLimit(ConstraintManager.CONTENT_LIMIT_TYPE_LIST)
-    }.getOrDefault(6).coerceAtLeast(2) - 1
+    private fun limit(): Int = CarUi.listLimit(carContext).coerceAtLeast(2) - 1
 
     override fun onGetTemplate(): Template {
         val header = Header.Builder().setTitle(carContext.getString(R.string.car_contacts)).setStartHeaderAction(Action.BACK).build()

@@ -24,7 +24,6 @@ import io.autonav.alerts.core.location.FixEstimator
 import io.autonav.alerts.core.location.FixInput
 import io.autonav.alerts.core.location.HeadingSource
 import io.autonav.alerts.core.location.LocationSource
-import io.autonav.alerts.core.location.RateCurve
 import io.autonav.alerts.core.location.SpeedSource
 import io.autonav.alerts.diag.DriveRecorder
 import io.autonav.alerts.diag.EventLog
@@ -214,7 +213,7 @@ class AdaptiveLocationSource @Inject constructor(
         val hz = wantedHz
         if (hz == phoneHz) return
         phoneHz = hz
-        val interval = RateCurve.intervalMs(hz)
+        val interval = 1000L / hz
         client.removeLocationUpdates(callback)
         val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
             .setMinUpdateIntervalMillis(interval)

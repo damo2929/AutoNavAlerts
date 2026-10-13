@@ -91,16 +91,6 @@ object ZipEntries {
         return LazyBytes(out)
     }
 
-    /** Picks the PGW main and pending-mobile files by name pattern, ignoring case. */
-    fun pgwFiles(entries: Map<String, ByteArray>): Pair<ByteArray?, ByteArray?> {
-        val main = entries.entries.firstOrNull { it.key.lowercase().endsWith("_sc.txt") }?.value
-            ?: entries.entries.firstOrNull { (k, v) ->
-                k.lowercase().endsWith(".txt") && "pmobile" !in k.lowercase() &&
-                    IgoTxtImporter().sniff(String(v, 0, minOf(200, v.size), Charsets.ISO_8859_1))
-            }?.value
-        val pending = entries.entries.firstOrNull { it.key.lowercase().let { k -> "pmobile" in k && k.endsWith(".txt") } }?.value
-        return main to pending
-    }
 }
 
 /** A map whose values are read when used (each time) and not kept: see [ZipEntries.read]. */

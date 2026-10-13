@@ -55,11 +55,6 @@ object PgwUpdateFeed {
         Regex("""Version\s+(\d+)\.(\d+)""", RegexOption.IGNORE_CASE).find(text)
             ?.let { it.groupValues[1].toInt() to it.groupValues[2].toInt() }
 
-    /** Version from a temp download link, e.g. "pgpsw-speed-cams-tETDF-(24-101).zip" → (24, 101). */
-    fun versionFromZipName(name: String): Pair<Int, Int>? =
-        Regex("""\((\d+)-(\d+)\)\.zip""").find(name)
-            ?.let { it.groupValues[1].toInt() to it.groupValues[2].toInt() }
-
     fun parse(input: InputStream): List<PgwRelease> {
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = false

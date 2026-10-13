@@ -156,8 +156,6 @@ class AlertEngine(
         val zoneOverspeedRepeatMs: Long = 15_000,
         /** Two fixes further apart than this end the zone (§11 step 8). */
         val zoneJumpM: Double = 1_000.0,
-        /** Category codes treated as unmarked average-speed chains (PGW: "4"). */
-        val chainZoneRole: ZoneRole = ZoneRole.ZONE_POINT,
     )
 
     /** Over-limit threshold (§11 step 9); updated in place, the engine keeps its state. */

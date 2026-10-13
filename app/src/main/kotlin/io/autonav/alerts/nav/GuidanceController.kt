@@ -51,7 +51,7 @@ data class RouteOption(val index: Int, val seconds: Int, val meters: Int, val de
  * but not used: the car session ending keeps guidance running (§9.3); the owner decides after the
  * next drive's logs.
  */
-enum class StopReason { HOST, KEY_CHANGED, SESSION_DESTROY, BENCH }
+enum class StopReason { HOST, KEY_CHANGED, SESSION_DESTROY }
 
 /**
  * Destination, preview, guidance and route geometry on top of the [Navigator] (DESIGN.md §8,

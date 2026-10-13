@@ -55,9 +55,6 @@ interface PoiCategoryDao {
     @Query("SELECT * FROM poi_category WHERE setId = :setId ORDER BY name")
     suspend fun forSet(setId: Long): List<PoiCategoryEntity>
 
-    @Query("SELECT * FROM poi_category WHERE setId = :setId ORDER BY name")
-    fun observeForSet(setId: Long): Flow<List<PoiCategoryEntity>>
-
     @Query("SELECT * FROM poi_category")
     suspend fun all(): List<PoiCategoryEntity>
 
