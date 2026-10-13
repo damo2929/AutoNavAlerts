@@ -9,14 +9,18 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Typeface
 import android.net.Uri
 import android.util.LruCache
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toBitmap
+import com.google.android.gms.maps.model.BitmapDescriptor
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.R
+import io.autonav.alerts.core.poi.DirectionType
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
@@ -26,9 +30,16 @@ import javax.inject.Singleton
 @Singleton
 class IconRepository @Inject constructor(@ApplicationContext private val context: Context) {
 
-    enum class Emphasis { ACTIVE, AHEAD, OTHER }
+    /**
+     * Marker emphasis (DESIGN.md §8.1): ACTIVE the camera being alerted on (1.3×, pulse ring), AHEAD
+     * the engine's AHEAD_OK (full colour), FACING_AWAY a camera on our road pointing the other way
+     * (35 % alpha, never hidden; owner's rule), OTHER everything else (60 %).
+     */
+    enum class Emphasis { ACTIVE, AHEAD, OTHER, FACING_AWAY }
 
     private val cache = LruCache<String, Bitmap>(96)
+    /** The arrow descriptors, by direction type and emphasis: at most 8, made once (§8.1). */
+    private val arrows = HashMap<String, BitmapDescriptor>()
 
     private fun dirUser() = File(context.filesDir, "icons").apply { mkdirs() }
 
@@ -91,7 +102,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         val size = if (emphasis == Emphasis.ACTIVE) (basePx * 1.3f).toInt() else basePx
         val out = createBitmap(size, size)
         val c = Canvas(out)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = if (emphasis == Emphasis.OTHER) 153 else 255 }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = alphaOf(emphasis) }
         if (emphasis == Emphasis.ACTIVE) {
             c.drawCircle(size / 2f, size / 2f, size / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 230, 40, 40) })
         }
@@ -108,6 +119,53 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         }
         cache.put(key, out)
         return out
+    }
+
+    /**
+     * The direction arrow drawn as a second, flat marker under a camera's icon (DESIGN.md §8.1): a
+     * chevron pointing up on a transparent square [sizePx] wide (2.2× the icon, so the head sits
+     * outside the icon when the marker is rotated to the camera's bearing); two-headed for BOTH;
+     * dimmed with the emphasis. Pre-rendered and cached by (direction, emphasis): ≤ 8 descriptors.
+     */
+    fun arrow(directionType: DirectionType, emphasis: Emphasis, sizePx: Int): BitmapDescriptor {
+        val key = "$directionType:$emphasis"
+        arrows[key]?.let { return it }
+        val bmp = createBitmap(sizePx, sizePx)
+        val c = Canvas(bmp)
+        val w = sizePx.toFloat()
+        val stroke = w * 0.055f
+        val head = Path().apply {
+            moveTo(w * 0.30f, w * 0.25f)
+            lineTo(w * 0.50f, w * 0.06f)
+            lineTo(w * 0.70f, w * 0.25f)
+        }
+        val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = stroke * 2.2f
+            strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; alpha = alphaOf(emphasis)
+        }
+        val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(200, 30, 30); style = Paint.Style.STROKE; strokeWidth = stroke
+            strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; alpha = alphaOf(emphasis)
+        }
+        c.drawPath(head, halo)
+        c.drawPath(head, ink)
+        if (directionType == DirectionType.BOTH) {
+            c.save()
+            c.rotate(180f, w / 2, w / 2)
+            c.drawPath(head, halo)
+            c.drawPath(head, ink)
+            c.restore()
+        }
+        val d = BitmapDescriptorFactory.fromBitmap(bmp)
+        if (arrows.size >= 8) arrows.clear()
+        arrows[key] = d
+        return d
+    }
+
+    private fun alphaOf(emphasis: Emphasis): Int = when (emphasis) {
+        Emphasis.ACTIVE, Emphasis.AHEAD -> 255
+        Emphasis.OTHER -> 153
+        Emphasis.FACING_AWAY -> 89
     }
 
     companion object {

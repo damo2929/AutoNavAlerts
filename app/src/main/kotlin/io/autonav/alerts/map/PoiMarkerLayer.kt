@@ -14,6 +14,7 @@ import com.google.android.gms.maps.model.MarkerOptions
 import io.autonav.alerts.alerts.ActiveAlert
 import io.autonav.alerts.alerts.ResolvedPoi
 import io.autonav.alerts.core.alerts.Fix
+import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.data.IconRepository
@@ -22,20 +23,28 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * POI markers, redrawn on every GPS fix as a diff (DESIGN.md §8.1): pick visible POIs from the
- * in-memory cache, rank by distance, cap at 200, then add/remove/change only what differs.
- * Bursts of fixes are conflated: only the newest state is drawn. Cameras on our road that point
- * the other way are left off: they're never alerted (the direction rule), so they'd only mislead.
+ * in-memory cache (the visible bounds plus a 10 % margin), rank by distance, cap at 200 markers,
+ * then add/remove/change only what differs. Bursts of fixes are conflated: only the newest state
+ * is drawn. The emphasis comes from the engine's verdict (one source of truth): cameras on our road
+ * that point the other way are drawn dimmed with their arrow, never hidden (owner, 2026-10-12).
+ * Every camera with a bearing gets a second, flat marker: a chevron rotated to its bearing.
  */
 class PoiMarkerLayer(
     private val icons: IconRepository,
     private val basePx: Int,
 ) {
-    private data class Shown(val marker: Marker, val emphasis: Emphasis, val iconKey: String)
+    private class Shown(
+        val marker: Marker, var emphasis: Emphasis, var iconKey: String,
+        var arrow: Marker?, var arrowRotation: Float, var arrowDir: DirectionType,
+    )
 
     private val main = Handler(Looper.getMainLooper())
     private val shown = HashMap<Long, Shown>()
     private val pending = AtomicBoolean(false)
-    private class State(val pois: List<ResolvedPoi>, val fix: Fix?, val active: ActiveAlert?, val facingAway: Set<Long>)
+    private class State(
+        val pois: List<ResolvedPoi>, val fix: Fix?, val active: ActiveAlert?, val facingAway: Set<Long>,
+        val verdicts: Map<Long, Verdict>,
+    )
     @Volatile private var latest: State? = null
     /** Marker images handed to the map once and reused, keyed by icon, limit and emphasis. */
     private val descriptors = HashMap<String, BitmapDescriptor>()
@@ -45,33 +54,53 @@ class PoiMarkerLayer(
             field = value
         }
 
-    /** Called on every fix (any thread). */
-    fun redraw(pois: List<ResolvedPoi>, fix: Fix?, active: ActiveAlert?, facingAway: Set<Long> = emptySet()) {
-        latest = State(pois, fix, active, facingAway)
+    /**
+     * Called on every fix (any thread). [verdicts] (from `AlertCoordinator.verdicts`) drives the
+     * emphasis; when it's empty (not wired yet) [facingAway] alone marks the dimmed cameras.
+     */
+    fun redraw(
+        pois: List<ResolvedPoi>, fix: Fix?, active: ActiveAlert?, facingAway: Set<Long> = emptySet(),
+        verdicts: Map<Long, Verdict> = emptyMap(),
+    ) {
+        latest = State(pois, fix, active, facingAway, verdicts)
         if (pending.compareAndSet(false, true)) main.post { pending.set(false); drawLatest() }
     }
 
     private fun drawLatest() {
         val m = map ?: return
         val state = latest ?: return
-        val pois = state.pois; val fix = state.fix; val active = state.active; val away = state.facingAway
+        val pois = state.pois; val fix = state.fix; val active = state.active
         val zoom = m.cameraPosition.zoom
         val bounds = runCatching { m.projection.visibleRegion.latLngBounds }.getOrNull() ?: return
-        val south = bounds.southwest.latitude; val north = bounds.northeast.latitude
-        val west = bounds.southwest.longitude; val east = bounds.northeast.longitude
+        var south = bounds.southwest.latitude; var north = bounds.northeast.latitude
+        var west = bounds.southwest.longitude; var east = bounds.northeast.longitude
+        // A 10 % margin, so markers at the edge don't drop out as the map moves (§8.1).
+        val latMargin = (north - south) * BOUNDS_MARGIN
+        south -= latMargin; north += latMargin
+        if (west <= east) {
+            val lonMargin = (east - west) * BOUNDS_MARGIN
+            west -= lonMargin; east += lonMargin
+        }
         val onScreen = ArrayList<ResolvedPoi>()
         for (r in pois) {
             if (!r.set.showOnMap || !r.set.enabled || zoom < r.set.minZoom) continue
-            if (r.poi.id in away) continue
             val lat = r.poi.lat; val lon = r.poi.lon
             if (lat < south || lat > north) continue
             if (if (west <= east) lon < west || lon > east else lon < west && lon > east) continue
             onScreen += r
         }
-        // Usually everything on screen fits; only past the cap, keep the nearest (each distance once).
-        val visible = if (onScreen.size <= MAX_MARKERS || fix == null) onScreen.take(MAX_MARKERS) else {
+        // Nearest first once the cap could bite (arrows count as markers too), each distance once.
+        val ranked = if (onScreen.size <= MAX_MARKERS / 2 || fix == null) onScreen else {
             val d = DoubleArray(onScreen.size) { Geo.distanceM(fix.lat, fix.lon, onScreen[it].poi.lat, onScreen[it].poi.lon) }
-            onScreen.indices.sortedBy { d[it] }.take(MAX_MARKERS).map { onScreen[it] }
+            onScreen.indices.sortedBy { d[it] }.map { onScreen[it] }
+        }
+        val visible = ArrayList<ResolvedPoi>(ranked.size)
+        var markers = 0
+        for (r in ranked) {
+            val cost = if (hasArrow(r)) 2 else 1
+            if (markers + cost > MAX_MARKERS) break
+            markers += cost
+            visible += r
         }
         val wanted = visible.associateBy { it.poi.id }
 
@@ -79,32 +108,88 @@ class PoiMarkerLayer(
         val it = shown.entries.iterator()
         while (it.hasNext()) {
             val (id, s) = it.next()
-            if (id !in wanted) { s.marker.remove(); it.remove() }
+            if (id !in wanted) { s.marker.remove(); s.arrow?.remove(); it.remove() }
         }
         // Add or update.
         for (r in visible) {
-            val emphasis = when {
-                active?.poiId == r.poi.id && System.currentTimeMillis() - active.timeMs < 15_000 -> Emphasis.ACTIVE
-                fix != null && isAhead(fix, r) -> Emphasis.AHEAD
-                else -> Emphasis.OTHER
-            }
+            val emphasis = emphasisOf(r, state)
             val iconKey = "${r.iconId}:${r.poi.speedLimit}"
+            val z = if (emphasis == Emphasis.ACTIVE) 10f else 1f
             val existing = shown[r.poi.id]
+            val arrowWanted = hasArrow(r)
+            val bearing = r.poi.bearing ?: 0f
             if (existing == null) {
                 val marker = m.addMarker(
                     MarkerOptions().position(LatLng(r.poi.lat, r.poi.lon))
                         .icon(descriptor(r, iconKey, emphasis))
                         .anchor(0.5f, 0.5f)
-                        .zIndex(if (emphasis == Emphasis.ACTIVE) 10f else 1f)
+                        .zIndex(z)
                         .title(r.categoryName),
                 ) ?: continue
-                shown[r.poi.id] = Shown(marker, emphasis, iconKey)
-            } else if (existing.emphasis != emphasis || existing.iconKey != iconKey) {
+                val arrow = if (arrowWanted) addArrow(m, r, emphasis, bearing, z) else null
+                shown[r.poi.id] = Shown(marker, emphasis, iconKey, arrow, bearing, r.poi.directionType)
+                continue
+            }
+            if (existing.emphasis != emphasis || existing.iconKey != iconKey) {
                 existing.marker.setIcon(descriptor(r, iconKey, emphasis))
-                existing.marker.zIndex = if (emphasis == Emphasis.ACTIVE) 10f else 1f
-                shown[r.poi.id] = existing.copy(emphasis = emphasis, iconKey = iconKey)
+                existing.marker.zIndex = z
+                existing.arrow?.let { a ->
+                    if (existing.emphasis != emphasis || existing.arrowDir != r.poi.directionType) a.setIcon(arrowDescriptor(r.poi.directionType, emphasis))
+                    a.zIndex = z - 0.5f
+                }
+                existing.emphasis = emphasis
+                existing.iconKey = iconKey
+                existing.arrowDir = r.poi.directionType
+            }
+            if (arrowWanted && existing.arrow == null) {
+                existing.arrow = addArrow(m, r, emphasis, bearing, z)
+                existing.arrowRotation = bearing
+            } else if (!arrowWanted && existing.arrow != null) {
+                existing.arrow?.remove()
+                existing.arrow = null
+            } else if (existing.arrow != null && existing.arrowRotation != bearing) {
+                existing.arrow?.rotation = bearing
+                existing.arrowRotation = bearing
             }
         }
+    }
+
+    /**
+     * ACTIVE for the camera being alerted on; otherwise the engine's verdict (AHEAD_OK → AHEAD,
+     * WRONG_DIRECTION → FACING_AWAY, the rest OTHER). Until verdicts are passed in, `facingAway`
+     * marks the dimmed ones and the old on-screen "ahead" test colours the rest (transitional:
+     * removed once NavSession passes the verdict map).
+     */
+    private fun emphasisOf(r: ResolvedPoi, state: State): Emphasis {
+        val active = state.active
+        if (active?.poiId == r.poi.id && System.currentTimeMillis() - active.timeMs < 15_000) return Emphasis.ACTIVE
+        if (state.verdicts.isNotEmpty()) {
+            return when (state.verdicts[r.poi.id]) {
+                Verdict.AHEAD_OK -> Emphasis.AHEAD
+                Verdict.WRONG_DIRECTION -> Emphasis.FACING_AWAY
+                else -> if (r.poi.id in state.facingAway) Emphasis.FACING_AWAY else Emphasis.OTHER
+            }
+        }
+        if (r.poi.id in state.facingAway) return Emphasis.FACING_AWAY
+        val fix = state.fix
+        return if (fix != null && isAhead(fix, r)) Emphasis.AHEAD else Emphasis.OTHER
+    }
+
+    private fun hasArrow(r: ResolvedPoi): Boolean = r.poi.bearing != null && r.poi.directionType != DirectionType.ANY
+
+    private fun addArrow(m: GoogleMap, r: ResolvedPoi, emphasis: Emphasis, bearing: Float, z: Float): Marker? =
+        m.addMarker(
+            MarkerOptions().position(LatLng(r.poi.lat, r.poi.lon))
+                .icon(arrowDescriptor(r.poi.directionType, emphasis))
+                .flat(true)
+                .rotation(bearing)
+                .anchor(0.5f, 0.5f)
+                .zIndex(z - 0.5f),
+        )
+
+    private fun arrowDescriptor(dir: DirectionType, emphasis: Emphasis): BitmapDescriptor {
+        val iconPx = if (emphasis == Emphasis.ACTIVE) (basePx * 1.3f).toInt() else basePx
+        return icons.arrow(dir, emphasis, (iconPx * ARROW_SCALE).toInt())
     }
 
     private fun descriptor(r: ResolvedPoi, iconKey: String, emphasis: Emphasis): BitmapDescriptor {
@@ -114,10 +199,11 @@ class PoiMarkerLayer(
         }
     }
 
+    /** Transitional fallback for callers that don't pass verdicts yet; emphasis only, never an alert decision. */
     private fun isAhead(fix: Fix, r: ResolvedPoi): Boolean {
         val h = fix.heading ?: return false
         if (Geo.distanceM(fix.lat, fix.lon, r.poi.lat, r.poi.lon) > 3_000) return false
-        if (Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, r.poi.lat, r.poi.lon), h) > 30) return false
+        if (Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, r.poi.lat, r.poi.lon), h) > 45) return false
         val b = r.poi.bearing?.toDouble() ?: return true
         return when (r.poi.directionType) {
             DirectionType.ANY -> true
@@ -127,8 +213,13 @@ class PoiMarkerLayer(
     }
 
     fun clear() {
-        main.post { shown.values.forEach { it.marker.remove() }; shown.clear() }
+        main.post { shown.values.forEach { it.marker.remove(); it.arrow?.remove() }; shown.clear() }
     }
 
-    companion object { const val MAX_MARKERS = 200 }
+    companion object {
+        const val MAX_MARKERS = 200
+        /** The arrow square is this many times the icon, so the head sits outside the icon (§8.1). */
+        const val ARROW_SCALE = 2.2f
+        private const val BOUNDS_MARGIN = 0.10
+    }
 }
