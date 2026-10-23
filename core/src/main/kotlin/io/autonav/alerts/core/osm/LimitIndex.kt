@@ -69,29 +69,49 @@ class LimitIndex private constructor(
         return Geo.distanceM(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
     }
 
+    /** A join from [joinFrom]: the next piece, whether it is walked in its drawn direction, and whether this was a fork. */
+    class Join(val piece: Int, val forward: Boolean, val fork: Boolean)
+
+    /** As [joinFrom], the piece only. */
+    fun connectedFrom(lat: Double, lon: Double, headingDeg: Double, exclude: Int = -1): Int? =
+        joinFrom(lat, lon, headingDeg, exclude)?.piece
+
     /**
      * The piece that continues the road from the point (lat, lon) in direction [headingDeg]: one
      * end within [JOIN_M] of the point and, leaving that end, running within [JOIN_DEG] of the
-     * heading; the straightest wins (DESIGN.md §8.4a). [exclude] is the piece we came along.
+     * heading; the straightest wins (DESIGN.md §8.4a). [Join.fork] says another branch, walked the
+     * same way round (along its drawing or against it), left within [FORK_MIN_DEG]–[FORK_DEG] of the
+     * chosen one (a slip easing off, a split, a roundabout exit): either could be the road on. [exclude] is the piece we came along.
      */
-    fun connectedFrom(lat: Double, lon: Double, headingDeg: Double, exclude: Int = -1): Int? {
+    fun joinFrom(lat: Double, lon: Double, headingDeg: Double, exclude: Int = -1): Join? {
         val kx = 111_320.0 * cos(Math.toRadians(lat))
         var best = -1
         var bestDiff = JOIN_DEG
+        var bestOut = 0.0
+        var bestForward = true
+        // Every branch's leaving bearing and drawn direction, for the fork test (a node has a handful).
+        val outs = ArrayList<Pair<Double, Boolean>>(4)
         forEachNear(lat, lon) { p ->
             if (p == exclude) return@forEachNear
             val o = 4 * p
             val dA = pointDistanceM(ends[o], ends[o + 1], lat, lon, kx)
             val dB = pointDistanceM(ends[o + 2], ends[o + 3], lat, lon, kx)
-            val out = when {
-                dA <= JOIN_M && dA <= dB -> bearingOf(p)
-                dB <= JOIN_M -> Geo.normalizeDeg(bearingOf(p) + 180.0)
+            val forward = when {
+                dA <= JOIN_M && dA <= dB -> true
+                dB <= JOIN_M -> false
                 else -> return@forEachNear
             }
+            val out = if (forward) bearingOf(p) else Geo.normalizeDeg(bearingOf(p) + 180.0)
             val diff = Geo.absAngleDiffDeg(out, headingDeg)
-            if (diff < bestDiff) { best = p; bestDiff = diff }
+            if (diff >= JOIN_DEG) return@forEachNear
+            outs += out to forward
+            if (diff < bestDiff) { best = p; bestDiff = diff; bestOut = out; bestForward = forward }
         }
-        return if (best < 0) null else best
+        if (best < 0) return null
+        // Only branches walked the same way round as ours: on a dual carriageway the other
+        // carriageway, walked backwards, isn't a road we could take.
+        val fork = outs.any { (out, fwd) -> fwd == bestForward && Geo.absAngleDiffDeg(out, bestOut) in FORK_MIN_DEG..FORK_DEG }
+        return Join(best, bestForward, fork)
     }
 
     /** Every indexed piece in the 3×3 cells around the point, then the wide ones. */
@@ -141,6 +161,10 @@ class LimitIndex private constructor(
 
         /** Two pieces join when an end of one is within this of the other's (DESIGN.md §8.4a). */
         const val JOIN_M = 40.0
+        /** Two branches leaving this close in angle are a fork, either could be the road on (§8.4a). */
+        const val FORK_DEG = 25.0
+        /** Closer than this they're the same line drawn twice, not a fork. */
+        const val FORK_MIN_DEG = 3.0
         /** Heading continuity across a join. */
         const val JOIN_DEG = 45.0
 

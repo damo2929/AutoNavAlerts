@@ -3,6 +3,7 @@
 
 package io.autonav.alerts.map
 
+import android.content.Context
 import android.annotation.SuppressLint
 import android.app.Presentation
 import android.graphics.Point
@@ -37,6 +38,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.ln
 
 /**
@@ -59,6 +61,13 @@ class MapSurface(
     private val watchdog = FollowWatchdog()
     /** Set by `RoutePreviewScreen` while it's on screen: the route overview moves the camera on purpose. */
     @Volatile var previewShowing = false
+    /**
+     * Whether our template puts one of the host's cards over the map's left (route preview, turn card,
+     * travel estimate, set-up message): set by `HomeScreen` and `RoutePreviewScreen` before the template
+     * goes out, so the visible area the host reports after it is read right (DESIGN.md §8 "Where the car
+     * sits": the cards never push the car).
+     */
+    @Volatile var hostCard = false
     /** Whether guidance is running (the watchdog never acts then); set by `NavSession`. */
     @Volatile var guidingProvider: () -> Boolean = { false }
     private var display: VirtualDisplay? = null
@@ -80,8 +89,14 @@ class MapSurface(
 
     private var surfaceWidth = 0
     private var surfaceHeight = 0
+    /** The whole car surface in pixels, or null before it exists (the marker layer's bounds, §8.1). */
+    val surfaceSize: android.util.Size? get() = if (surfaceWidth > 0 && surfaceHeight > 0) android.util.Size(surfaceWidth, surfaceHeight) else null
     private var stableArea: Rect? = null
     private var visibleArea: Rect? = null
+    /** The part of the surface the host shows our map in (DESIGN.md §8): the car is centred across it. */
+    private var panel: Rect? = null
+    /** The host's left card inset last measured against [panel]. */
+    private var cardInset = 0
     private var following = true
     /**
      * The zoom the map follows the car at: MAX_ZOOM until the user picks another (+ / − or pinch).
@@ -100,16 +115,29 @@ class MapSurface(
     /** Day or night colours for our buttons, from the car (DESIGN.md §8). */
     private var dark = true
 
-    /** Satellite imagery (hybrid: with road names) instead of the road map. */
+    /**
+     * Satellite imagery (hybrid: with road names) instead of the road map. Only the map type changes:
+     * every view rule (padding, follow, zoom, markers, buttons) is the same code for both (DESIGN.md §8,
+     * owner: "no separate pathways"), so never branch on this anywhere else.
+     */
     var satellite: Boolean = false
         set(v) {
             field = v
             _map.value?.let { m ->
-                m.mapType = if (v) GoogleMap.MAP_TYPE_HYBRID else GoogleMap.MAP_TYPE_NORMAL
-                m.isTrafficEnabled = true
+                // A new map type drops the SDK's follow camera (DESIGN.md §8): the frame is set again.
+                if (setMapType(m)) applyView("mapType")
             }
             mapTypeButton?.let { b -> b.post { b.satellite = v } }
         }
+
+    /** The one place the map type is set (DESIGN.md §8); true when it changed. Traffic is always on. */
+    private fun setMapType(m: GoogleMap): Boolean {
+        val type = if (satellite) GoogleMap.MAP_TYPE_HYBRID else GoogleMap.MAP_TYPE_NORMAL
+        val changed = m.mapType != type
+        if (changed) m.mapType = type
+        m.isTrafficEnabled = true
+        return changed
+    }
 
     /** The user tapped the satellite toggle; the value is what they want now. */
     var onSatelliteToggle: ((Boolean) -> Unit)? = null
@@ -130,6 +158,7 @@ class MapSurface(
         surfaceWidth = container.width
         surfaceHeight = container.height
         log("surface ${surfaceWidth}×$surfaceHeight dpi=${container.dpi} ($reason)")
+        restoreAreas()
         val dm = carContext.getSystemService(DisplayManager::class.java)
         val vd = dm.createVirtualDisplay(
             "autonav-map", container.width, container.height, container.dpi, surface,
@@ -191,8 +220,7 @@ class MapSurface(
             runCatching { m.isMyLocationEnabled = true }
             m.uiSettings.isCompassEnabled = false
             m.uiSettings.isMyLocationButtonEnabled = false
-            m.mapType = if (satellite) GoogleMap.MAP_TYPE_HYBRID else GoogleMap.MAP_TYPE_NORMAL
-            m.isTrafficEnabled = true
+            setMapType(m)
             // The road map stops drawing traffic above zoom 17 in towns (satellite keeps it), and the follow
             // camera sits at 18. Capping the zoom keeps traffic on screen on both (DESIGN.md §8).
             m.setMaxZoomPreference(MAX_ZOOM)
@@ -201,9 +229,8 @@ class MapSurface(
             // called before that had no effect on the bench (the card was still drawn, 2026-10-13).
             disableSdkControls(view, if (sdkControlsOff) "mapReady" else "final")
             following = true
-            follow(m)
             _map.value = m
-            applyPadding()
+            applyView("ready")
             onMapReady?.invoke(m)
         }
     }
@@ -222,13 +249,58 @@ class MapSurface(
     override fun onVisibleAreaChanged(area: Rect) {
         log("visible $area stable=$stableArea surface=${surfaceWidth}×$surfaceHeight")
         visibleArea = area
-        applyPadding()
+        updatePanel(area)
+        saveAreas()
+        applyView("visible")
     }
 
     override fun onStableAreaChanged(area: Rect) {
         stableArea = area
-        applyPadding()
+        saveAreas()
+        applyView("stable")
     }
+
+    /**
+     * The map panel from the host's report (DESIGN.md §8 "Where the car sits"): with no card of ours up
+     * the visible area is the panel; with one up the panel keeps and the card's inset is measured, unless
+     * the right edge moved (the host re-laid out with the card up), when the panel follows it.
+     */
+    private fun updatePanel(area: Rect) {
+        val p = panel
+        val next = when {
+            !hostCard -> Rect(area)
+            // A report with a card up and no panel known yet says nothing about the panel: the padding
+            // uses the visible area until a card-free report comes (never this one, it would stick).
+            p == null -> null
+            abs(area.right - p.right) > PANEL_MOVE_PX -> Rect(area.left - cardInset, area.top, area.right, area.bottom)
+            else -> p
+        }
+        cardInset = if (hostCard && next != null) (area.left - next.left).coerceAtLeast(0) else 0
+        if (next != p) { panel = next; log("panel $next card=$hostCard inset=$cardInset") }
+    }
+
+    /**
+     * The host reports the visible and stable areas only when they change, and what it last told us
+     * outlives our process (DESIGN.md §8 "Visible and stable areas"): after a restart under a connected
+     * head unit nothing arrives, so the last areas for this surface size are kept and restored.
+     */
+    private fun saveAreas() {
+        val w = surfaceWidth.takeIf { it > 0 } ?: return
+        areaPrefs.edit().putString("${w}x$surfaceHeight", "${visibleArea?.flattenToString() ?: ""}|${stableArea?.flattenToString() ?: ""}|${panel?.flattenToString() ?: ""}|$cardInset").apply()
+    }
+
+    private fun restoreAreas() {
+        if (visibleArea != null || stableArea != null) return
+        val saved = areaPrefs.getString("${surfaceWidth}x$surfaceHeight", null) ?: return
+        val f = saved.split('|')
+        visibleArea = Rect.unflattenFromString(f[0])
+        stableArea = Rect.unflattenFromString(f.getOrElse(1) { "" })
+        panel = Rect.unflattenFromString(f.getOrElse(2) { "" })
+        cardInset = f.getOrNull(3)?.toIntOrNull() ?: 0
+        log("visible restored $visibleArea stable=$stableArea panel=$panel inset=$cardInset surface=${surfaceWidth}×$surfaceHeight")
+    }
+
+    private val areaPrefs by lazy { carContext.getSharedPreferences("map_surface", Context.MODE_PRIVATE) }
 
     /** A tap on the map: the satellite toggle switches the map type; the alert banner dismisses the alert. */
     override fun onClick(x: Float, y: Float) {
@@ -309,7 +381,7 @@ class MapSurface(
         val m = _map.value ?: return
         if (!following) { m.animateCamera(CameraUpdateFactory.zoomBy(delta)); return }
         followZoom = (followZoom + delta).coerceIn(MIN_FOLLOW_ZOOM, MAX_ZOOM)
-        follow(m)
+        applyView("zoom")
     }
 
     fun recenter() {
@@ -317,7 +389,7 @@ class MapSurface(
         log("recenter wasFollowing=$following")
         following = true
         followZoom = MAX_ZOOM
-        follow(m)
+        applyView("recenter")
     }
 
     /** Follows the car at [followZoom]. */
@@ -355,7 +427,7 @@ class MapSurface(
             is FollowWatchdog.Decision.Refollow -> {
                 eventLog.onChange("map.watchdog", "refollow", EventLog.Channel.NAV, "Map") { "watchdog miss" }
                 log("refollow d=${r.distanceM.toInt()} age=${ageMs}ms zoom=$followZoom misses=${watchdog.misses}")
-                follow(m)
+                applyView("watchdog")
             }
             is FollowWatchdog.Decision.Rebuild -> {
                 eventLog.onChange("map.watchdog", "rebuild", EventLog.Channel.NAV, "Map") { "watchdog miss (third)" }
@@ -365,14 +437,6 @@ class MapSurface(
         }
     }
 
-    /**
-     * The SDK's own on-map controls (header, ETA card, recenter, speedometer, trip progress bar)
-     * must be off: no touch reaches the SDK view on Android Auto, so they'd be dead and overlap
-     * ours (DESIGN.md §8, §16 row 23). Navigation SDK 8.0.0's `NavigationViewForAuto` has none of
-     * the `set*Enabled` setters that `NavigationView` has (checked in the 8.0.0 jar), so they are
-     * looked up by reflection, like `IncidentReporting`: a future SDK that adds them gets them
-     * turned off with no code change, and the log says which were found.
-     */
     /**
      * Turns the SDK's own on-map controls off (DESIGN.md §8 step 6): no touch reaches the SDK view,
      * so its ETA card, header, recenter, speedometer, trip bar and limit icon would be dead and
@@ -398,7 +462,12 @@ class MapSurface(
         // The navigation camera (tilted, our padding) only works with the navigation UI on; a fresh start
         // had it off until the first route, so free drive showed a flat map with the car centred (DESIGN.md §8).
         val navUiWas = runCatching { inner.isNavigationUiEnabled }.getOrNull()
-        if (navUiWas == false) runCatching { inner.setNavigationUiEnabled(true) }
+        if (navUiWas == false) {
+            runCatching { inner.setNavigationUiEnabled(true) }
+            // Switching it on drops our padding, and a follow sent while it was off stays flat with the car
+            // centred (bench, after a reinstall): the frame is set again.
+            applyView("navUi on")
+        }
         for ((name, call) in setters) runCatching(call).onSuccess { off += name }.onFailure { failed += name }
         applyNightMode(inner)
         // Belt and braces: the SDK draws its cards as ordinary child views beside the map container
@@ -429,8 +498,9 @@ class MapSurface(
 
     /** Re-applies the SDK-controls-off calls (when guidance starts or stops, from [NavSession]). */
     fun refreshSdkControls(reason: String) {
-        // Guidance started or stopped: the car keeps its place (free drive pads differently, DESIGN.md §8).
-        main.post { applyPadding() }
+        // Guidance started or stopped: the car keeps its place (free drive pads differently, DESIGN.md §8),
+        // and the view stays put: the SDK moves its camera a moment after stopGuidance returns, so settle.
+        applyView(reason, settle = true)
         val view = navView ?: return
         main.post { disableSdkControls(view, reason) }
     }
@@ -449,24 +519,53 @@ class MapSurface(
     val incidentReportingAvailableNow: Boolean get() = navView?.let(IncidentReporting::availableNow) == true
     fun showIncidentPanel(): Boolean = navView?.let(IncidentReporting::showPanel) == true
 
-    /** Places our overlays, then the map's fixed camera padding (DESIGN.md §8 "Where the car sits"). */
-    private fun applyPadding() {
+    /**
+     * The one place the camera frame is set (DESIGN.md §8 "One view for both map types"): our overlays,
+     * the map padding, then the follow while following. Every event that can move the camera or change
+     * the frame comes here. [settle] follows again over 2 s, for SDK events that move the camera a moment
+     * later (guidance start/stop); a follow already in place changes nothing on screen. Logged once per
+     * event, only when the padding or the follow zoom changed (no shake, no log spam).
+     */
+    private fun applyView(reason: String, settle: Boolean = false) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { applyView(reason, settle) }; return }
         layoutOverlays()
         val m = _map.value ?: return
-        val density = presentation?.context?.resources?.displayMetrics?.density ?: return
-        // Fixed padding, so the car sits in the same spot in free drive and guidance and never moves
+        val padding = applyPadding(m)
+        if (following) follow(m)
+        val frame = "$padding@$followZoom"
+        if (frame != lastFrame) { lastFrame = frame; log("view $reason padding=$padding zoom=$followZoom following=$following") }
+        if (settle && following) for (ms in REFOLLOW_MS) main.postDelayed({ _map.value?.let { mm -> if (following) follow(mm) } }, ms)
+    }
+
+    /** What [applyView] last set, so it logs only on a change. */
+    private var lastFrame: String? = null
+
+    /** The map's camera padding (DESIGN.md §8 "Where the car sits"), as "l,t,r,b"; only [applyView] calls it. */
+    private fun applyPadding(m: GoogleMap): String? {
+        val density = presentation?.context?.resources?.displayMetrics?.density ?: return null
+        // Fixed top and bottom, so the car sits in the same spot in free drive and guidance and never moves
         // with the host's cards: centred across the map, just above the alert banner (owner, DESIGN.md §8
         // "Where the car sits").
-        val h = surfaceHeight.takeIf { it > 0 } ?: return
+        val w = surfaceWidth.takeIf { it > 0 } ?: return null
+        val h = surfaceHeight.takeIf { it > 0 } ?: return null
+        // Centred across the map the host shows (its visible area narrows when it splits the screen for a
+        // media panel); the top and bottom are fixed because the visible top moves between free drive and guidance.
+        // Across the map panel, not the visible area: the host's cards float over the map and never push
+        // the car. The panel can sit anywhere, e.g. starting past the middle when our map is the host's
+        // right-hand panel (x 1216–1804 of 1816 on the DHU); only keep a map at least MIN_MAP_PX wide.
+        val visible = panel ?: visibleArea ?: Rect(0, 0, w, h)
+        var left = visible.left.coerceIn(0, w - MIN_MAP_PX)
+        var right = (w - visible.right).coerceIn(0, w - MIN_MAP_PX)
+        if (w - left - right < MIN_MAP_PX) { right = (w - MIN_MAP_PX - left).coerceAtLeast(0); left = (w - MIN_MAP_PX - right).coerceAtLeast(0) }
         val top = (ACTION_STRIP_CLEAR_DP * density).toInt()
         val bottom = (AlertBannerView.HEIGHT_DP * density).toInt() + 16 + (CAR_GAP_DP * density).toInt()
-        if (guidingProvider()) {
-            m.setPadding(0, top, 0, bottom)
-        } else {
+        val padTop = if (guidingProvider()) top else {
             // Free drive centres the car in the padded area; raise the top so that centre is where guidance puts it.
             val carY = top + GUIDED_CAR_FRACTION * (h - bottom - top)
-            m.setPadding(0, (2 * carY - (h - bottom)).toInt().coerceIn(top, h - bottom - 1), 0, bottom)
+            (2 * carY - (h - bottom)).toInt().coerceIn(top, h - bottom - 1)
         }
+        m.setPadding(left, padTop, right, bottom)
+        return "$left,$padTop,$right,$bottom"
     }
 
     /**
@@ -556,7 +655,13 @@ class MapSurface(
         const val MAX_ZOOM = 17f
         /** Gap between the alert banner's top and the followed car (owner, 2026-10-23). */
         private const val CAR_GAP_DP = 8
+        /** The padded map is never narrower than this, whatever the host reports (§8). */
+        private const val MIN_MAP_PX = 200
+        /** A right edge moved by more than this while a card is up means the host re-laid out (§8). */
+        private const val PANEL_MOVE_PX = 32
         /** Where the SDK's guidance camera puts the car: this far down the padded area (measured on the DHU, 2026-10-23). */
         private const val GUIDED_CAR_FRACTION = 0.917f
+        /** Follows again after guidance starts or stops: the SDK moves its camera a moment later (§8). */
+        private val REFOLLOW_MS = longArrayOf(300, 700, 1_200, 2_000)
     }
 }

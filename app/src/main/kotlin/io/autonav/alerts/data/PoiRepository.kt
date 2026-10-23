@@ -356,7 +356,7 @@ class PoiRepository @Inject constructor(
                 "mobile" -> PgwFile("PGW mobile camera sites", PoiSourceType.PGW, IconRepository.CAMERA_MOBILE, true) { "Mobile camera site" }
                 "redlight" -> PgwFile("PGW red light cameras", PoiSourceType.PGW, IconRepository.CAMERA_REDLIGHT, true) { "Red light camera" }
                 "specs" -> PgwFile("PGW average speed cameras (SPECS)", PoiSourceType.PGW, IconRepository.CAMERA_AVERAGE, true) { "Average speed camera" }
-                "pmobile" -> PgwFile("PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING, IconRepository.CAMERA_PENDING, false) { "Pending mobile site" }
+                "pmobile" -> PgwFile("PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING, IconRepository.CAMERA_PENDING, true) { "Pending mobile site" }
                 "sc" -> PgwFile("PocketGPSWorld cameras (all)", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
                 else -> PgwFile("PGW ${stem.replaceFirstChar { it.uppercase() }}", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
             }

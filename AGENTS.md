@@ -71,7 +71,7 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 ### 3.2 Other fixed behaviours to preserve
 
 - Phone GPS always requested at 10 Hz; car speed and car GPS at `UPDATE_RATE_FASTEST` when the car provides them (§10).
-- Three alert stages: 1st and 2nd from the global lead-time slider (N s and N/2 s at current speed, floors 242 m and 142 m), and the **compulsory 100 yd passing alert whenever sound is on**; the trigger ratchets and never shrinks on an approach; events are never dropped, PASSING is never dropped (§11, §11.1, §12.3).
+- Three alert stages: 1st and 2nd from the global lead-time slider (N s and N/2 s at current speed, floors 242 m and 142 m), and the **compulsory 20 yd passing alert whenever sound is on**; the trigger ratchets and never shrinks on an approach; events are never dropped, PASSING is never dropped (§11, §11.1, §12.3).
 - Average-speed zones only start with a same-limit camera ahead and end at the last camera (§11 step 8).
 - Over-limit slider −5% to +20%, default −0.1% (§11 step 9).
 - Alert templates use only `{category} {speed} {units} {distance} {direction}` (§7.2).
@@ -98,7 +98,7 @@ Interface contracts between parallel agents (when CHECKPOINT.md lists them, e.g.
 ## 4. Working conventions
 
 - Build: `./gradlew :core:test :app:assembleDebug`. JDK 21 is downloaded by Gradle; the Android SDK is at `~/Android/Sdk` (`sdk.dir` in `local.properties`, never committed).
-- Bench: `tools/bench.sh phone` (emulator), `tools/bench.sh install`, `tools/bench.sh car` (DHU), `tools/drive.py` for a GPS drive, `tools/scenario.sh <name>` for scripted cases, `tools/bench.sh dhu screenshot <file>` to look. Debug broadcasts are in TESTING.md §3 step 5a.
+- Bench: `tools/bench.sh phone` (emulator), `tools/bench.sh install`, `tools/bench.sh car` (DHU), `tools/bench.sh reload` (a new build while the DHU is up: stops the head unit and app, installs, starts again; never a bare `adb install -r` under a connected car screen, TESTING.md §3 step 4), `tools/drive.py` for a GPS drive, `tools/scenario.sh <name>` for scripted cases, `tools/bench.sh dhu screenshot <file>` to look. Debug broadcasts are in TESTING.md §3 step 5a.
 - Debug builds only have `Simulate`, the bench hooks and `run-as` log access. The owner's phone runs a release build; check release-only paths (R8 keep rules, §14) when touching the Navigation SDK or Maps classes.
 - Don't `pkill -f` a pattern that matches your own shell; kill by PID from `/tmp/autonav-bench/*.pid`.
 - Don't push, commit or create issues unless asked. Commit messages end with the `Co-Authored-By: Claude` trailer the README mentions.

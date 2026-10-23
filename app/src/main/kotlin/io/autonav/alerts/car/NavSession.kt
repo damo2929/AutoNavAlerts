@@ -89,7 +89,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         deps.driveRecorder().start("car")
         surface = MapSurface(carContext) { deps.navigator().applyApiKey() }
         surface.guidingProvider = { deps.guidance().guiding.value }
-        markers = PoiMarkerLayer(deps.icons(), (36 * carContext.resources.displayMetrics.density).toInt())
+        markers = PoiMarkerLayer(deps.icons(), (36 * carContext.resources.displayMetrics.density).toInt()) { surface.surfaceSize }
         limitMarker = io.autonav.alerts.map.LimitChangeMarker(carContext.resources.displayMetrics.density)
         surface.onMapReady = { m -> markers.map = m; limitMarker.map = m; m.setOnCameraIdleListener { redrawMarkers() } }
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(surface)

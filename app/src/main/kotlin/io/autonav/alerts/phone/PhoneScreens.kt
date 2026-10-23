@@ -367,7 +367,12 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
 
     fun signIn() {
         stop = null
-        val request = AuthorizationRequest.builder().setRequestedScopes(listOf(Scope(MapsKeyCreator.SCOPE))).build()
+        // The scope on its own (DESIGN.md §13.1): with the default "include granted scopes" Google merged
+        // this app's older grants into the request and refused it ("Incremental auth is not allowed").
+        val request = AuthorizationRequest.builder()
+            .setRequestedScopes(listOf(Scope(MapsKeyCreator.SCOPE)))
+            .setOptOutIncludingGrantedScopes(true)
+            .build()
         auth.authorize(request)
             .addOnSuccessListener { r ->
                 val pending = r.pendingIntent
@@ -727,7 +732,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         Section("Show and alert") {
             SwitchRow("Show on map", set.showOnMap) { set = set.copy(showOnMap = it) }
             SwitchRow("Alerts", set.alertsEnabled) { set = set.copy(alertsEnabled = it) }
-            SwitchRow("Sound (makes the 100 yd passing alert compulsory)", set.soundEnabled) { set = set.copy(soundEnabled = it) }
+            SwitchRow("Sound (makes the 20 yd passing alert compulsory)", set.soundEnabled) { set = set.copy(soundEnabled = it) }
         }
         Section("Icon") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -754,7 +759,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         val sliderNote = "Seconds: from the Alerts slider ($leadSeconds s / ${halfSecondsLabel(leadSeconds)})"
         StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(firstAlert = it) }
         StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(secondAlert = it) }
-        Section("Passing alert (100 yd)") {
+        Section("Passing alert (20 yd)") {
             Text("Always on while sound is enabled for this set.", style = MaterialTheme.typography.bodySmall)
         }
         Section("Spoken text") {
@@ -782,7 +787,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
     )
 }
 
-/** DESIGN.md §11.1 validation: 2nd ≥ 100 yd + 50 m; 1st ≥ 2nd + 100 m (FIXED distances). */
+/** DESIGN.md §11.1 validation: 2nd ≥ 142 m; 1st ≥ 2nd + 100 m (FIXED distances). */
 private fun validate(set: PoiSetEntity): String? = io.autonav.alerts.data.StageRules.problem(set.firstAlert, set.secondAlert)
 
 /**

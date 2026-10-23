@@ -9,6 +9,7 @@ import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
 import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
 import io.autonav.alerts.alerts.ActiveAlert
@@ -32,6 +33,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PoiMarkerLayer(
     private val icons: IconRepository,
     private val basePx: Int,
+    /** The whole car surface in pixels (`MapSurface.surfaceSize`); null falls back to the visible region. */
+    private val screenSize: () -> android.util.Size? = { null },
 ) {
     private class Shown(
         val marker: Marker, var emphasis: Emphasis, var iconKey: String,
@@ -71,7 +74,7 @@ class PoiMarkerLayer(
         val state = latest ?: return
         val pois = state.pois; val fix = state.fix; val active = state.active
         val zoom = m.cameraPosition.zoom
-        val bounds = runCatching { m.projection.visibleRegion.latLngBounds }.getOrNull() ?: return
+        val bounds = screenBounds(m) ?: return
         var south = bounds.southwest.latitude; var north = bounds.northeast.latitude
         var west = bounds.southwest.longitude; var east = bounds.northeast.longitude
         // A 10 % margin, so markers at the edge don't drop out as the map moves (§8.1).
@@ -152,6 +155,23 @@ class PoiMarkerLayer(
                 existing.arrowRotation = bearing
             }
         }
+    }
+
+    /**
+     * The whole screen's bounds (DESIGN.md §8.1): its four corners projected onto the map. Not
+     * `visibleRegion`, which is only the padded area: in free drive the top padding that puts the car
+     * low covered most of the screen, so a camera was drawn only once it reached the lower part.
+     */
+    private fun screenBounds(m: GoogleMap): LatLngBounds? {
+        val size = screenSize() ?: return runCatching { m.projection.visibleRegion.latLngBounds }.getOrNull()
+        return runCatching {
+            val p = m.projection
+            val b = LatLngBounds.builder()
+            for ((x, y) in listOf(0 to 0, size.width to 0, 0 to size.height, size.width to size.height)) {
+                b.include(p.fromScreenLocation(android.graphics.Point(x, y)))
+            }
+            b.build()
+        }.getOrNull()
     }
 
     /**

@@ -31,7 +31,7 @@ data class AlertStage(
 
     companion object {
         // Seconds ahead at the current speed (DESIGN.md §11.1): N and N/2. The minimums keep the 2nd
-        // outside the 100 yd passing alert (+50 m) and the 1st 100 m before the 2nd at low speed.
+        // at 142 m and the 1st 100 m before the 2nd at low speed.
         val DEFAULT_FIRST = AlertStage(true, DistanceMode.TIME, metres = 242, seconds = 15.0)
         val DEFAULT_SECOND = AlertStage(true, DistanceMode.TIME, metres = 142, seconds = 7.5)
     }
@@ -48,7 +48,7 @@ data class AlertPoi(
     val zoneRole: ZoneRole,
     val first: AlertStage,
     val second: AlertStage,
-    /** Sound on for this POI: makes the 100 yd passing alert compulsory. */
+    /** Sound on for this POI: makes the 20 yd passing alert compulsory. */
     val soundOn: Boolean,
     /**
      * How far to the side of the road it may be (route and lateral checks), when more than the
@@ -464,7 +464,7 @@ class AlertEngine(
     /** The 2nd stage, held at least 100 m inside the 1st (§11.1 validation, applied at runtime). */
     private fun effectiveSecondTrigger(poi: AlertPoi, state: PoiState): Double? {
         if (!poi.second.enabled) return null
-        return minOf(state.secondTriggerM, state.firstTriggerM - 100.0).coerceAtLeast(config.passingM + 50.0)
+        return minOf(state.secondTriggerM, state.firstTriggerM - 100.0).coerceAtLeast(SECOND_FLOOR_M)
     }
 
     /**
@@ -596,7 +596,9 @@ class AlertEngine(
     }
 
     companion object {
-        /** 100 yards: the compulsory passing alert (DESIGN.md §11.1). */
-        const val PASSING_METRES = 91.44
+        /** 20 yards: the compulsory passing alert (DESIGN.md §11.1; owner, 2026-10-23, was 100 yd). */
+        const val PASSING_METRES = 18.288
+        /** The 2nd alert is never closer than this (§11.1); fixed, not tied to the passing distance. */
+        const val SECOND_FLOOR_M = 142.0
     }
 }

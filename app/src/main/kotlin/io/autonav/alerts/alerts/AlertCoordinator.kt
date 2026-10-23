@@ -533,8 +533,12 @@ class AlertCoordinator @Inject constructor(
         return sb.toString()
     }
 
-    /** The free-drive road ahead and when it was walked (DESIGN.md §11 step 4); recomputed at most once a second. */
+    /**
+     * The free-drive road ahead and when it was walked (DESIGN.md §11 step 4): once a second, and at
+     * once when the heading has turned [ROAD_TURN_DEG] since the walk (a turn at a junction).
+     */
     private var road: Pair<Long, RoadAheadMatcher?> = 0L to null
+    private var roadHeading = 0.0
 
     /**
      * What the engine measures cameras against: the SDK's route while the car is on it; otherwise the
@@ -544,9 +548,10 @@ class AlertCoordinator @Inject constructor(
     private fun matcherFor(fix: Fix): RouteMatcher {
         val now = System.currentTimeMillis()
         val heading = fix.heading
-        if (heading != null && now - road.first >= ROAD_EVERY_MS) {
+        if (heading != null && (now - road.first >= ROAD_EVERY_MS || Geo.absAngleDiffDeg(heading, roadHeading) >= ROAD_TURN_DEG)) {
             val m = speedLimits.roadAhead(fix.lat, fix.lon, heading, ROAD_AHEAD_M)?.let { RoadAheadMatcher(it) }
             road = now to m
+            roadHeading = heading
             eventLog.onChange("alerts.roadAhead", m != null, EventLog.Channel.ALERT, "Alerts") { "roadAhead ${if (m != null) "on" else "off (no OSM road under the car)"}" }
         }
         val freeDrive = road.second
@@ -594,6 +599,7 @@ class AlertCoordinator @Inject constructor(
         /** How far the free-drive road ahead is followed, and how often (DESIGN.md §11 step 4). */
         private const val ROAD_AHEAD_M = 2_000.0
         private const val ROAD_EVERY_MS = 1_000L
+        private const val ROAD_TURN_DEG = 10.0
 
         /** PGW mobile and pending-mobile sites (any format), and mobile camera reports. */
         fun isMobileSite(set: PoiSetEntity, cat: PoiCategoryEntity?): Boolean {

@@ -59,6 +59,31 @@ class LimitLookaheadTest {
         LimitLookahead(idx).nextChange(latAt(northM), lonAt(eastM), heading, route)
 
     @Test
+    fun noChangeIsAnnouncedPastAFork() {
+        // M1 J34 / A57 Parkway (bench, 2026-10-23): at a fork the walk took the slip and announced its 70 / 40.
+        // North at 50; at 300 m the main road bears 10° left and a 40 slip 10° right: either could be ours.
+        val idx = index(
+            road(50, 0.0 to 0.0, 100.0 to 0.0, 200.0 to 0.0, 300.0 to 0.0),
+            road(50, 300.0 to 0.0, 398.0 to -17.0, 497.0 to -35.0),
+            road(40, 300.0 to 0.0, 398.0 to 17.0, 497.0 to 35.0),
+        )
+        assertNull(next(idx, 50.0, 0.0, 0.0))
+        assertTrue(idx.joinFrom(latAt(300.0), lonAt(0.0), 0.0)!!.fork)
+    }
+
+    @Test
+    fun aSideRoadIsNotAFork() {
+        // A road leaving 40° off isn't a guess: the change straight on is still announced.
+        val idx = index(
+            road(50, 0.0 to 0.0, 100.0 to 0.0, 200.0 to 0.0, 300.0 to 0.0),
+            road(30, 300.0 to 0.0, 400.0 to 0.0, 500.0 to 0.0),
+            road(50, 300.0 to 0.0, 377.0 to 64.0),
+        )
+        assertFalse(idx.joinFrom(latAt(300.0), lonAt(0.0), 0.0)!!.fork)
+        assertEquals(30, next(idx, 50.0, 0.0, 0.0)?.newMph)
+    }
+
+    @Test
     fun aGapUpTo40mBetweenPiecesIsStillOurRoad() {
         // Junctions and roundabouts leave gaps between OSM pieces (bench, 2026-10-23: 11 changes missed at 20–40 m).
         val idx = index(

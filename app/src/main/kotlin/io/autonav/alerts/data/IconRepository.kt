@@ -106,9 +106,12 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         if (emphasis == Emphasis.ACTIVE) {
             c.drawCircle(size / 2f, size / 2f, size / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 230, 40, 40) })
         }
+        // A camera is drawn with its icon alone, never with a limit badge (DESIGN.md §7, owner). Not larger:
+        // the head of the flat direction arrow under it must stay clear on the tilted map (hard rule 1).
+        val camera = isCameraIcon(id)
         val inner = (size * 0.8f).toInt()
         c.drawBitmap(bitmap(id, inner), (size - inner) / 2f, (size - inner) / 2f, paint)
-        if (speed != null) {
+        if (speed != null && !camera) {
             val r = size * 0.22f
             val cx = size - r
             val cy = size - r
@@ -169,6 +172,9 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     }
 
     companion object {
+        /** The PocketGPSWorld download's icons (`user:pgw_…`) and our built-in camera icons. */
+        fun isCameraIcon(id: String): Boolean = id.startsWith("user:pgw_") || id.startsWith("builtin:camera_")
+
         const val CAMERA_FIXED = "builtin:camera_fixed"
         const val CAMERA_MOBILE = "builtin:camera_mobile"
         const val CAMERA_AVERAGE = "builtin:camera_average"

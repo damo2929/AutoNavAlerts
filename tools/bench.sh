@@ -88,6 +88,27 @@ car() {
       "$cfg" "$LOGDIR/dhu.pid" "$LOGDIR/dhu.in" >"$LOGDIR/dhu.log" 2>&1 </dev/null & )
 }
 
+# Load a new build cleanly (owner, 2026-10-23: "when you load new versions start and stop properly"):
+# the head unit first, then the app, then install, then the head unit again. Reinstalling under a
+# connected car screen restarted the app mid-session and left the map flat or the car out of place.
+# A running tools/drive.py keeps going; the app picks the drive up again when it starts.
+reload() {
+  apk=app/build/outputs/apk/debug/app-debug.apk
+  [ -f "$apk" ] || { echo "No $apk: build it first (./gradlew :app:assembleDebug)."; exit 1; }
+  if [ -f "$LOGDIR/dhu.pid" ]; then
+    kill -- -"$(cat "$LOGDIR/dhu.pid")" 2>/dev/null || true
+    rm -f "$LOGDIR/dhu.pid"
+    echo "Head unit stopped."
+  fi
+  sleep 2
+  $ADB -s "$(serial)" shell am force-stop io.autonav.alerts
+  echo "App stopped."
+  $ADB -s "$(serial)" install -r -g "$apk"
+  sleep 2
+  car "${1:-}"
+  echo "Head unit started: the app starts with the car screen. Check its place: tools/bench.sh dhu screenshot <file>."
+}
+
 # Send one command to the running DHU's console, e.g. "screenshot /tmp/car.png", "dpad down", "dpad click", "day".
 dhu() {
   [ -f "$LOGDIR/dhu.in" ] || { echo "The head unit isn't running (tools/bench.sh car)."; exit 1; }
@@ -109,6 +130,7 @@ case "${1:-}" in
   setup) setup ;;
   phone) phone ;;
   install) install ;;
+  reload) reload "${2:-}" ;;
   car) car "${2:-}" ;;
   all) phone; install; car "${2:-}" ;;
   stop) stop ;;

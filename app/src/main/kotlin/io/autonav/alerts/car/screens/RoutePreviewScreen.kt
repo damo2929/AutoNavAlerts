@@ -67,16 +67,19 @@ class RoutePreviewScreen(
 
     override fun onStart(owner: LifecycleOwner) {
         session.surface.previewShowing = true
+        session.surface.hostCard = true
         showing = this
     }
 
     override fun onStop(owner: LifecycleOwner) {
         session.surface.previewShowing = false
+        session.surface.hostCard = false
         if (showing === this) showing = null
     }
 
     override fun onDestroy(owner: LifecycleOwner) {
         session.surface.previewShowing = false
+        session.surface.hostCard = false
         if (showing === this) showing = null
         // Back, or the session ending, without Go: the preview's route goes; while guiding, the
         // guided route is put back (DESIGN.md §8, owner 2026-10-13).

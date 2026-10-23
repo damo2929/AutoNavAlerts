@@ -444,15 +444,15 @@ class AlertEngineTest {
 
     @Test
     fun waitingAtTheCameraAfterPassingDoesNotSayPassingAgain() {
-        // A red-light camera: PASSING fires, then 100 s at the stop line 60 m short of it, then on through.
+        // A red-light camera: PASSING fires, then 100 s at the stop line 10 m short of it (inside the 20 yd passing alert), then on through.
         val track = straight(30.0)
         val trace = RecordingTrace()
         val engine = AlertEngine(trace = trace)
         val cam = track.camera(1, 1_000.0)
-        assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND, AlertKind.PASSING), track.drive(engine, listOf(cam), 0.0, 940.0).kinds())
-        assertTrue(track.hold(engine, listOf(cam), 940.0, 100.0, startMs = 80_000).isEmpty())
+        assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND, AlertKind.PASSING), track.drive(engine, listOf(cam), 0.0, 990.0).kinds())
+        assertTrue(track.hold(engine, listOf(cam), 990.0, 100.0, startMs = 80_000).isEmpty())
         assertTrue(1L to ClearReason.STALE !in trace.cleared)
-        assertTrue(track.drive(engine, listOf(cam), 940.0, 1_150.0, startMs = 190_000).isEmpty())
+        assertTrue(track.drive(engine, listOf(cam), 990.0, 1_150.0, startMs = 190_000).isEmpty())
     }
 
     @Test
@@ -463,7 +463,7 @@ class AlertEngineTest {
         assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND), track.drive(engine, listOf(cam), 0.0, 880.0).kinds())
         // Creeping past it at 0.8 m/s (a queue): below the 2 m/s moving gate, but PASSING still fires once tracked.
         val crawl = NoisyTrack { 0.8 }
-        val events = crawl.drive(engine, listOf(cam), 880.0, 950.0, startMs = 20_000)
+        val events = crawl.drive(engine, listOf(cam), 880.0, 995.0, startMs = 20_000)
         assertEquals(listOf(AlertKind.PASSING), events.kinds())
         assertTrue(events[0].distanceM <= AlertEngine.PASSING_METRES)
     }

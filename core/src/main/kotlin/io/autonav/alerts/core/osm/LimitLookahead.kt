@@ -42,7 +42,10 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
         var d = Geo.distanceM(lat, lon, end.lat, end.lon)
         var steps = 0
         while (d <= config.maxM && steps++ < config.maxSteps) {
-            val next = index.connectedFrom(end.lat, end.lon, out, exclude = piece) ?: return null
+            val join = index.joinFrom(end.lat, end.lon, out, exclude = piece) ?: return null
+            // Past a fork we can't know the branch without a route: say nothing yet (§8.4a).
+            if (join.fork) return null
+            val next = join.piece
             val mph = index.mphOf(next)
             if (mph != mph0) return Change(mph, d, viaRoute = false, lat = end.lat, lon = end.lon)
             val start = index.startOf(next)

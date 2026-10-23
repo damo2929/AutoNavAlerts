@@ -17,3 +17,6 @@ pocketgps_*.txt
 pgpsw-speed-cams-*.zip
 __pycache__/
 .claude/
+
+# Settings backups hold the Maps key and PocketGPSWorld login in plain text: never in the repo
+autonavalerts-settings-*.json

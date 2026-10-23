@@ -26,7 +26,7 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
 - **POI alerts**
   - Import iGO TXT, KML, GPX, OV2 or CSV files (with column mapping), zipped or not
   - Per-set icon (built-in or your own image) and spoken text, with a live preview and **Test speak**
-  - Three alert stages: a 1st and 2nd at distances you set, and a **compulsory 100 yd passing alert** whenever sound is on
+  - Three alert stages: a 1st and 2nd at distances you set, and a **compulsory 20 yd passing alert** whenever sound is on
   - Direction-aware: cameras facing the other way, or on a parallel road, don't alert
   - Average-speed zones (only real ones: a zone needs another camera with the same limit ahead; it ends at the last camera) and over-limit warnings that name the zone's limit and show its set icon
   - Shown as a banner at the bottom of the car map (tap to dismiss), or as a navigation notification when another app fills the screen
