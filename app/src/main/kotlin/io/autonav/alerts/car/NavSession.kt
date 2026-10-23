@@ -126,6 +126,11 @@ class NavSession : Session(), DefaultLifecycleObserver {
         handleNavigateIntent(intent)?.let { carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(it) }
     }
 
+    /** Day or night changed in the car: our map buttons follow it (DESIGN.md §8). */
+    override fun onCarConfigurationChanged(newConfiguration: android.content.res.Configuration) {
+        if (::surface.isInitialized) surface.setDark(carContext.isDarkMode)
+    }
+
     /**
      * Best-known speed limit right now, for a report (DESIGN.md §8.5): Google's (only known while
      * speeding), else the camera being alerted, else none.

@@ -26,6 +26,7 @@ import io.autonav.alerts.diag.EventLog
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.model.FollowMyLocationOptions
+import com.google.android.libraries.navigation.ForceNightMode
 import com.google.android.libraries.navigation.NavigationView
 import com.google.android.libraries.navigation.NavigationViewForAuto
 import kotlinx.coroutines.CoroutineScope
@@ -94,7 +95,10 @@ class MapSurface(
     private var mapTypeButton: MapTypeButtonView? = null
 
     /** Zoom in, zoom out and recenter, in a column under the satellite toggle (DESIGN.md §8). */
-    private var mapButtons: List<MapButtonView> = emptyList()
+    /** The column under the satellite toggle: the zoom pill and recenter (car API 5+). */
+    private var mapButtons: List<android.view.View> = emptyList()
+    /** Day or night colours for our buttons, from the car (DESIGN.md §8). */
+    private var dark = true
 
     /** Satellite imagery (hybrid: with road names) instead of the road map. */
     var satellite: Boolean = false
@@ -152,7 +156,8 @@ class MapSurface(
             gravity = Gravity.BOTTOM or Gravity.START
         })
         alertBanner = banner
-        val toggle = MapTypeButtonView(pres.context).apply { satellite = this@MapSurface.satellite }
+        dark = carContext.isDarkMode
+        val toggle = MapTypeButtonView(pres.context).apply { satellite = this@MapSurface.satellite; dark = this@MapSurface.dark }
         // Our buttons are on the right only (CHECKPOINT.md §5), anchored to the right edge from the
         // start: before the host reports the visible area they sit under the action strip at the right.
         val density = pres.context.resources.displayMetrics.density
@@ -165,15 +170,18 @@ class MapSurface(
         mapTypeButton = toggle
         // Below car API 5 there's no onClick, so the host's map action strip keeps these instead.
         if (carContext.carAppApiLevel >= androidx.car.app.versioning.CarAppApiLevels.LEVEL_5) mapButtons = listOf(
-            MapButtonView(pres.context, R.drawable.ic_action_zoom_in) { zoom(1f) },
-            MapButtonView(pres.context, R.drawable.ic_action_zoom_out) { zoom(-1f) },
-            MapButtonView(pres.context, R.drawable.ic_action_recenter) { recenter() },
-        ).onEachIndexed { i, b ->
-            root.addView(b, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.TOP or Gravity.END
-                rightMargin = 16
-                topMargin = clearTop + ((MapTypeButtonView.HEIGHT_DP + MapButtonView.GAP_DP + i * (MapButtonView.SIZE_DP + MapButtonView.GAP_DP)) * density).toInt()
-            })
+            ZoomPillView(pres.context) { zoom(it) }.apply { dark = this@MapSurface.dark },
+            MapButtonView(pres.context, R.drawable.ic_action_recenter) { recenter() }.apply { dark = this@MapSurface.dark },
+        ).also { buttons ->
+            var top = clearTop + ((MapTypeButtonView.HEIGHT_DP + MapButtonView.GAP_DP) * density).toInt()
+            for (b in buttons) {
+                root.addView(b, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                    gravity = Gravity.TOP or Gravity.END
+                    rightMargin = 16
+                    topMargin = top
+                })
+                top += ((heightDp(b) + MapButtonView.GAP_DP) * density).toInt()
+            }
         }
         layoutOverlays()
         pres.show()
@@ -231,10 +239,14 @@ class MapSurface(
                 return
             }
         }
-        val i = mapButtons.indexOfFirst { it.isShown && hit(it, x, y) }
-        if (i >= 0) {
-            log("tap ${x.toInt()},${y.toInt()} hit=${MAP_BUTTON_NAMES.getOrElse(i) { "button$i" }}")
-            mapButtons[i].onTap()
+        val button = mapButtons.firstOrNull { it.isShown && hit(it, x, y) }
+        if (button != null) {
+            val name = when (button) {
+                is ZoomPillView -> button.tap(y - button.top)
+                is MapButtonView -> { button.onTap(); "recenter" }
+                else -> "button"
+            }
+            log("tap ${x.toInt()},${y.toInt()} hit=$name")
             return
         }
         val b = alertBanner
@@ -245,6 +257,21 @@ class MapSurface(
         }
         log("tap ${x.toInt()},${y.toInt()} hit=none")
     }
+
+    /** Day or night from the car: our buttons' colours follow it (DESIGN.md §8); they redraw only on a change. */
+    fun setDark(dark: Boolean) {
+        if (dark == this.dark) return
+        this.dark = dark
+        log("dark=$dark")
+        navView?.let { v -> main.post { findNavigationView(v)?.let(::applyNightMode) } }
+        mapTypeButton?.dark = dark
+        for (b in mapButtons) when (b) {
+            is ZoomPillView -> b.dark = dark
+            is MapButtonView -> b.dark = dark
+        }
+    }
+
+    private fun heightDp(v: android.view.View) = if (v is ZoomPillView) ZoomPillView.HEIGHT_DP else MapButtonView.SIZE_DP
 
     private fun hit(v: android.view.View, x: Float, y: Float) = x >= v.left && x <= v.right && y >= v.top && y <= v.bottom
 
@@ -369,6 +396,7 @@ class MapSurface(
             "setSpeedLimitIconEnabled" to { inner.setSpeedLimitIconEnabled(false) },
         )
         for ((name, call) in setters) runCatching(call).onSuccess { off += name }.onFailure { failed += name }
+        applyNightMode(inner)
         // Belt and braces: the SDK draws its cards as ordinary child views beside the map container
         // (the one holding the GL texture view), and a setter called before a card exists did nothing
         // on the bench. Everything that isn't the map container is hidden; what was hidden is logged.
@@ -382,6 +410,12 @@ class MapSurface(
         return true
     }
 
+    /** The map's day/night style follows the car's, as Google Maps' does (DESIGN.md §8). */
+    private fun applyNightMode(inner: NavigationView) {
+        runCatching { inner.setForceNightMode(if (dark) ForceNightMode.FORCE_NIGHT else ForceNightMode.FORCE_DAY) }
+            .onFailure { log("nightMode failed: ${it.message}") }
+    }
+
     /** True for the SDK child that holds the map's GL view (never hidden). */
     private fun holdsMap(v: android.view.View): Boolean {
         if (v is android.opengl.GLSurfaceView || v is android.view.TextureView) return true
@@ -391,6 +425,8 @@ class MapSurface(
 
     /** Re-applies the SDK-controls-off calls (when guidance starts or stops, from [NavSession]). */
     fun refreshSdkControls(reason: String) {
+        // Guidance started or stopped: the car keeps its place (free drive pads differently, DESIGN.md §8).
+        main.post { applyPadding() }
         val view = navView ?: return
         main.post { disableSdkControls(view, reason) }
     }
@@ -409,17 +445,24 @@ class MapSurface(
     val incidentReportingAvailableNow: Boolean get() = navView?.let(IncidentReporting::availableNow) == true
     fun showIncidentPanel(): Boolean = navView?.let(IncidentReporting::showPanel) == true
 
-    /**
-     * Keeps the car marker and route clear of the turn card, rail and split-screen media panel:
-     * the stable area sets the padding so the camera target stays steady (DESIGN.md §8).
-     */
+    /** Places our overlays, then the map's fixed camera padding (DESIGN.md §8 "Where the car sits"). */
     private fun applyPadding() {
         layoutOverlays()
         val m = _map.value ?: return
-        val area = stableArea ?: visibleArea ?: return
-        val w = surfaceWidth.takeIf { it > 0 } ?: return
+        val density = presentation?.context?.resources?.displayMetrics?.density ?: return
+        // Fixed padding, so the car sits in the same spot in free drive and guidance and never moves
+        // with the host's cards: centred across the map, just above the alert banner (owner, DESIGN.md §8
+        // "Where the car sits").
         val h = surfaceHeight.takeIf { it > 0 } ?: return
-        m.setPadding(area.left, area.top, (w - area.right).coerceAtLeast(0), (h - area.bottom).coerceAtLeast(0))
+        val top = (ACTION_STRIP_CLEAR_DP * density).toInt()
+        val bottom = (AlertBannerView.HEIGHT_DP * density).toInt() + 16 + (CAR_GAP_DP * density).toInt()
+        if (guidingProvider()) {
+            m.setPadding(0, top, 0, bottom)
+        } else {
+            // Free drive centres the car in the padded area; raise the top so that centre is where guidance puts it.
+            val carY = top + GUIDED_CAR_FRACTION * (h - bottom - top)
+            m.setPadding(0, (2 * carY - (h - bottom)).toInt().coerceIn(top, h - bottom - 1), 0, bottom)
+        }
     }
 
     /**
@@ -464,8 +507,7 @@ class MapSurface(
                 // visible area that ignores it (right after the map starts), which put the toggle under it.
                 lp.topMargin = maxOf(v.top, stableArea?.top ?: 0, (ACTION_STRIP_CLEAR_DP * density).toInt()) + 16
                 t.layoutParams = lp
-                // Zoom in, zoom out, recenter: down the right edge under the toggle.
-                val size = (MapButtonView.SIZE_DP * density).toInt()
+                // The zoom pill, then recenter: down the right edge under the toggle.
                 val gap = (MapButtonView.GAP_DP * density).toInt()
                 var top = lp.topMargin + (MapTypeButtonView.HEIGHT_DP * density).toInt() + gap
                 for (b in mapButtons) {
@@ -474,7 +516,7 @@ class MapSurface(
                         blp.topMargin = top
                         b.layoutParams = blp
                     }
-                    top += size + gap
+                    top += (heightDp(b) * density).toInt() + gap
                 }
             }
         }
@@ -501,14 +543,16 @@ class MapSurface(
     companion object {
         private const val TAG = "MapSurface"
         private const val MIN_FOLLOW_ZOOM = 3f
-        /** The order of [mapButtons], for the tap log. */
-        private val MAP_BUTTON_NAMES = listOf("zoomIn", "zoomOut", "recenter")
         /** `NavigationView`'s setters for its on-map controls; absent from `NavigationViewForAuto` in SDK 8.0.0. */
-        /** Room left either side of the banner for the speed panel (two 64 dp boxes and gaps). */
-        private const val SPEED_PANEL_CLEAR_DP = 170
+        /** Room left either side of the banner for the speed panel (its pill and a margin). */
+        private const val SPEED_PANEL_CLEAR_DP = 140
         /** Height kept clear at the top for the host's action strip (its buttons end at 88 px on a 160 dpi DHU). */
         private const val ACTION_STRIP_CLEAR_DP = 88
         /** Closest zoom at which the road map still draws Google traffic (found on the bench: 17.5 has none in towns, 18 none anywhere). */
         const val MAX_ZOOM = 17f
+        /** Gap between the alert banner's top and the followed car (owner, 2026-10-23). */
+        private const val CAR_GAP_DP = 8
+        /** Where the SDK's guidance camera puts the car: this far down the padded area (measured on the DHU, 2026-10-23). */
+        private const val GUIDED_CAR_FRACTION = 0.917f
     }
 }

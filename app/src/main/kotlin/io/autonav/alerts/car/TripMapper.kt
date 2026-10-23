@@ -31,6 +31,23 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
         return b.build()
     }
 
+    /**
+     * What the host's turn card and travel-estimate card show for [info], as text: the template is
+     * re-sent only when this changes (DESIGN.md §8, no shake; a card rebuilt every second lost presses
+     * on its X). Distances as displayed, time in whole minutes, arrival to the minute.
+     */
+    fun displayKey(info: NavInfo): String {
+        fun shown(m: Int?) = m?.let { distance(it).let { d -> "${d.displayDistance}${d.displayUnit}" } } ?: "-"
+        val cur = info.currentStep
+        val next = info.remainingSteps?.firstOrNull()
+        val secs = info.timeToFinalDestinationSeconds
+        val arrivalMin = secs?.let { (System.currentTimeMillis() / 1000 + it) / 60 }
+        return listOf(
+            info.navState, cur?.maneuver, cur?.let { step(it).cue }, shown(info.distanceToCurrentStepMeters),
+            next?.maneuver, next?.let { step(it).cue }, shown(info.distanceToFinalDestinationMeters), secs?.div(60), arrivalMin,
+        ).joinToString("|")
+    }
+
     fun travelEstimate(info: NavInfo): TravelEstimate? {
         val meters = info.distanceToFinalDestinationMeters ?: return null
         val seconds = info.timeToFinalDestinationSeconds ?: return null
@@ -68,7 +85,8 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
         val type = maneuverType(s.maneuver)
         val m = Maneuver.Builder(type).setIcon(icon)
         if (type in ROUNDABOUT_WITH_EXIT) m.setRoundaboutExitNumber((s.roundaboutTurnNumber ?: 1).coerceAtLeast(1))
-        val cue = s.fullInstructionText ?: s.simpleRoadName ?: ""
+        // The road only, as Google Maps shows it ("Main Rd / A61"); the full instruction when there's no road (DESIGN.md §8).
+        val cue = s.simpleRoadName?.takeIf { it.isNotBlank() }?.let(::spacedRoad) ?: s.fullInstructionText ?: ""
         return Step.Builder(cue).setManeuver(m.build()).apply { s.simpleRoadName?.let { setRoad(it) } }.build()
     }
 
@@ -88,6 +106,9 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
     }
 
     companion object {
+        /** "Main Rd/A61" → "Main Rd / A61", as Google Maps writes a road with two names. */
+        fun spacedRoad(road: String): String = road.trim().replace(Regex("\\s*/\\s*"), " / ")
+
         private val ROUNDABOUT_WITH_EXIT = setOf(Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CW, Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CCW)
 
         fun maneuverType(m: Int): Int = when (m) {

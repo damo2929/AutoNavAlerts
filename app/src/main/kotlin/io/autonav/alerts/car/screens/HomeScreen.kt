@@ -8,6 +8,7 @@ import androidx.car.app.Screen
 import androidx.car.app.versioning.CarAppApiLevels
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
+import androidx.car.app.model.CarColor
 import androidx.car.app.CarToast
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.model.MessageInfo
@@ -28,6 +29,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
+/** Google Maps' turn-card teal, sampled from it on the DHU (DESIGN.md §8); the same by day and night. */
+private val TURN_CARD = CarColor.createCustom(0xFF07786D.toInt(), 0xFF07786D.toInt())
+
 /**
  * The map screen: free drive, or guidance with turn cards (DESIGN.md §8). Action strip:
  * Search · Report · Recents · More (Recents leaves it while a route is set). Nothing of ours stops
@@ -43,6 +47,8 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
     private var lastEstimate: androidx.car.app.navigation.model.TravelEstimate? = null
     private var unavailable: NavUnavailable? = null
     private var lastInvalidate = 0L
+    /** What the last sent template showed ([TripMapper.displayKey] with guiding and unavailable). */
+    private var shownKey: String? = null
     private var pendingInvalidate: Job? = null
 
     init {
@@ -58,7 +64,13 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
                 guiding = g
                 unavailable = u
                 if (!g) lastEstimate = null
-                invalidateThrottled()
+                // Only when what the cards show changes (DESIGN.md §8, no shake): re-sending the same
+                // template every second rebuilt the host's travel-estimate card and lost presses on its X.
+                val key = "$g|$u|" + (info?.let { TripMapper(carContext, session.imperial).displayKey(it) } ?: "-")
+                if (key != shownKey) {
+                    shownKey = key
+                    invalidateThrottled()
+                }
             }
         }
         lifecycleScope.launch { deps.navigator().ensureNavigator(); invalidateThrottled() }
@@ -80,6 +92,8 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
 
     override fun onGetTemplate(): Template {
         val b = NavigationTemplate.Builder()
+            // The turn card in Google Maps' teal (DESIGN.md §8, "Looking like Google Maps").
+            .setBackgroundColor(TURN_CARD)
             .setActionStrip(actionStrip())
             .setMapActionStrip(
                 // From car API 5 the map gets taps (onClick), so zoom and recenter are our own buttons
