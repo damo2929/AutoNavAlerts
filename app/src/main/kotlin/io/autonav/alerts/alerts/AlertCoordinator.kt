@@ -159,6 +159,11 @@ class AlertTraceLog(
             sink("Alerts", "limitChange spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
             return
         }
+        // Directions are spoken by DirectionsSpeaker (§12.3), never a camera stage.
+        if (kind == AlertKind.GUIDANCE) {
+            sink("Alerts", "directions spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
+            return
+        }
         sink("Trace", "spoken $kind poi=$poiId spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
         val p = passages[poiId] ?: return
         val rec = p.stages.lastOrNull { it.kind == kind && it.spoken == null } ?: return
@@ -428,6 +433,7 @@ class AlertCoordinator @Inject constructor(
             AlertKind.ZONE_EXIT -> AlertTemplateRenderer.ZONE_EXIT
             AlertKind.OVERSPEED -> AlertTemplateRenderer.ZONE_OVERSPEED
             AlertKind.LIMIT_CHANGE -> null // never emitted by the engine; spoken by NavSession (§8.4a)
+            AlertKind.GUIDANCE -> null // never emitted by the engine; spoken by DirectionsSpeaker (§12.3)
         } ?: return null
         val values = TemplateValues(
             category = r?.categoryName, setName = r?.set?.name,

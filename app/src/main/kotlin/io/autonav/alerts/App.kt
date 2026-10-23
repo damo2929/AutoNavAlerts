@@ -30,8 +30,6 @@ class App : Application(), Configuration.Provider {
     @Inject lateinit var eventLog: EventLog
     /** Created with the process so it follows the `driveRecordingOn` setting from the start (DESIGN.md §15.5). */
     @Inject lateinit var driveRecorder: DriveRecorder
-    /** The voice language, applied before anything speaks or routes (DESIGN.md §12.3). */
-    @Inject lateinit var voiceLocale: io.autonav.alerts.alerts.VoiceLocale
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder().setWorkerFactory(workerFactory).build()
@@ -44,7 +42,6 @@ class App : Application(), Configuration.Provider {
             "start build=${BuildConfig.GIT_COMMIT} version=${BuildConfig.VERSION_NAME} debug=${BuildConfig.DEBUG} " +
                 "android=${Build.VERSION.SDK_INT} model=${Build.MODEL} pid=${android.os.Process.myPid()}",
         )
-        voiceLocale.start()
         dispatcher.ensureChannel()
         driving.observe()
         appScope.launch {

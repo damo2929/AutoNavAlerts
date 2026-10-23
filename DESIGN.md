@@ -52,6 +52,7 @@
 | Tolls | **Avoided by default** (setting, §8.3a) | The owner's choice |
 | EV routing | Optional **energy-efficient routes** from Google's Routes API (eco-friendly route for an electric vehicle), followed by the Navigation SDK through a route token (§8.3a); falls back to the fastest route | The Navigation SDK has no energy option of its own |
 | Speed limits | Google's when it gives one, else a camera's, else OpenStreetMap's from **one bulk download** (Geofabrik, the whole UK) kept on the phone (§8.4–8.4a). Never live OSM lookups | Google only gives apps the limit while you're speeding |
+| Spoken directions | **We speak the turn-by-turn directions** (the Navigation SDK's voice off) in **the phone's default TTS voice**, the same voice as the alerts; no voice setting (owner, 2026-10-23) | The SDK's recorded voice can't be chosen and didn't match the alerts (§12.3) |
 | Memory | Big data is streamed from disk, never held whole in RAM: zip entries are read when used (§5.2), a picked single file is copied to a temp file and OV2, iGO and CSV are parsed from it record by record; KML and GPX (read as a whole document) are refused above 50 MB (2026-10-13), the speed-limit download spills to disk and lookups load only the tiles around the car (§8.4a) | The phone also runs the map, Android Auto and media |
 
 ### 1.4 Prerequisites
@@ -165,6 +166,7 @@ app/src/main/kotlin/io/autonav/alerts/
   nav/
     NavigatorHolder.kt           Lazy NavigationApi.getNavigator; T&Cs state; Simulator in debug
     GuidanceController.kt        Set destinations, choose a route, start/stop guidance, reroute events
+    DirectionsSpeaker.kt         Speaks the turn-by-turn directions through NavTts while the SDK's voice is off (§12.3)
     TurnByTurnMapper.kt          NavInfo → RoutingInfo/Step/Maneuver/Lane, TravelEstimate
     TripPublisher.kt             Session-level NavigationManager.navigationStarted/updateTrip/navigationEnded (§9.3, §12.4); today HomeScreen.publishTrip() + car/TripMapper.kt
     AdaptiveLocationSource.kt    10 Hz fused location + car GPS/speed merge; heading and speed via the core estimators (§10)
@@ -224,6 +226,7 @@ core/src/main/kotlin/io/autonav/alerts/core/   (pure JVM; only the files added 2
   location/FixEstimator.kt       One class with the heading maths (adaptive chord + circular EMA + GPS-bearing blend, with an
                                  accuracy estimate; §10.6a) and the speed maths (median of 3; displacement only without
                                  hasSpeed(); §10.2). The text calls the two halves HeadingEstimator and SpeedEstimator.
+  nav/GuidancePrompter.kt        When and what to say for each direction: prepare / now / continue, spoken distances (§12.3)
   alerts/SpeechScheduler.kt      Pure speech queue policy: replacement, staleness, bounded waits, record ring (§12.3)
   nav/FollowWatchdog.kt          Pure decision: None(reason) / Refollow / Rebuild (§8)
   nav/EcoReaskPolicy.kt          Pure decision: Skip(reason) / Ask for the EV re-ask (§8.3a)
@@ -1180,25 +1183,18 @@ The alert is drawn by us on the map surface, in the same `Presentation` as the s
 - Android Auto shows navigation-category heads-up notifications from the active nav app the same way it shows turn notifications.
 
 ### 12.3 TTS on the navigation audio channel
-- `NavTts` sets up one `TextToSpeech` engine and warms it up when the car connects. **Voice: British English** (`en-GB`, the Google navigation voice; owner, 2026-10-13), falling back to the phone's own language and then to any English if the engine lacks it; the language chosen is logged (`Tts ready engine= lang=`).
-- **One voice for everything, chosen in Settings** (owner, 2026-10-23: "all voice should be the same", "the voice should be presented in the settings"; on the bench the turn prompts were American and the alerts British). Setting **Voice language** (`voiceLanguage`, a language tag, default **`en-GB`**): English (UK), English (Ireland), English (Australia), English (India). **No US English** (owner, 2026-10-23: "remove US voice support since there is no US camera DB"); a stored `en-US` (none exists yet) reads as `en-GB`. It is applied in two places, so the turn-by-turn voice and the alert voice always match:
-  - **the app's own language** (`LocaleManager.setApplicationLocales` on Android 13+, and `Locale.setDefault` in the app process on every version), because the Navigation SDK picks its voice pack from the app's language, not a setting of its own (bench 2026-10-23: the en-US emulator with the app set to en-GB downloaded the `en_GB` voice pack and spoke British). Set at app start and whenever the setting changes; the SDK picks it up for the next route.
-  - **`NavTts`**, which asks the TTS engine for the same language (fallbacks as above, logged).
-  - **the same voice, not only the same language** (owner, 2026-10-23: "the nav should be using the exact same TTS voice for both"). The SDK speaks recorded prompts from its voice pack (`voice_instructions_unitless.zip`: `TURN_RIGHT.mp3`, `IN_200_YARDS.mp3`…), and the TTS engine's default voice for a language is not always the same speaker. So `NavTts` picks a **named voice per language**, matched on the bench by comparing the pack's clips with every engine voice saying the same words (DTW-aligned MFCC distance, median pitch, speaking rate; TESTING.md A25):
-
-    | Voice language | SDK voice pack | Voice used (local, else network) | Measured |
-    |---|---|---|---|
-    | English (UK) | `en_GB…`, male, ~150 Hz | `en-gb-x-rjs` | rjs 11.8 / 149 Hz; the default (`gba`, female, 248 Hz) 12.2 |
-    | English (Ireland) | `en_IE…`, byte-identical to the UK pack | `en-gb-x-rjs` | the engine has no en-IE voices |
-    | English (Australia) | `en_AU…`, female, 235 Hz | `en-au-x-aua` (the default) | 11.3–12.7 / 232 Hz |
-    | English (India) | `en_IN…`, female, 232 Hz | `en-in-x-enc` (the default) | 11.6–12.1 / 269 Hz |
-
-    The voice not needing a network is preferred, then the network one, then the language's default voice, then the fallbacks above; the choice is logged (`Tts ready engine= lang= voice=`). A different TTS engine or a new SDK voice pack means measuring again.
-  The Alerts settings card shows the choice and a **Test voice** button that speaks a sample alert in it (through `NavTts`, so in the chosen voice). The setting is in the backup file (§13.4).
+- `NavTts` sets up one `TextToSpeech` engine and warms it up when the car connects or guidance starts. **Voice: the phone's default text-to-speech voice** (owner, 2026-10-23: "now we are doing the speaking you can remove the settings and use the phones default tts voice"): the engine's own default language and voice, as chosen in Android's text-to-speech settings, for the alerts **and the directions** (below), so they are always one voice. Only if the default language has no voice data does it fall back to the phone's language, then any English; what's used is logged (`Tts ready engine= lang= voice=`). There is no voice setting in the app.
+  - *History:* 2026-10-13 the voice was fixed to `en-GB`; 2026-10-23 the owner heard two voices (the SDK spoke American on the en-US bench, and in UK English its recorded prompts are a male voice while the engine's default UK voice is female, measured on the bench by pitch and MFCC distance), so a Voice language setting with a voice matched per language was built and then, once we speak the directions ourselves, removed in favour of the phone's default.
+- **Directions in our voice** (owner, 2026-10-23; `GuidancePrompter` in `:core`, pure and tested; `DirectionsSpeaker` in the app):
+  - While guiding, the SDK's own voice is **off** (`AudioGuidanceSettings.GuidanceMode.SILENT`) and we speak its directions from the turn-by-turn feed (`NavInfo`: the current step's `fullInstructionText`, e.g. "Turn right onto Main Rd/A61", and `distanceToCurrentStepMeters`), through `NavTts`, so directions and alerts are one voice.
+  - **When**, once per step, Google-style: a **prepare** prompt "In 300 yards, turn right onto Main Rd, A61" when the distance falls to clamp(speed × 30 s, 150 m, 2 km), rounded down to a spoken distance (UK units: 100, 200, 300, 500 yards, a quarter of a mile, half a mile, 1 mile, 2 miles; metric: 100, 200, 300, 500 metres, 1 kilometre, 2 kilometres); a **now** prompt, the instruction alone, at clamp(speed × 5 s, 40 m, 300 m); and on a step longer than 3 km, when it starts, "Continue for N miles" (or kilometres). A step that starts already inside a prompt's distance skips the earlier prompt; a prompt is never repeated for the same step; nothing is said while rerouting. The last step, whose instruction from the SDK is only the destination's title, is worded as Google does: "In 300 yards, your destination is on the left" / "Your destination is on the right" / "… is ahead", from the step's destination manoeuvre. On arrival "You have arrived" (with the toast, §8). Units follow the app's units (§13). "/" in road names is read as a pause (", ").
+  - **Speech kind `AlertKind.GUIDANCE`** (add, don't rename), priority **80**: above a camera's 1st and 2nd stages, below its PASSING (still never dropped, §11). A newer direction replaces one still waiting; a waiting one is stale once the car is past its distance (a prepare prompt inside the now distance, a now prompt past the turn). **Mute and the alerts' Voice switch don't silence directions** (they are the alerts' controls); directions follow Android Auto's own volume like Google's did.
+  - **Never left without directions**: if our TTS can't start (`NavTts` init failed, §12.3 Errors) or errors twice, the SDK's own voice is switched back on (`VOICE_ALERTS_AND_GUIDANCE`) for the rest of the route and that's logged (`Directions fallback sdkVoice reason=`).
+  - Logged: `Directions say kind=prepare|now|continue step=n d= text=` to `debug-nav`, and the speech records list them as "Directions".
 - Audio attributes: `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, `CONTENT_TYPE_SPEECH`. On Android Auto this routes to the car's navigation audio stream, the same one turn prompts use.
 - Focus: `AudioFocusRequest(AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)` is requested just before speaking and **abandoned in `onDone`/`onError`**. Media apps duck and don't pause.
 - **Speech policy** (2026-10-12; `SpeechScheduler` in `:core`, pure with an injected clock and tested; `NavTts` drives it and is the only speech serialiser, since the engine never drops an event, §11 step 7):
-  - The Navigation SDK speaks turn prompts itself. We register an `AudioManager.AudioPlaybackCallback` and treat any active `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE` player that isn't ours as "SDK speaking".
+  - The Navigation SDK spoke turn prompts itself before 2026-10-23 (now we do, above; it only speaks again in the fallback). We register an `AudioManager.AudioPlaybackCallback` and treat any active `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE` player that isn't ours as "SDK speaking".
   - **Bounded waits**: behind the SDK voice a stage waits at most **2 s**, a PASSING at most **0.5 s**, then plays (a 6 s wait was about 190 m at 70 mph). In a car Android Auto can keep the guidance usage busy; if the channel has been busy for more than **5 s** continuously it is ignored for 60 s.
   - **Staleness by distance** (`staleBelowM`): a waiting FIRST or SECOND is not spoken once the car is already closer than the stage's distance makes sense for (it would be announcing a camera it's nearly at); PASSING is **never dropped**.
   - **Same POI**: only a **later stage** replaces an earlier one still waiting (the newest stage wins); the replaced one is recorded as `REPLACED`. SECOND/OVERSPEED jump the queue; otherwise first come, first served.
@@ -1254,7 +1250,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - A summary line above the groups gives the total, e.g. "19,826 cameras in 33 sets".
 9. **Settings** (one scrolling page of cards, in this order; **every control has at most one short line of help** on the phone, the full explanation lives in docs/SETTINGS.md; owner, 2026-10-13):
    - **Car screen**: units (mph/km/h and miles/km), speed panel show/hide, **Satellite map in the car**.
-   - Alerts: voice on/off, **Voice language** (English UK/Ireland/Australia/India, default UK, no US; the turn-by-turn voice and the alerts both use it; **Test voice**; §12.3, owner 2026-10-23), chime on/off, overspeed %, the **alert lead-time slider** ("First alert: N s ahead · second alert at N/2 s", 15–60 s, with the worked distances at 30/50/70 mph; §11.1), **Announce speed limit changes ahead** (on; §8.4a), and the default stage modes and floors for new sets.
+   - Alerts: voice on/off (the alerts only; directions are always spoken, §12.3), chime on/off, overspeed %, the **alert lead-time slider** ("First alert: N s ahead · second alert at N/2 s", 15–60 s, with the worked distances at 30/50/70 mph; §11.1), **Announce speed limit changes ahead** (on; §8.4a), and the default stage modes and floors for new sets.
    - Over-limit warning: −5% to +20% slider, default −0.1%.
    - Speed and location source: car when available / phone only (§10.6).
    - Routing: **Avoid tolls** (on), **Energy-efficient routes (EV)** (off) (§8.3a).

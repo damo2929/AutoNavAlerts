@@ -16,7 +16,6 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.autonav.alerts.App
 import io.autonav.alerts.core.alerts.AlertKind
 import io.autonav.alerts.core.alerts.SpeechScheduler
 import io.autonav.alerts.core.alerts.SpeechScheduler.Decision
@@ -24,15 +23,12 @@ import io.autonav.alerts.core.alerts.SpeechScheduler.Outcome
 import io.autonav.alerts.core.alerts.SpeechScheduler.Record
 import io.autonav.alerts.core.alerts.SpeechScheduler.Utterance
 import io.autonav.alerts.diag.EventLog
-import io.autonav.alerts.settings.VoiceLanguages
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.max
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
 
 /**
  * Speech on the navigation-guidance channel (DESIGN.md §12.3): ducks media, never pauses it, and
@@ -45,14 +41,13 @@ import kotlinx.coroutines.launch
 class NavTts @Inject constructor(
     @ApplicationContext private val context: Context,
     private val eventLog: EventLog,
-    private val voiceLocale: VoiceLocale,
 ) {
-    init {
-        // The voice language changed in Settings: the engine switches at once (DESIGN.md §12.3).
-        App.appScope.launch(Dispatchers.Main) {
-            voiceLocale.locale.collect { main.post { tts?.takeIf { ready }?.let { pickLanguage(it) } } }
-        }
-    }
+    private val _healthy = MutableStateFlow(true)
+    /**
+     * False once the engine failed to start or speech fell back to the chime: the directions then go
+     * back to the Navigation SDK's own voice for the rest of the route (DESIGN.md §12.3); true when ready.
+     */
+    val healthy: StateFlow<Boolean> = _healthy
 
     private val audio = context.getSystemService(AudioManager::class.java)
     private val main = Handler(Looper.getMainLooper())
@@ -105,6 +100,7 @@ class NavTts @Inject constructor(
                 if (!ready) {
                     // Never leave a dead engine in place: shut it down, chime meanwhile, and try again later.
                     initFailed = true
+                    _healthy.value = false
                     runCatching { tts?.shutdown() }
                     tts = null
                     val retryMs = RETRY_INIT_MS.getOrElse(initAttempts - 1) { RETRY_INIT_MS.last() }
@@ -114,6 +110,7 @@ class NavTts @Inject constructor(
                     return@post
                 }
                 initFailed = false
+                _healthy.value = true
                 initAttempts = 0
                 engineErrors = 0
                 val engine = tts ?: return@post
@@ -128,16 +125,13 @@ class NavTts @Inject constructor(
     }
 
     private fun pickLanguage(engine: TextToSpeech): String {
-        // The Settings voice language, British English by default (owner, 2026-10-13/23; DESIGN.md §12.3), in
-        // the voice that sounds like the SDK's prompts; then the phone's own language, then any English.
-        val (ttsTag, voiceName) = VoiceLanguages.TTS_VOICE[voiceLocale.locale.value.toLanguageTag()]
-            ?: (voiceLocale.locale.value.toLanguageTag() to null)
-        val wanted = Locale.forLanguageTag(ttsTag)
-        var r = engine.setLanguage(wanted)
-        if (r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED) {
-            if (voiceName != null) pickVoice(engine, voiceName)
-            return wanted.toLanguageTag()
-        }
+        // The phone's default TTS voice, as set in Android's text-to-speech settings (owner, 2026-10-23;
+        // DESIGN.md §12.3): nothing is changed unless its language has no voice data; then the phone's
+        // own language, then any English.
+        val default = runCatching { engine.defaultVoice }.getOrNull()
+        val wanted = default?.locale ?: Locale.getDefault()
+        var r = engine.isLanguageAvailable(wanted)
+        if (default != null && r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED) return wanted.toLanguageTag()
         for (fallback in listOf(Locale.getDefault(), Locale.ENGLISH)) {
             r = engine.setLanguage(fallback)
             if (r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED) {
@@ -147,19 +141,6 @@ class NavTts @Inject constructor(
         }
         log("language ${wanted.toLanguageTag()} unavailable and no fallback (status=$r)")
         return "none"
-    }
-
-    /** The named voice, the one not needing a network first; the language's default if neither is installed. */
-    private fun pickVoice(engine: TextToSpeech, name: String) {
-        val voices = runCatching { engine.voices.orEmpty() }.getOrDefault(emptySet())
-        val v = voices.firstOrNull { it.name == "$name-local" && !it.isNetworkConnectionRequired }
-            ?: voices.firstOrNull { it.name == "$name-local" }
-            ?: voices.firstOrNull { it.name == "$name-network" }
-            ?: voices.firstOrNull { it.name.startsWith(name) }
-        if (v == null) { log("voice $name not installed, using ${runCatching { engine.voice?.name }.getOrNull()}"); return }
-        val r = engine.setVoice(v)
-        if (r != TextToSpeech.SUCCESS) log("voice ${v.name} refused status=$r")
-        else log("voice ${v.name}")
     }
 
     fun shutdown() {
@@ -362,6 +343,7 @@ class NavTts @Inject constructor(
             is Decision.Retry -> { log("error status=$code ${u.kind} poi=${u.poiId} retry"); pump() }
             is Decision.Fallback -> {
                 log("error status=${d.code} ${u.kind} poi=${u.poiId} fallback=chime")
+                _healthy.value = false
                 beep(300)
                 if (!toastShown) {
                     toastShown = true

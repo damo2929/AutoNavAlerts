@@ -23,6 +23,9 @@ class GuidancePrompter(private val config: Config = Config()) {
 
     enum class Kind { PREPARE, NOW, CONTINUE }
 
+    /** The last step: the SDK's instruction is only the waypoint's title, so it's worded as Google does. */
+    enum class Destination { AHEAD, LEFT, RIGHT }
+
     /** [staleBelowM]: not worth saying once the car is closer to the turn than this (the speech queue's rule). */
     data class Prompt(val kind: Kind, val step: Int, val text: String, val distanceM: Double, val staleBelowM: Double?)
 
@@ -39,11 +42,21 @@ class GuidancePrompter(private val config: Config = Config()) {
 
     /**
      * One turn-by-turn update. [instruction] is the step's full instruction ("Turn right onto Main
-     * Rd/A61"); [distanceM] the distance to it. Nothing while [rerouting] or without an instruction.
+     * Rd/A61"); [distanceM] the distance to it; [destination] set on the last step ("Your
+     * destination is on the left"). Nothing while [rerouting] or without an instruction.
      */
-    fun onUpdate(stepNumber: Int, instruction: String?, distanceM: Double, speedMps: Double, imperial: Boolean, rerouting: Boolean = false): Prompt? {
-        if (rerouting || instruction.isNullOrBlank() || distanceM < 0) return null
-        val text = clean(instruction)
+    fun onUpdate(
+        stepNumber: Int, instruction: String?, distanceM: Double, speedMps: Double, imperial: Boolean,
+        rerouting: Boolean = false, destination: Destination? = null,
+    ): Prompt? {
+        if (rerouting || distanceM < 0) return null
+        if (instruction.isNullOrBlank() && destination == null) return null
+        val text = when (destination) {
+            Destination.LEFT -> "Your destination is on the left"
+            Destination.RIGHT -> "Your destination is on the right"
+            Destination.AHEAD -> "Your destination is ahead"
+            null -> clean(instruction!!)
+        }
         val key = "$stepNumber|$text"
         val first = key != stepKey
         if (first) { stepKey = key; step = stepNumber; said.clear() }

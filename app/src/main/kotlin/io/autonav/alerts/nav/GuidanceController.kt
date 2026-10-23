@@ -70,6 +70,8 @@ class GuidanceController @Inject constructor(
     private val settings: io.autonav.alerts.settings.SettingsStore,
     private val eco: EcoRoutes,
     private val eventLog: EventLog,
+    private val directions: DirectionsSpeaker,
+    private val tts: io.autonav.alerts.alerts.NavTts,
 ) {
     private val _routeNote = MutableStateFlow<String?>(null)
     /** What kind of route is set, for the preview: e.g. "Energy-efficient route (EV)" (DESIGN.md §8.3a). */
@@ -119,6 +121,17 @@ class GuidanceController @Inject constructor(
         // runs this before cleanup()).
         holder.onKeyChanged { stopGuidance(StopReason.KEY_CHANGED) }
         App.appScope.launch { location.fixes.collect { lastHeading = it.heading } }
+        // Our speech failed while guiding: Google's own voice takes the directions back for the rest
+        // of the route, so the driver is never left without them (DESIGN.md §12.3).
+        App.appScope.launch(Dispatchers.Main) {
+            tts.healthy.collect { ok ->
+                if (ok || !state.guiding || !directions.running) return@collect
+                val nav = holder.navigator.value ?: return@collect
+                log("Directions fallback sdkVoice reason=ttsFailed")
+                directions.stop("ttsFailed")
+                setSdkVoice(nav, on = true)
+            }
+        }
     }
 
     /** The car is more than [CAR_OFF_ROUTE_M] from its route segment, as of the last [locateCar]. */
@@ -337,12 +350,10 @@ class GuidanceController @Inject constructor(
         val nav = holder.navigator.value ?: return false
         val wp = waypoint ?: run { log("start skipped: no route simulate=$simulate"); return false }
         log("start simulate=$simulate")
-        nav.setAudioGuidanceSettings(
-            AudioGuidanceSettings.builder()
-                .setGuidanceMode(AudioGuidanceSettings.GuidanceMode.VOICE_ALERTS_AND_GUIDANCE)
-                .setBluetoothAudioEnabled(true)
-                .build(),
-        )
+        // We speak the directions in the alerts' voice; Google's voice only if our speech isn't working (§12.3).
+        val ours = tts.healthy.value
+        setSdkVoice(nav, on = !ours)
+        if (ours) directions.start() else log("Directions fallback sdkVoice reason=ttsUnhealthy")
         nav.registerServiceForNavUpdates(
             app.packageName, NavUpdatesService::class.java.name,
             NavigationUpdatesOptions.Builder()
@@ -369,6 +380,16 @@ class GuidanceController @Inject constructor(
         return true
     }
 
+    /** The Navigation SDK's own spoken guidance: off while we speak the directions (DESIGN.md §12.3). */
+    private fun setSdkVoice(nav: Navigator, on: Boolean) {
+        nav.setAudioGuidanceSettings(
+            AudioGuidanceSettings.builder()
+                .setGuidanceMode(if (on) AudioGuidanceSettings.GuidanceMode.VOICE_ALERTS_AND_GUIDANCE else AudioGuidanceSettings.GuidanceMode.SILENT)
+                .setBluetoothAudioEnabled(true)
+                .build(),
+        )
+    }
+
     /** Simulator speed multiplier (1 = real time). */
     @Volatile var simulationSpeed = 1f
 
@@ -391,6 +412,7 @@ class GuidanceController @Inject constructor(
             runCatching { nav.unregisterServiceForNavUpdates() }
         }
         _simulating.value = false
+        directions.stop(reason.name)
         state = state.stopped()
         guided = null
         clearRoute()
@@ -491,6 +513,7 @@ class GuidanceController @Inject constructor(
             val title = event.waypoint?.title ?: _destination.value?.title ?: ""
             if (!state.guiding) { log("arrived \"$title\" ignored (not guiding)"); return@addArrivalListener }
             log("arrived \"$title\"")
+            directions.arrived()
             stopGuidance(StopReason.ARRIVED)
             _arrivals.tryEmit(title)
         }

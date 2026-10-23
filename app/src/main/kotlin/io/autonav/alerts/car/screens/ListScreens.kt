@@ -255,7 +255,11 @@ class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Scr
         records.asReversed().take(limit).forEach { r ->
             val u = r.utterance
             list.addItem(
-                Row.Builder().setTitle(if (u.kind == io.autonav.alerts.core.alerts.AlertKind.LIMIT_CHANGE) "Speed limit change ${r.outcome}" else "${u.kind} poi ${u.poiId} ${r.outcome}")
+                Row.Builder().setTitle(when (u.kind) {
+                    io.autonav.alerts.core.alerts.AlertKind.LIMIT_CHANGE -> "Speed limit change ${r.outcome}"
+                    io.autonav.alerts.core.alerts.AlertKind.GUIDANCE -> "Directions ${r.outcome}"
+                    else -> "${u.kind} poi ${u.poiId} ${r.outcome}"
+                })
                     .addText(
                         fmt.format(java.util.Date(tts.wallMs(r.atMs))) + " · waited " + (r.waitedMs?.let { "$it ms" } ?: "–") +
                             (r.byKind?.let { " · by $it" } ?: "") + (r.detail?.let { " · $it" } ?: ""),

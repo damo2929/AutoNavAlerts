@@ -272,7 +272,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         eventLog.onChange("alerts.limitAhead", change.newMph to change.viaRoute, EventLog.Channel.ALERT, "Alerts") {
             "limitAhead new=${change.newMph} d=${change.distanceM.toInt()} via=${if (change.viaRoute) "route" else "road"}"
         }
-        if (!limitAnnouncer.shouldAnnounce(change.newMph, change.distanceM, fix.lat, fix.lon, fix.speedMps, heading)) return
+        if (!limitAnnouncer.shouldAnnounce(change.newMph, change.distanceM, fix.lat, fix.lon, fix.speedMps, heading, change.lat, change.lon)) return
         val speak = announceLimits && voiceOn && mutedUntilMs <= System.currentTimeMillis()
         eventLog.record(EventLog.Channel.ALERT, "Alerts", "limitAhead announce new=${change.newMph} d=${change.distanceM.toInt()} spd=${fix.speedMps.roundToInt()} speak=$speak")
         // Its own kind: never reported, listed or traced as a camera stage (owner, 2026-10-13).

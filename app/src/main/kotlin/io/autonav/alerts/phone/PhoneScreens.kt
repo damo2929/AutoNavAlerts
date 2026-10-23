@@ -1110,14 +1110,6 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
         }
         Section("Alerts") {
             SwitchRow("Voice", s.voiceOn) { v -> set { it.copy(voiceOn = v) } }
-            Text("Voice language", style = MaterialTheme.typography.bodyMedium)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                for ((tag, label) in io.autonav.alerts.settings.VoiceLanguages.ALL) {
-                    FilterChip(s.voiceLanguage == tag, { set { it.copy(voiceLanguage = tag) } }, label = { Text(label) })
-                }
-            }
-            Text("Used for the turn-by-turn directions and the alerts, from the next route.", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { deps.tts.speak("Speed camera, thirty miles per hour, in three hundred yards", 10, -1, chime = false) }) { Text("Test voice") }
             SwitchRow("Chime before the passing alert", s.chimeOn) { v -> set { it.copy(chimeOn = v) } }
             OverLimitSlider(s.overspeedPct) { p -> set { it.copy(overspeedPct = p) } }
             AlertLeadSlider(s.alertLeadSeconds, s.units) { n -> set { it.copy(alertLeadSeconds = n) } }

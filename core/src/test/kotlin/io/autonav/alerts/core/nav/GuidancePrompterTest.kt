@@ -79,4 +79,12 @@ class GuidancePrompterTest {
         assertNull(GuidancePrompter.spokenDistance(80.0, true))
         assertEquals("1 kilometre", GuidancePrompter.spokenDistance(1_500.0, false)!!.second)
     }
+
+    @Test
+    fun lastStepIsWordedAsTheDestination() {
+        val p = GuidancePrompter()
+        val said = generateSequence(800.0) { (it - 10).takeIf { d -> d >= 0 } }
+            .mapNotNull { p.onUpdate(5, "Destination", it, 13.4, true, destination = GuidancePrompter.Destination.LEFT) }.toList()
+        assertEquals(listOf("In 300 yards, your destination is on the left", "Your destination is on the left"), said.map { it.text })
+    }
 }

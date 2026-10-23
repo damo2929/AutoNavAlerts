@@ -39,8 +39,6 @@ import kotlinx.coroutines.launch
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez ev true --ez tolls true  # route options
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez diag true  # last 100 lines of each debug log to logcat
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez go true    # Go on the route preview that's showing
- *   adb shell am broadcast -a io.autonav.alerts.BENCH --es voices "'Turn right'"  # each TTS voice of the voice language to files/debug/voices/<name>.wav
- *   adb shell am broadcast -a io.autonav.alerts.BENCH --es voicelang en-AU   # set Settings → Voice language
  *   (add -p io.autonav.alerts: Android only delivers explicit broadcasts to manifest receivers)
  *   Every command lands in debug-nav.log as a `Bench` line (DESIGN.md §15.5).
  */
@@ -56,12 +54,7 @@ class BenchReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val eventLog = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).eventLog()
         eventLog.record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Bench", describe(intent))
-        intent.getStringExtra("voices")?.let { phrase -> VoiceSamples.write(context.applicationContext, phrase); return }
-        intent.getStringExtra("voicelang")?.let { tag ->
-            val settings = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).settings()
-            App.appScope.launch { settings.update { it.copy(voiceLanguage = io.autonav.alerts.settings.VoiceLanguages.valid(tag)) } }
-            return
-        }
+
         if (intent.getBooleanExtra("diag", false)) {
             // The end of each debug log to logcat, after a forced write of what's pending.
             eventLog.flush("bench")
