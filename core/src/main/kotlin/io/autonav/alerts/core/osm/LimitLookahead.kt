@@ -5,6 +5,7 @@ package io.autonav.alerts.core.osm
 
 import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.geo.LatLngLike
+import io.autonav.alerts.core.geo.LatLngPoint
 
 /**
  * The next change of speed limit on the road the car is on (DESIGN.md §8.4a, "Limit changes
@@ -53,6 +54,33 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
             out = outBearing(piece, forward)
         }
         return null
+    }
+
+    /**
+     * The road ahead of the car as a line (DESIGN.md §11 step 4, free drive): the car's point, then
+     * the end of each piece the connectivity walk follows (as [alongRoad], ignoring limits), until
+     * [maxM] or until no piece continues. Null when no piece is under the car.
+     */
+    fun roadAhead(lat: Double, lon: Double, headingDeg: Double, maxM: Double): List<LatLngLike>? {
+        var piece = index.pieceAt(lat, lon, headingDeg) ?: return null
+        var forward = Geo.absAngleDiffDeg(index.bearingOf(piece), headingDeg) <= 90.0
+        var end = index.endOf(piece, forward)
+        var out = outBearing(piece, forward)
+        val points = arrayListOf<LatLngLike>(LatLngPoint(lat, lon), end)
+        var d = Geo.distanceM(lat, lon, end.lat, end.lon)
+        var steps = 0
+        while (d < maxM && steps++ < config.maxSteps) {
+            val next = index.connectedFrom(end.lat, end.lon, out, exclude = piece) ?: break
+            val start = index.startOf(next)
+            val stop = index.endOf(next, true)
+            forward = Geo.distanceM(end.lat, end.lon, start.lat, start.lon) <= Geo.distanceM(end.lat, end.lon, stop.lat, stop.lon)
+            d += index.lengthOf(next)
+            piece = next
+            end = index.endOf(piece, forward)
+            out = outBearing(piece, forward)
+            points += end
+        }
+        return points
     }
 
     private fun outBearing(piece: Int, forward: Boolean) =

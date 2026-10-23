@@ -15,9 +15,11 @@ import io.autonav.alerts.core.alerts.AlertTrace
 import io.autonav.alerts.core.alerts.ClearReason
 import io.autonav.alerts.core.alerts.DistanceMode
 import io.autonav.alerts.core.alerts.Fix
+import io.autonav.alerts.core.alerts.RouteMatcher
 import io.autonav.alerts.core.alerts.TemplateValues
 import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.core.geo.Geo
+import io.autonav.alerts.core.osm.RoadAheadMatcher
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.core.poi.Grid
 import io.autonav.alerts.core.poi.SpeedUnit
@@ -29,6 +31,7 @@ import io.autonav.alerts.data.toStage
 import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.nav.AdaptiveLocationSource
 import io.autonav.alerts.nav.GuidanceController
+import io.autonav.alerts.osm.SpeedLimitRepository
 import io.autonav.alerts.settings.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -265,6 +268,7 @@ class AlertCoordinator @Inject constructor(
     private val carData: io.autonav.alerts.nav.CarDataSource,
     private val eventLog: EventLog,
     private val tts: NavTts,
+    private val speedLimits: SpeedLimitRepository,
 ) {
     @Volatile private var byId: Map<Long, ResolvedPoi> = emptyMap()
 
@@ -395,7 +399,7 @@ class AlertCoordinator @Inject constructor(
         val (events, verdicts, away) = synchronized(engineLock) {
             guidance.locateCar(fix.lat, fix.lon, fix.heading)
             Triple(
-                runCatching { engine.onFix(fix, candidates, guidance.routeMatcher) }
+                runCatching { engine.onFix(fix, candidates, matcherFor(fix)) }
                     .onFailure { Log.e(TAG, "engine", it) }.getOrDefault(emptyList()),
                 engine.classify(),
                 engine.facingAway(),
@@ -529,6 +533,28 @@ class AlertCoordinator @Inject constructor(
         return sb.toString()
     }
 
+    /** The free-drive road ahead and when it was walked (DESIGN.md §11 step 4); recomputed at most once a second. */
+    private var road: Pair<Long, RoadAheadMatcher?> = 0L to null
+
+    /**
+     * What the engine measures cameras against: the SDK's route while the car is on it; otherwise the
+     * road ahead followed through the OSM pieces, so a camera on a road beside ours stays silent; past
+     * that road, or with none under the car, "no route" and the engine's straight corridor (§11 step 4).
+     */
+    private fun matcherFor(fix: Fix): RouteMatcher {
+        val now = System.currentTimeMillis()
+        val heading = fix.heading
+        if (heading != null && now - road.first >= ROAD_EVERY_MS) {
+            val m = speedLimits.roadAhead(fix.lat, fix.lon, heading, ROAD_AHEAD_M)?.let { RoadAheadMatcher(it) }
+            road = now to m
+            eventLog.onChange("alerts.roadAhead", m != null, EventLog.Channel.ALERT, "Alerts") { "roadAhead ${if (m != null) "on" else "off (no OSM road under the car)"}" }
+        }
+        val freeDrive = road.second
+        return RouteMatcher { lat, lon ->
+            guidance.routeMatcher.distanceToRouteM(lat, lon) ?: freeDrive?.distanceToRouteM(lat, lon)
+        }
+    }
+
     companion object {
         private const val TAG = "AlertCoordinator"
         private const val QUIET_UNTIL_M = 300.0
@@ -565,6 +591,9 @@ class AlertCoordinator @Inject constructor(
 
         /** Mobile van sites may be marked up to this far beside the road (DESIGN.md §11 step 4). */
         private const val MOBILE_SIDE_M = 100.0
+        /** How far the free-drive road ahead is followed, and how often (DESIGN.md §11 step 4). */
+        private const val ROAD_AHEAD_M = 2_000.0
+        private const val ROAD_EVERY_MS = 1_000L
 
         /** PGW mobile and pending-mobile sites (any format), and mobile camera reports. */
         fun isMobileSite(set: PoiSetEntity, cat: PoiCategoryEntity?): Boolean {

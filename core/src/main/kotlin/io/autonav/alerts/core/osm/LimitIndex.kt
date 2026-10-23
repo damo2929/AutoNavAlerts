@@ -140,7 +140,7 @@ class LimitIndex private constructor(
         val EMPTY = LimitIndex(emptySet(), IntArray(0), ByteArray(0), LongArray(0), IntArray(0))
 
         /** Two pieces join when an end of one is within this of the other's (DESIGN.md §8.4a). */
-        const val JOIN_M = 20.0
+        const val JOIN_M = 40.0
         /** Heading continuity across a join. */
         const val JOIN_DEG = 45.0
 

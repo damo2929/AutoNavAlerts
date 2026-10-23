@@ -7,6 +7,7 @@ import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.geo.LatLngPoint
 import io.autonav.alerts.core.osm.LimitLookahead.Change
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -56,6 +57,20 @@ class LimitLookaheadTest {
 
     private fun next(idx: LimitIndex, northM: Double, eastM: Double, heading: Double, route: List<LatLngPoint>? = null) =
         LimitLookahead(idx).nextChange(latAt(northM), lonAt(eastM), heading, route)
+
+    @Test
+    fun aGapUpTo40mBetweenPiecesIsStillOurRoad() {
+        // Junctions and roundabouts leave gaps between OSM pieces (bench, 2026-10-23: 11 changes missed at 20–40 m).
+        val idx = index(
+            road(50, 0.0 to 0.0, 100.0 to 0.0, 200.0 to 0.0),
+            road(50, 230.0 to 0.0, 400.0 to 0.0),
+            road(30, 400.0 to 0.0, 600.0 to 0.0),
+        )
+        val c = next(idx, 50.0, 0.0, 0.0)
+        assertNotNull(c)
+        assertEquals(30, c!!.newMph)
+        assertFalse(c.viaRoute)
+    }
 
     @Test
     fun straightRoadFiftyToThirtyAtFourHundredMetres() {

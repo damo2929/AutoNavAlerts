@@ -70,6 +70,16 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      * car, at least two points), else along the road by connectivity. Null with no data, no
      * heading or no change within 600 m. Called once a second by `NavSession`, never per fix.
      */
+    /** The road ahead of the car from the OSM pieces, for free drive's camera matching (DESIGN.md §11 step 4); null without one. */
+    fun roadAhead(lat: Double, lon: Double, headingDeg: Double, maxM: Double): List<LatLngLike>? {
+        val idx = index
+        ensureLoaded(idx, lat, lon)
+        if (idx === LimitIndex.EMPTY) return null
+        val la = lookahead?.takeIf { it.first === idx }?.second ?: LimitLookahead(idx).also { lookahead = idx to it }
+        return runCatching { la.roadAhead(lat, lon, headingDeg, maxM) }
+            .onFailure { Log.w(TAG, "roadAhead: ${it.message}") }.getOrNull()
+    }
+
     fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>?): LimitLookahead.Change? {
         val idx = index
         ensureLoaded(idx, lat, lon)
