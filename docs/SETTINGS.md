@@ -8,7 +8,7 @@ The phone app has four tabs along the bottom: **POIs · Cameras · Reports · Se
 
 ## 1. Settings tab
 
-One scrolling page of cards. Once setup is complete (§2) its four sections collapse to a single **Setup** row with **Show**. **Units** and **Speed panel** share one card, **Car screen**. **Diagnostics** is folded behind **Show** and is one line when closed. Each control carries at most one short line of help on the phone; the detail is here.
+One scrolling page of cards. Once setup is complete (§2) its four sections collapse to a single **Setup** row with **Show**. **Units** and **Speed panel** share one card, **Car screen**. **Diagnostics** and **Connecting to a car** are folded behind **Show** and are one line when closed. Each control carries at most one short line of help on the phone; the detail is here.
 
 ### 1.1 Units
 | Control | Options | Default | What it changes |
@@ -125,6 +125,21 @@ The app always keeps **two debug logs** on the phone, so a drive that goes wrong
 | **Save drive recording…** | Saves the latest `drive-YYYYMMDD-HHMM.csv` through the file picker |
 
 **Privacy.** The logs and recordings stay **on the phone only**, in private app storage, and are excluded from cloud backup. They contain **where you drove** (sampled positions, destination names) and **which cameras you passed**. Nothing is sent anywhere unless you press **Save** or **Share**; what you then do with the file is up to you. Uninstalling the app deletes them.
+
+### 1.8a Connecting to a car
+Folded behind **Show**, like Diagnostics. It holds the steps for getting AutoNavAlerts onto a car's screen and for debugging on a head unit on a computer, plus **Open Android Auto settings**.
+
+- **On a car:** turn on Android Auto's developer mode (tap Version about 10 times) and **Unknown sources** (⋮ → Developer settings). Check **Customise Launcher** has AutoNavAlerts ticked, and open the app on the phone once. Then connect: use a data cable for a wired car, or turn on Bluetooth and Wi-Fi for wireless, and pick it from the car's app grid.
+- **If it's missing on the car:** Android Auto only picks up a sideloaded app after an install or update when it next connects.
+  1. Disconnect and reconnect once.
+  2. If it's still missing, force stop Android Auto and reconnect.
+  3. Failing that, connect once to a head unit on a computer, then reconnect the car.
+- **Debugging on a head unit:**
+  1. Android Auto ⋮ → **Start head unit server** (again after each phone restart).
+  2. Turn on USB debugging and connect the phone to the computer with a data cable.
+  3. Run `adb forward tcp:5277 tcp:5277`, then `desktop-head-unit` from the SDK's `extras/google/auto`.
+  4. The app's logs are under Diagnostics.
+  5. When you're done, ⋮ → **Stop head unit server** before driving.
 
 ### 1.9 About
 The app name and version, **by Damien Dye**, the **build** line (the git commit the app was built from, with `-dirty` if the tree had uncommitted changes, and "(debug)" for debug builds), and the source repository **github.com/damo2929/AutoNavAlerts** (tap to open it in the browser). Then the licence (Apache 2.0), the note that the code is AI-assisted (written with Claude Fable and Claude Opus), and the PGW icon credit. Nothing to set here.

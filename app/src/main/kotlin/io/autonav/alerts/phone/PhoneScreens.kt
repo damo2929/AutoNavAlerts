@@ -277,6 +277,38 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
     }
 }
 
+/** The steps behind Settings → Connecting to a car (DESIGN.md §13 item 12). */
+@Composable
+private fun CarConnectionSection(activity: Activity) {
+    @Composable
+    fun Steps(title: String, steps: List<String>) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        steps.forEachIndexed { i, step -> Text("${i + 1}. $step", style = MaterialTheme.typography.bodyMedium) }
+    }
+    Steps("On a car (wired or wireless)", listOf(
+        "In Android Auto settings, tap Version about 10 times to turn on developer mode.",
+        "Android Auto ⋮ → Developer settings → tick Unknown sources (this app isn't from Play).",
+        "Android Auto → Customise Launcher → make sure AutoNavAlerts is ticked.",
+        "Open AutoNavAlerts on the phone once: Maps key saved, permissions allowed, navigation terms accepted.",
+        "Connect to the car: a data cable for a wired car, or Bluetooth and Wi-Fi on for wireless. Open the car's app grid and pick AutoNavAlerts.",
+        "Not there? Android Auto only picks up a sideloaded app after a fresh install or update when it's next connected: disconnect and reconnect once.",
+        "Still missing: Android settings → Apps → Android Auto → Force stop, then reconnect.",
+        "Still missing: connect the phone once to a head unit on a computer (below), then reconnect the car.",
+    ))
+    Steps("Debugging on a head unit (computer)", listOf(
+        "Install the Android SDK with \"Android Auto Desktop Head Unit\" (extras/google/auto).",
+        "Android Auto ⋮ → Start head unit server (again after every phone restart).",
+        "Turn on USB debugging and plug the phone into the computer with a data cable.",
+        "On the computer: adb forward tcp:5277 tcp:5277",
+        "Then run desktop-head-unit from extras/google/auto. The car screen opens in a window.",
+        "The app's logs are in Diagnostics above (Share or Save).",
+        "When done: Android Auto ⋮ → Stop head unit server, before driving.",
+    ))
+    OutlinedButton(onClick = {
+        runCatching { activity.startActivity(Intent("com.google.android.projection.gearhead.SETTINGS").setPackage("com.google.android.projection.gearhead")) }
+    }) { Text("Open Android Auto settings") }
+}
+
 /**
  * "Create a key with my Google account" (DESIGN.md §13.1): asks for the cloud-platform scope with a
  * Google account on the phone, then [MapsKeyCreator] makes the project, links billing, turns the APIs
@@ -1212,6 +1244,16 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                 TextButton(onClick = { showDiag = !showDiag }) { Text(if (showDiag) "Hide" else "Show") }
             }
             if (showDiag) DiagnosticsSection(activity, deps, s) { b -> set(b) }
+        }
+        // Folded like Diagnostics: the car set-up manual (DESIGN.md §13 item 12).
+        var showCar by remember { mutableStateOf(false) }
+        Section("Connecting to a car") {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Getting AutoNavAlerts on the car screen, and debugging on a head unit", Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium)
+                TextButton(onClick = { showCar = !showCar }) { Text(if (showCar) "Hide" else "Show") }
+            }
+            if (showCar) CarConnectionSection(activity)
         }
         Section("About") {
             Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
