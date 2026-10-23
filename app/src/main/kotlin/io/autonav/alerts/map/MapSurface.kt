@@ -395,6 +395,10 @@ class MapSurface(
             "setTripProgressBarEnabled" to { inner.setTripProgressBarEnabled(false) },
             "setSpeedLimitIconEnabled" to { inner.setSpeedLimitIconEnabled(false) },
         )
+        // The navigation camera (tilted, our padding) only works with the navigation UI on; a fresh start
+        // had it off until the first route, so free drive showed a flat map with the car centred (DESIGN.md §8).
+        val navUiWas = runCatching { inner.isNavigationUiEnabled }.getOrNull()
+        if (navUiWas == false) runCatching { inner.setNavigationUiEnabled(true) }
         for ((name, call) in setters) runCatching(call).onSuccess { off += name }.onFailure { failed += name }
         applyNightMode(inner)
         // Belt and braces: the SDK draws its cards as ordinary child views beside the map container
@@ -406,7 +410,7 @@ class MapSurface(
             if (holdsMap(c)) continue
             if (c.visibility != android.view.View.GONE) { c.visibility = android.view.View.GONE; hid += c.javaClass.simpleName.ifEmpty { "view" } + "#$i" }
         }
-        log("sdkControls off=$off${if (failed.isEmpty()) "" else " failed=$failed"}${if (hid.isEmpty()) "" else " hid=$hid"} ($attempt)")
+        log("sdkControls off=$off${if (failed.isEmpty()) "" else " failed=$failed"}${if (hid.isEmpty()) "" else " hid=$hid"} navUi=$navUiWas ($attempt)")
         return true
     }
 
