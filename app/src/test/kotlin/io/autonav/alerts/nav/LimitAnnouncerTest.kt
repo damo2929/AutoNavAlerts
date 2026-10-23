@@ -56,4 +56,14 @@ class LimitAnnouncerTest {
         assertEquals("Speed limit changes to thirty ahead", LimitAnnouncer.text(30))
         assertEquals("Speed limit changes to 25 ahead", LimitAnnouncer.text(25))
     }
+
+    @Test
+    fun sameChangeAfterATurnIsNotSaidAgain() {
+        val a = LimitAnnouncer()
+        val change = LimitAnnouncer.project(lat, lon, 0.0, 300.0)
+        assertTrue(a.shouldAnnounce(50, 300.0, lat, lon, 16.0, 0.0, change.first, change.second))
+        // 3 s later the car has turned 90°: projecting along the heading would land 350 m away.
+        val car = LimitAnnouncer.project(lat, lon, 0.0, 50.0)
+        assertFalse(a.shouldAnnounce(50, 250.0, car.first, car.second, 16.0, 90.0, change.first, change.second))
+    }
 }

@@ -10,7 +10,8 @@ import kotlin.math.sin
 /**
  * When to say "Speed limit changes to thirty ahead" (DESIGN.md §8.4a, "Limit changes ahead").
  * Pure, so it's unit-tested: once per change, keyed by the new limit and where the change is
- * (the car's position moved [distanceM] along its heading, matched within [sameChangeM]), and
+ * (its own position when the lookahead gives one, else the car's position moved [distanceM] along
+ * its heading, matched within [sameChangeM]), and
  * only once the change is within max([minM], speed × [leadS]). Null speed or heading → never.
  */
 class LimitAnnouncer(
@@ -23,10 +24,15 @@ class LimitAnnouncer(
     private var lastLon = 0.0
 
     /** True when [newMph] at [distanceM] ahead should be announced now. Records it when true. */
-    fun shouldAnnounce(newMph: Int, distanceM: Double, lat: Double, lon: Double, speedMps: Double, headingDeg: Double?): Boolean {
+    fun shouldAnnounce(
+        newMph: Int, distanceM: Double, lat: Double, lon: Double, speedMps: Double, headingDeg: Double?,
+        changeLat: Double = Double.NaN, changeLon: Double = Double.NaN,
+    ): Boolean {
         if (headingDeg == null) return false
         if (distanceM > maxOf(minM, speedMps * leadS)) return false
-        val (cLat, cLon) = project(lat, lon, headingDeg, distanceM)
+        // The change's own position: a projection along the heading moves when the road turns
+        // (bench 2026-10-23: the same 50 said twice, 3 s apart, after a right turn).
+        val (cLat, cLon) = if (!changeLat.isNaN() && !changeLon.isNaN()) changeLat to changeLon else project(lat, lon, headingDeg, distanceM)
         if (lastMph == newMph && Geo.distanceM(lastLat, lastLon, cLat, cLon) < sameChangeM) return false
         lastMph = newMph
         lastLat = cLat
