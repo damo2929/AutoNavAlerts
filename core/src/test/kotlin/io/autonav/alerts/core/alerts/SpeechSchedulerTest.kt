@@ -287,4 +287,64 @@ class SpeechSchedulerTest {
         s.onDone(a, 20_500) // the stuck engine finally reports: must not free b
         assertEquals(b, s.speaking)
     }
+
+    // --- Directions (GUIDANCE, DESIGN.md §12.3) ---------------------------------------------------
+
+    private fun dir(text: String, queuedMs: Long, distanceM: Double = 300.0, staleBelowM: Double? = null) =
+        Utterance(nextId++, -2, AlertKind.GUIDANCE, text, 80, distanceM, staleBelowM, chime = false, queuedMs = queuedMs)
+
+    @Test
+    fun newerDirectionReplacesOneWaiting() {
+        val s = SpeechScheduler()
+        val busy = u(AlertKind.FIRST, poi = 7)
+        s.offer(busy, 0); speak(s, 0)
+        s.offer(dir("In 300 yards, turn right", 10), 10)
+        val now = dir("Turn right", 20, distanceM = 60.0)
+        val d = s.offer(now, 20)
+        assertTrue(d.any { it is Decision.Replaced })
+        assertEquals(listOf(now), s.waiting)
+    }
+
+    @Test
+    fun directionGoesBeforeCameraStagesButAfterPassing() {
+        val s = SpeechScheduler()
+        val first = u(AlertKind.FIRST, poi = 7, distanceM = 100.0)
+        val second = u(AlertKind.SECOND, poi = 8, distanceM = 100.0)
+        val turn = dir("Turn left", 0, distanceM = 50.0)
+        val passing = u(AlertKind.PASSING, poi = 9)
+        for (x in listOf(first, second, turn, passing)) s.offer(x, 0)
+        val order = mutableListOf<AlertKind>()
+        var t = 0L
+        repeat(4) {
+            val a = speak(s, t); order += a.kind; s.onDone(a, t + 100); t += 1_000
+        }
+        assertEquals(listOf(AlertKind.PASSING, AlertKind.GUIDANCE, AlertKind.SECOND, AlertKind.FIRST), order)
+    }
+
+    @Test
+    fun muteKeepsDirections() {
+        val s = SpeechScheduler()
+        val turn = dir("Turn left", 0)
+        s.offer(turn, 0); speak(s, 0)
+        val cam = u(AlertKind.FIRST, poi = 7, queuedMs = 10)
+        val next = dir("Then keep right", 20)
+        s.offer(cam, 10); s.offer(next, 20)
+        assertFalse("a direction speaking isn't stopped", s.muteAll(30))
+        assertEquals(turn, s.speaking)
+        assertEquals(listOf(next), s.waiting)
+        assertTrue(s.records().any { it.utterance == cam && it.outcome == Outcome.MUTED })
+    }
+
+    @Test
+    fun stalePrepareDirectionIsDropped() {
+        val s = SpeechScheduler()
+        val busy = u(AlertKind.PASSING, poi = 9)
+        s.offer(busy, 0); speak(s, 0)
+        val prepare = dir("In 300 yards, turn right", 10, distanceM = 280.0, staleBelowM = 67.0)
+        s.offer(prepare, 10)
+        s.onDistance(-2, 50.0)
+        s.onDone(busy, 2_000)
+        assertEquals(Decision.Idle, s.next(3_000, false))
+        assertTrue(s.records().any { it.utterance == prepare && it.outcome == Outcome.STALE })
+    }
 }

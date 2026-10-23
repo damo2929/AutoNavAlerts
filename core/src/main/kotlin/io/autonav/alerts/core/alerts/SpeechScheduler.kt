@@ -16,7 +16,8 @@ import kotlin.math.min
  * waits at most 2 s and a PASSING 0.5 s; a channel busy for more than 5 s on end is ignored for
  * 60 s; a stuck engine is freed by [onWatchdog] after 1500 + 70·chars ms (at most 12 s); an engine
  * error is retried once, then the caller falls back to the chime and banner. Every decision goes
- * into a 50-entry [records] ring.
+ * into a 50-entry [records] ring. Directions (GUIDANCE, §12.3): a newer one replaces one waiting,
+ * they go stale by distance like a stage, and mute never touches them (it is the alerts' control).
  */
 class SpeechScheduler(private val config: Config = Config()) {
     data class Config(
@@ -107,9 +108,10 @@ class SpeechScheduler(private val config: Config = Config()) {
             return listOf(Decision.Dropped(u, Outcome.MUTED))
         }
         val out = ArrayList<Decision>()
-        if (u.kind == AlertKind.LIMIT_CHANGE) {
-            // Only the newest limit announcement matters: one still waiting is replaced, never a camera stage.
-            for (e in queue.filter { it.kind == AlertKind.LIMIT_CHANGE }) {
+        if (u.kind == AlertKind.LIMIT_CHANGE || u.kind == AlertKind.GUIDANCE) {
+            // Only the newest limit announcement (or direction) matters: one still waiting of the same
+            // kind is replaced, never a camera stage.
+            for (e in queue.filter { it.kind == u.kind }) {
                 queue.remove(e)
                 record(Record(e, Outcome.REPLACED, nowMs, byKind = u.kind))
                 out += Decision.Replaced(e, u)
@@ -146,14 +148,16 @@ class SpeechScheduler(private val config: Config = Config()) {
      * whether something was speaking, so the caller stops the engine.
      */
     fun muteAll(nowMs: Long): Boolean {
-        val speakingNow = current
+        // Directions aren't alerts: mute leaves them speaking and waiting (DESIGN.md §12.3).
+        val speakingNow = current?.takeIf { it.kind != AlertKind.GUIDANCE }
         if (speakingNow != null) {
             record(Record(speakingNow, Outcome.MUTED, nowMs, startMs = currentStartMs ?: currentSpeakMs))
             finish(nowMs)
         }
-        for (u in queue.toList()) record(Record(u, Outcome.MUTED, nowMs))
-        queue.clear()
-        distances.clear()
+        val alerts = queue.filter { it.kind != AlertKind.GUIDANCE }
+        for (u in alerts) record(Record(u, Outcome.MUTED, nowMs))
+        queue.removeAll(alerts.toSet())
+        distances.keys.retainAll(queue.map { it.poiId }.toSet() + listOfNotNull(current?.poiId))
         return speakingNow != null
     }
 
@@ -243,7 +247,7 @@ class SpeechScheduler(private val config: Config = Config()) {
         val it = queue.iterator()
         while (it.hasNext()) {
             val u = it.next()
-            if (u.kind != AlertKind.FIRST && u.kind != AlertKind.SECOND) continue
+            if (u.kind != AlertKind.FIRST && u.kind != AlertKind.SECOND && u.kind != AlertKind.GUIDANCE) continue
             val below = u.staleBelowM ?: continue
             val d = distances[u.poiId] ?: u.distanceM
             if (d < below) {

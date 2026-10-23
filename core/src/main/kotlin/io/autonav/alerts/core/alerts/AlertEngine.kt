@@ -62,7 +62,8 @@ data class AlertPoi(
  * "speed limit changes to thirty ahead" announcement (DESIGN.md §8.4a): no camera, no POI, never a
  * stage, so it is never reported or shown as one (owner, 2026-10-13).
  */
-enum class AlertKind { FIRST, SECOND, PASSING, ZONE_ENTER, ZONE_EXIT, OVERSPEED, LIMIT_CHANGE }
+/** GUIDANCE: a turn-by-turn direction we speak ourselves (DESIGN.md §12.3), never a camera stage. */
+enum class AlertKind { FIRST, SECOND, PASSING, ZONE_ENTER, ZONE_EXIT, OVERSPEED, LIMIT_CHANGE, GUIDANCE }
 
 data class AlertEvent(
     val poiId: Long,
