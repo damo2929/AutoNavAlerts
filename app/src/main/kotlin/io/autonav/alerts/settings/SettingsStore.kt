@@ -28,12 +28,45 @@ const val DEFAULT_ALERT_LEAD_SECONDS = 15
 const val MIN_ALERT_LEAD_SECONDS = 15
 const val MAX_ALERT_LEAD_SECONDS = 60
 
+/**
+ * The voice languages offered (DESIGN.md §12.3): one language for the turn-by-turn voice and the
+ * alerts. No US English (owner, 2026-10-23: there is no US camera data).
+ */
+object VoiceLanguages {
+    const val DEFAULT = "en-GB"
+    val ALL: List<Pair<String, String>> = listOf(
+        "en-GB" to "English (UK)",
+        "en-IE" to "English (Ireland)",
+        "en-AU" to "English (Australia)",
+        "en-IN" to "English (India)",
+    )
+
+    /**
+     * The TTS language and voice that sound like the Navigation SDK's prompts in each language,
+     * measured on the bench (DESIGN.md §12.3): voice names without the `-local`/`-network` suffix.
+     * Irish English is the UK voice: its SDK pack is the UK one and the engine has no en-IE voices.
+     */
+    val TTS_VOICE: Map<String, Pair<String, String>> = mapOf(
+        "en-GB" to ("en-GB" to "en-gb-x-rjs"),
+        "en-IE" to ("en-GB" to "en-gb-x-rjs"),
+        "en-AU" to ("en-AU" to "en-au-x-aua"),
+        "en-IN" to ("en-IN" to "en-in-x-enc"),
+    )
+
+    /** A stored tag that's no longer offered (or none) reads as the default. */
+    fun valid(tag: String?): String = tag?.takeIf { t -> ALL.any { it.first == t } } ?: DEFAULT
+
+    fun label(tag: String): String = ALL.firstOrNull { it.first == tag }?.second ?: tag
+}
+
 /** Where speed comes from (DESIGN.md §10.6). */
 enum class SpeedSource { CAR_WHEN_AVAILABLE, PHONE_GPS }
 
 data class AppSettings(
     val units: Units = Units.IMPERIAL,
     val voiceOn: Boolean = true,
+    /** One language for the turn-by-turn voice and the alerts (DESIGN.md §12.3). */
+    val voiceLanguage: String = VoiceLanguages.DEFAULT,
     val chimeOn: Boolean = true,
     /** Over-limit warning threshold as a fraction: −0.001 = warn above 99.9% of the limit. */
     val overspeedPct: Double = DEFAULT_OVERSPEED,
@@ -91,6 +124,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     private object K {
         val units = stringPreferencesKey("units")
         val voice = booleanPreferencesKey("voice")
+        val voiceLanguage = stringPreferencesKey("voice_language")
         val chime = booleanPreferencesKey("chime")
         val overspeed = doublePreferencesKey("overspeed_pct")
         val alertLead = intPreferencesKey("alert_lead_seconds")
@@ -134,6 +168,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         AppSettings(
             units = p[K.units]?.let { runCatching { Units.valueOf(it) }.getOrNull() } ?: Units.IMPERIAL,
             voiceOn = p[K.voice] ?: true,
+            voiceLanguage = VoiceLanguages.valid(p[K.voiceLanguage]),
             chimeOn = p[K.chime] ?: true,
             overspeedPct = (p[K.overspeed] ?: DEFAULT_OVERSPEED).coerceIn(-0.05, 0.20),
             alertLeadSeconds = (p[K.alertLead] ?: DEFAULT_ALERT_LEAD_SECONDS).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
@@ -170,6 +205,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             val s = block(read(p))
             p[K.units] = s.units.name
             p[K.voice] = s.voiceOn
+            p[K.voiceLanguage] = VoiceLanguages.valid(s.voiceLanguage)
             p[K.chime] = s.chimeOn
             p[K.overspeed] = s.overspeedPct
             p[K.alertLead] = s.alertLeadSeconds

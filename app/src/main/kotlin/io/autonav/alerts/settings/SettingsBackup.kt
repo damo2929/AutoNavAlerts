@@ -41,6 +41,7 @@ class SettingsBackup @Inject constructor(
             .put("settings", JSONObject()
                 .put("units", s.units.name)
                 .put("voiceOn", s.voiceOn)
+                .put("voiceLanguage", s.voiceLanguage)
                 .put("chimeOn", s.chimeOn)
                 .put("overspeedPct", s.overspeedPct)
                 .put("alertLeadSeconds", s.alertLeadSeconds)
@@ -180,6 +181,7 @@ class SettingsBackup @Inject constructor(
         return cur.copy(
             units = j.optString("units").let { n -> Units.entries.firstOrNull { it.name == n } } ?: cur.units,
             voiceOn = bool("voiceOn", cur.voiceOn),
+            voiceLanguage = if (j.has("voiceLanguage")) VoiceLanguages.valid(j.optString("voiceLanguage")) else cur.voiceLanguage,
             chimeOn = bool("chimeOn", cur.chimeOn),
             overspeedPct = (num(j, "overspeedPct") ?: cur.overspeedPct).coerceIn(-0.05, 0.20),
             alertLeadSeconds = (num(j, "alertLeadSeconds")?.toInt() ?: cur.alertLeadSeconds).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
