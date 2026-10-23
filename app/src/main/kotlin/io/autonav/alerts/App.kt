@@ -57,7 +57,8 @@ class App : Application(), Configuration.Provider {
         // Memory pressure may be followed by a kill: get the pending 15 s onto disk (DESIGN.md §15.5).
         if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
             eventLog.record(EventLog.Channel.NAV, "App", "trimMemory level=$level")
-            eventLog.flush("trimMemory")
+            // Only a kill-level warning holds the main thread for the write.
+            eventLog.flush("trimMemory", wait = level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE)
         }
     }
 

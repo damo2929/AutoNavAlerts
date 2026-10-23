@@ -169,6 +169,6 @@ class CarDataSource @Inject constructor(
     companion object {
         private const val TAG = "CarData"
         const val SPEED_FRESH_MS = 3_000L
-        const val LOCATION_FRESH_MS = 2_000L
+        const val LOCATION_FRESH_MS = 3_000L
     }
 }

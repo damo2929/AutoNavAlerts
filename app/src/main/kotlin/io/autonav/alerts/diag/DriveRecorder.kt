@@ -107,7 +107,7 @@ class DriveRecorder @Inject constructor(
     fun start(sessionTag: String) {
         wanted = true
         this.sessionTag = sessionTag
-        if (enabled && writer == null) open()
+        openLater()
     }
 
     /** The session ended: close the file. */
@@ -155,7 +155,12 @@ class DriveRecorder @Inject constructor(
     @Synchronized
     private fun onSetting(on: Boolean) {
         enabled = on
-        if (on) { if (wanted && writer == null) open() } else close("settingOff")
+        if (on) openLater() else close("settingOff")
+    }
+
+    /** Opens the file on the diag thread, never the caller's (main) thread. */
+    private fun openLater() {
+        eventLog.handler.post { synchronized(this) { if (enabled && wanted && writer == null) open() } }
     }
 
     private fun open() {

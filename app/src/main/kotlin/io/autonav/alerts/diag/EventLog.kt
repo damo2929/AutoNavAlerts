@@ -111,12 +111,14 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
     }
 
     /**
-     * Writes the pending blocks now, from the caller's thread, waiting at most 500 ms for the diag
-     * thread. Used on session end, memory pressure, export and the bench, not by the 15 s tick.
+     * Writes the pending blocks now on the diag thread. With [wait] the caller waits for it (at most
+     * 500 ms): session end, a kill-level memory warning, export and the bench, where the next thing
+     * may be reading the file or the process dying. Without it the main thread isn't held up.
+     * Not used by the 15 s tick.
      */
-    fun flush(reason: String) {
+    fun flush(reason: String, wait: Boolean = true) {
         Log.i(LOGCAT_TAG, "Diag flush reason=$reason")
-        runOnDiag { flushNow() }
+        if (wait) runOnDiag { flushNow() } else handler.post { flushNow() }
     }
 
     /** The last [n] lines of the channel's file, oldest first, spanning the rotation if short. */

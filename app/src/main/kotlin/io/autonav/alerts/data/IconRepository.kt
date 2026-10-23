@@ -38,7 +38,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     enum class Emphasis { ACTIVE, AHEAD, OTHER, FACING_AWAY }
 
     private val cache = LruCache<String, Bitmap>(96)
-    /** The arrow descriptors, by direction type and emphasis: at most 8, made once (§8.1). */
+    /** The arrow descriptors, by direction type, emphasis and size: at most 8, made once (§8.1). */
     private val arrows = HashMap<String, BitmapDescriptor>()
 
     private fun dirUser() = File(context.filesDir, "icons").apply { mkdirs() }
@@ -125,10 +125,10 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
      * The direction arrow drawn as a second, flat marker under a camera's icon (DESIGN.md §8.1): a
      * chevron pointing up on a transparent square [sizePx] wide (2.2× the icon, so the head sits
      * outside the icon when the marker is rotated to the camera's bearing); two-headed for BOTH;
-     * dimmed with the emphasis. Pre-rendered and cached by (direction, emphasis): ≤ 8 descriptors.
+     * dimmed with the emphasis. Pre-rendered and cached by (direction, emphasis, size): ≤ 8 descriptors.
      */
     fun arrow(directionType: DirectionType, emphasis: Emphasis, sizePx: Int): BitmapDescriptor {
-        val key = "$directionType:$emphasis"
+        val key = "$directionType:$emphasis:$sizePx"
         arrows[key]?.let { return it }
         val bmp = createBitmap(sizePx, sizePx)
         val c = Canvas(bmp)

@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
 
 /** What More → GPS shows (DESIGN.md §10.2, §10.6, §10.7), refreshed on every fix the engine gets. */
 data class LocationStats(
@@ -137,6 +138,8 @@ class AdaptiveLocationSource @Inject constructor(
     /** `elapsedRealtime` of the last fix seen from each feed, for the handover line. */
     private var lastCarMs = 0L
     private var lastPhoneMs = 0L
+    /** Car fixes in a row, each within [CarDataSource.LOCATION_FRESH_MS] of the last (§10.7 hysteresis). */
+    private var carStreak = 0
     private var accuracyPoor = false
     private var lastReset: String? = null
     /** The rate actually requested from the phone. */
@@ -164,8 +167,8 @@ class AdaptiveLocationSource @Inject constructor(
                 result.locations.forEach { record(it, LocationSource.PHONE, used = false, estimate = null) }
                 return
             }
-            // Car GPS takes priority while it's fresh; the phone is only a backup (DESIGN.md §10.7).
-            if (carData.carLocationFresh()) {
+            // Car GPS takes priority while it's the live feed and fresh; the phone is only a backup (DESIGN.md §10.7).
+            if (usingCarLocation && carData.carLocationFresh()) {
                 result.locations.forEach { record(it, LocationSource.PHONE, used = false, estimate = null) }
                 return
             }
@@ -177,7 +180,7 @@ class AdaptiveLocationSource @Inject constructor(
     fun start() {
         if (running) return
         running = true
-        carData.onLocation = { loc -> if (!simulated) onLocation(loc, LocationSource.CAR) }
+        carData.onLocation = { loc -> if (!simulated) onCarLocation(loc) }
         thread = HandlerThread("adaptive-location").also { it.start() }
         request(GPS_HZ)
     }
@@ -190,6 +193,22 @@ class AdaptiveLocationSource @Inject constructor(
         reset(if (on) "simulation on" else "simulation off")
         intervals.clear()
         lastSource = null
+    }
+
+    /**
+     * A car fix: used at once while the car is the live feed; after the phone took over, only from
+     * the second car fix in a row, so a slow head unit on the freshness edge doesn't flap (§10.7).
+     */
+    @Synchronized
+    private fun onCarLocation(loc: Location) {
+        val now = SystemClock.elapsedRealtime()
+        carStreak = if (lastCarMs > 0 && now - lastCarMs <= CarDataSource.LOCATION_FRESH_MS) carStreak + 1 else 1
+        if (lastSource == LocationSource.PHONE && carStreak < CAR_RETURN_FIXES) {
+            lastCarMs = now
+            record(loc, LocationSource.CAR, used = false, estimate = null)
+            return
+        }
+        onLocation(loc, LocationSource.CAR)
     }
 
     fun inject(loc: Location) {
@@ -264,7 +283,7 @@ class AdaptiveLocationSource @Inject constructor(
             eventLog.record(EventLog.Channel.NAV, "Location", "gap ms=${arrival - prevArrival}")
         }
 
-        val estimate = estimator.onFix(toInput(loc, source))
+        val estimate = estimator.onFix(toInput(loc, source, arrival))
         estimate.resetReason?.let { r ->
             lastReset = r
             eventLog.record(EventLog.Channel.NAV, "Location", "TRACK_RESET reason=$r")
@@ -314,10 +333,11 @@ class AdaptiveLocationSource @Inject constructor(
         _fixes.tryEmit(fix)
     }
 
-    private fun toInput(loc: Location, source: LocationSource): FixInput = FixInput(
+    private fun toInput(loc: Location, source: LocationSource, arrivalMs: Long): FixInput = FixInput(
         lat = loc.latitude, lon = loc.longitude,
-        // Some feeds stamp 0: fall back to the wall clock so the engine's timers stay sane.
-        timeMs = if (loc.time > 0) loc.time else System.currentTimeMillis(),
+        // One monotonic clock for every feed (§10.7): the fix's own boot-time stamp when it's sane,
+        // else when it reached us. Location.time is a GNSS or car clock and some feeds stamp 0.
+        timeMs = (loc.elapsedRealtimeNanos / 1_000_000).takeIf { it > 0 && abs(arrivalMs - it) < 10_000 } ?: arrivalMs,
         accuracyM = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
         speedMps = if (loc.hasSpeed()) loc.speed.toDouble() else null,
         bearingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null,
@@ -349,6 +369,8 @@ class AdaptiveLocationSource @Inject constructor(
         /** The phone's GPS is always asked for 10 fixes a second (DESIGN.md §10), whatever the speed. */
         const val GPS_HZ = 10
         private const val GAP_MS = 5_000L
+        /** Car fixes in a row before the car takes over from the phone again (§10.7). */
+        private const val CAR_RETURN_FIXES = 2
         private const val POOR_ACCURACY_M = 50.0
     }
 }

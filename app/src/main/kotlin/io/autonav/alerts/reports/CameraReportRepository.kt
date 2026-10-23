@@ -41,7 +41,7 @@ data class ReportSnapshot(
     val timeMs: Long,
 )
 
-fun Fix.toSnapshot() = ReportSnapshot(lat, lon, heading, speedMps, timeMs)
+fun Fix.toSnapshot() = ReportSnapshot(lat, lon, heading, speedMps, System.currentTimeMillis())
 
 /**
  * Camera reports: captured in one tap on the car screen, buffered as drafts, reviewed on the phone

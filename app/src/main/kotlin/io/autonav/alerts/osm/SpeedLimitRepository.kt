@@ -48,6 +48,10 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
     /** The lookahead over the current [index]; rebuilt when the index is replaced. */
     @Volatile private var lookahead: Pair<LimitIndex, LimitLookahead>? = null
     private var loading: Job? = null
+    /** Set when there is no file, so lookups don't check the disk on every fix; cleared by [replaced]. */
+    @Volatile private var noFile = false
+    /** Bumped by [replaced]: a load that started before it doesn't put back the old file's tiles. */
+    @Volatile private var generation = 0
 
     /**
      * The OSM limit (mph) of the road at this fix, or null. Never waits and allocates nothing in
@@ -56,9 +60,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      */
     fun limitAt(lat: Double, lon: Double, heading: Double?): Double? {
         val idx = index
-        if (!covers(idx, lat, lon) && loading?.isActive != true) {
-            loading = App.appScope.launch { load(lat, lon) }
-        }
+        ensureLoaded(idx, lat, lon)
         return idx.limitAt(lat, lon, heading)
     }
 
@@ -70,11 +72,17 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      */
     fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>?): LimitLookahead.Change? {
         val idx = index
+        ensureLoaded(idx, lat, lon)
         if (idx === LimitIndex.EMPTY) return null
-        if (!covers(idx, lat, lon) && loading?.isActive != true) loading = App.appScope.launch { load(lat, lon) }
         val la = lookahead?.takeIf { it.first === idx }?.second ?: LimitLookahead(idx).also { lookahead = idx to it }
         return runCatching { la.nextChange(lat, lon, headingDeg, routeAhead?.takeIf { it.size >= 2 }) }
             .onFailure { Log.w(TAG, "lookahead: ${it.message}") }.getOrNull()
+    }
+
+    /** Reads the tiles around the car in the background when they aren't in memory yet. */
+    private fun ensureLoaded(idx: LimitIndex, lat: Double, lon: Double) {
+        if (noFile || covers(idx, lat, lon) || loading?.isActive == true) return
+        loading = App.appScope.launch { load(lat, lon) }
     }
 
     private fun covers(idx: LimitIndex, lat: Double, lon: Double): Boolean {
@@ -87,20 +95,22 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
     }
 
     private fun load(lat: Double, lon: Double) {
+        val gen = generation
         val r = openReader() ?: run { index = LimitIndex.EMPTY; return }
         // The tiles within a few hundred metres: one in open country, up to four at a corner.
         val d = LOAD_M / 111_000.0
         val dl = LOAD_M / (111_000.0 * cos(Math.toRadians(lat)))
         val tiles = linkedSetOf<Long>()
         for (la in doubleArrayOf(lat - d, lat + d)) for (lo in doubleArrayOf(lon - dl, lon + dl)) tiles += OsmSpeedLimits.tileKey(la, lo)
-        index = runCatching { LimitIndex.build(r, tiles) }
+        val built = runCatching { LimitIndex.build(r, tiles) }
             .onFailure { Log.w(TAG, "Reading limits: ${it.message}") }.getOrDefault(LimitIndex.EMPTY)
+        synchronized(this) { if (gen == generation) index = built }
     }
 
     @Synchronized
     private fun openReader(): OsmLimitFile.Reader? {
         reader?.let { return it }
-        if (!file.exists()) return null
+        if (!file.exists()) { noFile = true; return null }
         return runCatching { OsmLimitFile.Reader(file) }.onFailure { Log.w(TAG, "Bad limits file: ${it.message}") }.getOrNull()
             ?.also { reader = it }
     }
@@ -108,8 +118,10 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
     /** Called by the download when a new file is in place. */
     @Synchronized
     internal fun replaced() {
+        generation++
         runCatching { reader?.close() }
         reader = null
+        noFile = false
         index = LimitIndex.EMPTY
     }
 

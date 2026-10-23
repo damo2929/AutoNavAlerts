@@ -3,6 +3,7 @@
 
 package io.autonav.alerts.alerts
 
+import android.os.SystemClock
 import android.util.Log
 import io.autonav.alerts.core.alerts.AlertEngine
 import io.autonav.alerts.core.alerts.AlertEvent
@@ -487,7 +488,7 @@ class AlertCoordinator @Inject constructor(
         if (fix == null) sb.append("fix: none yet\n") else {
             sb.append("fix: lat=${"%.5f".format(fix.lat)} lon=${"%.5f".format(fix.lon)} spd=${"%.1f".format(fix.speedMps)} m/s (${fix.speedSource})")
             sb.append(" hdg=${fix.heading?.roundToInt() ?: "-"}±${fix.headingAccuracyDeg?.roundToInt() ?: "-"} (${fix.headingSource})")
-            sb.append(" src=${fix.locationSource} acc=${fix.accuracyM?.roundToInt() ?: "-"} age=${now - fix.timeMs} ms\n")
+            sb.append(" src=${fix.locationSource} acc=${fix.accuracyM?.roundToInt() ?: "-"} age=${SystemClock.elapsedRealtime() - fix.timeMs} ms\n")
         }
         sb.append("stats: req ${st.requestedHz} Hz act ${"%.1f".format(st.actualHz)} Hz speed ${"%.0f".format(st.speedMph)} mph (${st.speedSrc}, car=${st.speedFromCar})")
         sb.append(" dial=${st.dialSpeedMph?.let { "%.0f".format(it) } ?: "-"} heading ${st.headingSrc} chord=${st.chordM?.roundToInt() ?: "-"} gpsBrg=${st.gpsBrgDeg?.roundToInt() ?: "-"} lastReset=${st.lastReset ?: "-"}\n")
