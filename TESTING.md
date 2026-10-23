@@ -207,7 +207,7 @@ Alerts only fire for POIs that are **on the road you're driving** (within 40 m o
 2. On the DHU: **Search** (magnifier) → type a destination a few miles away → pick a result.
 3. On the route preview, press **Simulate** (top right) instead of **Go**.
 4. The car drives the route. The turn cards update, the voice speaks, markers update, and POI alerts fire as you pass them.
-5. Press the **X** on the host's travel-estimate card (bottom-left) to end the drive, before or after arrival; there is no stop action of ours. On the DHU, Android Auto's own "auto drive" developer option also starts a simulation if a route is set.
+5. Press the **X** on the host's travel-estimate card (bottom-left) to end the drive early; on arrival guidance ends by itself with a toast. There is no stop action of ours. On the DHU, Android Auto's own "auto drive" developer option also starts a simulation if a route is set.
 
 > While simulating, the alert engine uses the **simulated** position instead of the phone's GPS. The phone itself stays still.
 
@@ -241,7 +241,7 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | M5 | Pick a result → preview → **Go** | The preview shows the time, distance and traffic. After Go: a turn card with the manoeuvre icon, distance, road and next step, plus the ETA |
 | M6 | During guidance, open a media app (§6.5) | The turn info shows in Android Auto's rail/widget |
 | M7 | With the cluster config (§2.4) | The cluster shows the next turn |
-| M8 | Simulate to the end of the route | "You have arrived", with the destination name. **Done** on the action strip clears it. |
+| M8 | Simulate to the end of the route | Guidance ends by itself: a toast "You have arrived at <name>", the turn card and the host's travel-estimate card go, the strip goes back to Search · Report · Recents · More; `debug-nav`: `Guidance arrived "<name>"` then `stop caller=ARRIVED` (DESIGN.md §8 "Arrival") |
 | M9 | **Recents** (clock icon) → the delete icon on a row (car API 6+) | The row is removed. On older hosts, tap the row → **Remove**. |
 | M10 | **Recents → Clear all → Yes** | All recents are removed; favourites stay |
 | M11 | Switch DHU day/night (DHU console `help` lists the command) | The map switches between day and night styles |
@@ -255,9 +255,10 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | M12 | During a free drive, restart `tools/drive.py` with a route a few km away | The car map catches up with the car within about 10 s (`debug-nav`: `Map refollow d=…`, and `rebuild d=…` only on the third miss) |
 | M20 | Park (`tools/drive.py --hold 60 --noise 4`), Search → a destination → leave the preview showing for 15 s → **Go** → the car moves | The route **stays** for the whole drive. `debug-nav` shows `watchdog skip (preview)` while the preview is up, then `watchdog skip (guiding)` once moving, and `eco re-ask skip (grace)` (with EV routes on) in the first minute; no `Guidance stop` |
 | M21 | While guiding, tap the **X** on the host's travel-estimate card; separately, start a route in **Google Maps** on the DHU (the host stops ours) | Both: the card goes, the action strip goes back to Search · Report · Recents · More; `debug-nav`: `Session hostStopNavigation` then `Guidance stop caller=HOST`. No toast. |
-| M22 | Route preview → **Back** without pressing Go | `debug-nav`: `preview abandoned`; no route is left drawn and there's no travel-estimate card |
+| M22 | Route preview → **Back** without pressing Go; again with **Back** while the preview is still loading | `debug-nav`: `preview abandoned` (and `route request cancelled` for the loading case); no route is left drawn and there's no travel-estimate card |
+| M22a | While guiding, Search → another destination → preview → **Back** | The guided route comes back (same destination, the host's card keeps its X); `debug-nav`: `preview abandoned (restored guided route) dest=<the guided one>` then `routeStatus=OK (restore)`. Repeat with **Go** instead: guidance switches to the new destination |
 | M23 | EV routes on with the Routes API on the key (debug: `--ez ev true --ez tworoutes true`), Go on the energy-efficient route, then drive off it | Within the first 60 s: `eco re-ask skip (grace)`; after the SDK's own reroute: `eco re-ask Ask … RouteStatus OK`. The route **never clears** during the re-ask. |
-| M24 | Arrive (M8), then the card's **X** | The arrived card clears, the strip goes back to Search · Report · Recents · More, `debug-nav`: `Guidance stop caller=HOST` |
+| M24 | Arrive (M8) with a camera report drafted on the way | The arrival toast, then the phone's "N camera reports to check" notification; nothing left on the car screen to clear |
 | M25 | Route → **Go** → the card's **X**, then open **Search** (empty) and **More → Recents** | Both list the destination you just went to; `debug-nav`: `Places remember "<title>"` before the preview closed |
 | M26 | **Voice destination:** tap the **mic** on the search box and say a town (or Assistant: "navigate to <town>") | "Searching…", then a results list or the route preview, or "No results for …". Never a silent empty list. `debug-nav`: `Search submitted/voice len=…` then `Places textSearch n=… status=…`, or `NavigateIntent …` for Assistant |
 | M27 | **Contacts list:** Search (empty) → **Contacts** | A pickable list of contacts with addresses, recently used first then A–Z, within the host's list limit, each row "Name — Home · 12 High St · 3.2 mi". Tapping one locates it and opens the route preview. The last row, **Search contacts…**, opens the typed search (M17). |

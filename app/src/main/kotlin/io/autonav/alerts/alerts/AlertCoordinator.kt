@@ -63,10 +63,15 @@ data class ActiveAlert(
     val spoken: String,
     val iconId: String,
     val distanceM: Double,
+    /** In the POI's own unit, [speedUnit]; [limitShown] gives it in the display units. */
     val speedLimit: Int?,
     val setId: Long,
     val timeMs: Long,
-)
+    val speedUnit: SpeedUnit = SpeedUnit.MPH,
+) {
+    /** The limit in the display units (DESIGN.md §8.4 "Units"). */
+    fun limitShown(imperial: Boolean): Int? = speedLimit?.let { speedUnit.toDisplay(it, imperial) }
+}
 
 /** What the trace needs to know about a POI it is writing about. */
 data class TraceInfo(val setName: String, val bearing: Float?, val dirType: DirectionType)
@@ -437,6 +442,7 @@ class AlertCoordinator @Inject constructor(
             poiId = e.poiId, kind = e.kind, display = out.display, spoken = out.spoken,
             iconId = r?.iconId ?: io.autonav.alerts.data.IconRepository.CAMERA_AVERAGE,
             distanceM = e.distanceM, speedLimit = r?.poi?.speedLimit, setId = r?.set?.id ?: -1, timeMs = now,
+            speedUnit = r?.poi?.speedUnit ?: SpeedUnit.MPH,
         )
     }
 

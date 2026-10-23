@@ -39,8 +39,8 @@ import kotlinx.coroutines.withContext
  * older template keeps the preview working on older head units.
  *
  * Back (the header's `Action.BACK`, the error screen's Back, or the session ending with the
- * preview up) reaches `onDestroy`, which abandons the preview unless guidance has started: the
- * destination and its route are cleared (§8). While the screen is on screen `MapSurface.previewShowing`
+ * preview up) reaches `onDestroy`, which abandons the preview unless Go was pressed: the
+ * destination and its route are cleared, or while guiding the guided route is put back (§8). While the screen is on screen `MapSurface.previewShowing`
  * is set, so the follow watchdog leaves the route overview alone (§8, §16 row 22).
  */
 @Suppress("DEPRECATION")
@@ -78,8 +78,9 @@ class RoutePreviewScreen(
     override fun onDestroy(owner: LifecycleOwner) {
         session.surface.previewShowing = false
         if (showing === this) showing = null
-        // Back, or the session ending: abandonPreview is a no-op once guidance runs (the Go path).
-        if (!started && !deps.guidance().guiding.value) deps.guidance().abandonPreview()
+        // Back, or the session ending, without Go: the preview's route goes; while guiding, the
+        // guided route is put back (DESIGN.md §8, owner 2026-10-13).
+        if (!started) deps.guidance().abandonPreview()
     }
 
     override fun onGetTemplate(): Template {
@@ -208,7 +209,9 @@ class RoutePreviewScreen(
     /**
      * Go. The destination is remembered in Recents first, from the app scope and not cancellable
      * (a `lifecycleScope` insert was cancelled by `popToRoot()` and Recents stayed empty after a
-     * real drive, DESIGN.md §8), and awaited before guidance starts and the screen pops.
+     * real drive, DESIGN.md §8), and awaited before guidance starts and the screen pops. Guidance
+     * starts inside the same non-cancellable block, so a Back pressed meanwhile can't leave the
+     * route set with nothing guiding it.
      */
     private fun start(simulate: Boolean) {
         if (started) return
@@ -216,9 +219,9 @@ class RoutePreviewScreen(
         lifecycleScope.launch {
             withContext(NonCancellable) {
                 App.appScope.async { runCatching { deps.places().remember(destination, destination.address) } }.await()
+                deps.eventLog().record(EventLog.Channel.NAV, "Guidance", "Places remember \"${destination.title}\"")
+                deps.guidance().startGuidance(simulate)
             }
-            deps.eventLog().record(EventLog.Channel.NAV, "Guidance", "Places remember \"${destination.title}\"")
-            deps.guidance().startGuidance(simulate)
             screenManager.popToRoot()
         }
     }

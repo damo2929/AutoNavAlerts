@@ -28,8 +28,8 @@ class SpeedPanelView(context: Context) : View(context) {
     private var severity = Severity.NONE
     private var unit = "mph"
 
-    /** The limit the car is about to be under, or null: drawn as "→ 30" beside the ring (§8.4a). */
-    var upcomingMph: Int? = null
+    /** The limit the car is about to be under, in the display units, or null: drawn as "→ 30" beside the ring (§8.4a). */
+    var upcoming: Int? = null
         set(v) {
             if (v == field) return
             field = v
@@ -60,7 +60,7 @@ class SpeedPanelView(context: Context) : View(context) {
     private val box get() = 64 * density
     private val gap get() = 8 * density
     /** Room for the "→ 30" chevron to the right of the ring, only while there is one. */
-    private val chevron get() = if (upcomingMph != null) 44 * density else 0f
+    private val chevron get() = if (upcoming != null) 44 * density else 0f
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val w = box * 2 + gap + chevron
@@ -101,7 +101,7 @@ class SpeedPanelView(context: Context) : View(context) {
             Source.GOOGLE -> Unit
         }
         // The limit ahead: "→ 30" in a small white pill to the right of the ring (DESIGN.md §8.4a).
-        val up = upcomingMph ?: return
+        val up = upcoming ?: return
         val px = box * 2 + gap + 4 * density
         val ph = 26 * density
         rect.set(px, cy - ph / 2, px + chevron - 4 * density, cy + ph / 2)

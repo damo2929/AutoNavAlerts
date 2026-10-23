@@ -26,7 +26,10 @@ import io.autonav.alerts.core.nav.GuidanceState
 import io.autonav.alerts.core.nav.RoutePolyline
 import io.autonav.alerts.diag.EventLog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -47,11 +50,12 @@ data class RouteOption(val index: Int, val seconds: Int, val meters: Int, val de
  * Who ended guidance (DESIGN.md §9.3): every stop is logged with its caller so a route that
  * vanishes on a drive can be traced. `HOST` is the normal end of a route: the X on the host's
  * travel-estimate card is the one cancel on the car screen (§8; owner, 2026-10-13), and it arrives
- * as `onStopNavigation`, the same callback a host-initiated stop uses. `SESSION_DESTROY` is defined
- * but not used: the car session ending keeps guidance running (§9.3); the owner decides after the
- * next drive's logs.
+ * as `onStopNavigation`, the same callback a host-initiated stop uses. `ARRIVED`: the final
+ * destination was reached, which ends guidance at once (owner, 2026-10-13). `SESSION_DESTROY` is
+ * defined but not used: the car session ending keeps guidance running (§9.3); the owner decides
+ * after the next drive's logs.
  */
-enum class StopReason { HOST, KEY_CHANGED, SESSION_DESTROY }
+enum class StopReason { HOST, ARRIVED, KEY_CHANGED, SESSION_DESTROY }
 
 /**
  * Destination, preview, guidance and route geometry on top of the [Navigator] (DESIGN.md §8,
@@ -91,8 +95,16 @@ class GuidanceController @Inject constructor(
     private val _guiding = MutableStateFlow(false)
     val guiding: StateFlow<Boolean> = _guiding
 
-    private val _arrived = MutableStateFlow(false)
-    val arrived: StateFlow<Boolean> = _arrived
+    private val _arrivals = MutableSharedFlow<String>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** The destination's title, once per arrival that ended guidance (DESIGN.md §8 "Arrival"). */
+    val arrivals: SharedFlow<String> = _arrivals
+
+    /** What is being guided, so Back on a preview opened while guiding can put it back (§8, owner 2026-10-13). */
+    private class Guided(
+        val waypoint: Waypoint, val destination: Destination?, val choices: List<RouteChoice>,
+        val selected: Int, val routeNote: String?, val token: String?,
+    )
+    @Volatile private var guided: Guided? = null
 
     @Volatile private var routePoints: List<LatLng> = emptyList()
     /** The same route as a core polyline, for the alert engine and the limit lookahead. */
@@ -181,7 +193,6 @@ class GuidanceController @Inject constructor(
                 choices = maxOf(1, _choices.value.size), selectedIndex = _selected.value,
                 selectedEfficient = _choices.value.getOrNull(_selected.value)?.efficient == true, routeNote = _routeNote.value,
             )
-            _arrived.value = false
             null
         } else {
             "No route: ${status.name.lowercase().replace('_', ' ')}"
@@ -239,11 +250,27 @@ class GuidanceController @Inject constructor(
         val t0 = SystemClock.elapsedRealtime()
         val tolls = settings.current().avoidTolls
         val status = suspendCancellableCoroutine { cont ->
+            cont.invokeOnCancellation { clearIfNotGuiding(nav) }
             nav.setDestinations(listOf(waypoint), RoutingOptions().avoidTolls(tolls)) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
         }
         logRouteStatus(nav, status, t0, why)
         return status
     }
+
+    /**
+     * The preview was left (Back) while its route was still being worked out: the SDK may still set
+     * it, so it's cleared again, never left drawn (DESIGN.md §8). While guiding, [abandonPreview]
+     * puts the guided route back instead.
+     */
+    private fun clearIfNotGuiding(nav: Navigator) {
+        main.post {
+            if (state.guiding) return@post
+            log("route request cancelled: destinations cleared")
+            runCatching { nav.clearDestinations() }
+        }
+    }
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
     private fun logRouteStatus(nav: Navigator, status: Navigator.RouteStatus, t0: Long, why: String) {
         val points = if (status == Navigator.RouteStatus.OK) runCatching { nav.routeSegments.sumOf { it.latLngs.size } }.getOrDefault(-1) else 0
@@ -261,6 +288,7 @@ class GuidanceController @Inject constructor(
         val t0 = SystemClock.elapsedRealtime()
         val options = CustomRoutesOptions.Builder().setRouteToken(token).setTravelMode(CustomRoutesOptions.TravelMode.DRIVING).build()
         val status = suspendCancellableCoroutine { cont ->
+            cont.invokeOnCancellation { clearIfNotGuiding(nav) }
             nav.setDestinations(listOf(waypoint), options) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
         }
         logRouteStatus(nav, status, t0, "token $why")
@@ -291,8 +319,10 @@ class GuidanceController @Inject constructor(
         return RouteOption(0, td.seconds, td.meters, td.delaySeverity)
     }
 
-    fun startGuidance(simulate: Boolean = false) {
-        val nav = holder.navigator.value ?: return
+    /** Starts guidance along the set route. False, and nothing starts, with no route (DESIGN.md §9.3). */
+    fun startGuidance(simulate: Boolean = false): Boolean {
+        val nav = holder.navigator.value ?: return false
+        val wp = waypoint ?: run { log("start skipped: no route simulate=$simulate"); return false }
         log("start simulate=$simulate")
         nav.setAudioGuidanceSettings(
             AudioGuidanceSettings.builder()
@@ -311,8 +341,11 @@ class GuidanceController @Inject constructor(
         nav.startGuidance()
         state = state.started(SystemClock.elapsedRealtime())
         ecoReaskPending = false
+        guided = Guided(
+            wp, _destination.value, _choices.value, _selected.value, _routeNote.value,
+            token = if (_choices.value.isNotEmpty()) state.lastAppliedToken else null,
+        )
         _guiding.value = true
-        _arrived.value = false
         if (simulate && BuildConfig.DEBUG) {
             // The simulator moves the SDK's location only, so feed it to the alert engine too.
             location.setSimulated(true)
@@ -320,6 +353,7 @@ class GuidanceController @Inject constructor(
             _simulating.value = true
             nav.simulator.simulateLocationsAlongExistingRoute(SimulationOptions().speedMultiplier(simulationSpeed))
         }
+        return true
     }
 
     /** Simulator speed multiplier (1 = real time). */
@@ -345,23 +379,46 @@ class GuidanceController @Inject constructor(
         }
         _simulating.value = false
         state = state.stopped()
+        guided = null
         clearRoute()
     }
 
     /**
-     * Back on the route preview (DESIGN.md §8): the destination and its route are cleared, unless
-     * guidance is already running, when the route stays and this only notes the preview is gone.
+     * Back on the route preview (DESIGN.md §8): the destination and its route are cleared. While
+     * guiding, the preview had replaced the guided route, so that is set again (owner, 2026-10-13).
      */
     fun abandonPreview() {
         if (state.guiding) {
             state = state.previewAbandoned()
-            log("preview abandoned (guiding, route kept)")
+            val g = guided
+            if (g == null || waypoint === g.waypoint) { log("preview abandoned (guiding, route kept)"); return }
+            restoreGuided(g)
             return
         }
         log("preview abandoned dest=${_destination.value?.title ?: "-"}")
         holder.navigator.value?.let { nav -> runCatching { nav.clearDestinations() } }
         state = state.previewAbandoned()
         clearRoute()
+    }
+
+    /** Puts the guided route back after a preview: its token when it had one, else the SDK's route. */
+    private fun restoreGuided(g: Guided) {
+        waypoint = g.waypoint
+        _destination.value = g.destination
+        _choices.value = g.choices
+        _selected.value = g.selected
+        _routeNote.value = g.routeNote
+        state = state.copy(
+            selectedIndex = g.selected, choices = maxOf(1, g.choices.size),
+            selectedEfficient = g.choices.getOrNull(g.selected)?.efficient == true, routeNote = g.routeNote,
+        )
+        log("preview abandoned (restored guided route) dest=${g.destination?.title ?: "-"} token=${g.token != null}")
+        val nav = holder.navigator.value ?: return
+        App.appScope.launch(Dispatchers.Main) {
+            var status = g.token?.let { setToken(nav, g.waypoint, it, "restore") }
+            if (status != Navigator.RouteStatus.OK) status = plainRoute(nav, g.waypoint, "restore")
+            if (status == Navigator.RouteStatus.OK && waypoint === g.waypoint) refreshRoutePoints(nav)
+        }
     }
 
     /** Everything about the route, after a stop or an abandoned preview; mirrors [state]. */
@@ -371,7 +428,6 @@ class GuidanceController @Inject constructor(
         polyline = null
         ecoReaskPending = false
         _guiding.value = state.guiding
-        _arrived.value = state.arrived
         _destination.value = null
         _choices.value = emptyList()
         _selected.value = 0
@@ -415,12 +471,14 @@ class GuidanceController @Inject constructor(
             ecoReaskPending = state.guiding
             log("rerouting")
         }
+        // Arrival ends guidance at once (owner, 2026-10-13): the session says so with a toast.
         nav.addArrivalListener { event ->
-            if (event.isFinalDestination) {
-                state = state.arrived()
-                _arrived.value = true
-                log("arrived \"${event.waypoint?.title}\"")
-            }
+            if (!event.isFinalDestination) return@addArrivalListener
+            val title = event.waypoint?.title ?: _destination.value?.title ?: ""
+            if (!state.guiding) { log("arrived \"$title\" ignored (not guiding)"); return@addArrivalListener }
+            log("arrived \"$title\"")
+            stopGuidance(StopReason.ARRIVED)
+            _arrivals.tryEmit(title)
         }
     }
 
@@ -449,7 +507,8 @@ class GuidanceController @Inject constructor(
                         state.sdkRerouteCompleted, newToken = eco.efficient.token, lastAppliedToken = state.lastAppliedToken,
                     )
                     if (apply is EcoReaskPolicy.Decision.Skip) { log("ecoReask skip reason=${apply.reason}"); return@launch }
-                    if (!state.guiding) return@launch
+                    // The route may have changed while the Routes API answered (a new destination, a stop).
+                    if (!state.guiding || waypoint !== wp) { log("ecoReask skip reason=routeChanged"); return@launch }
                     val status = setToken(nav, wp, eco.efficient.token, "ecoReask")
                     if (status == Navigator.RouteStatus.OK) refreshRoutePoints(nav) else recoverRoute(nav, "ecoReask $status")
                 }

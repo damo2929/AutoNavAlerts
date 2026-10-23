@@ -51,11 +51,15 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
     private var ticker: Job? = null
 
     init {
+        // Follows the settings, so a change made elsewhere (the map's pill, the phone) shows here,
+        // and only a change re-sends the template (no shake, DESIGN.md §8).
         lifecycleScope.launch {
-            val s = session.deps.settings().current()
-            mutedUntil = s.mutedUntilMs
-            satellite = s.satelliteMap
-            invalidate()
+            session.deps.settings().settings.collect { s ->
+                if (s.mutedUntilMs == mutedUntil && s.satelliteMap == satellite) return@collect
+                mutedUntil = s.mutedUntilMs
+                satellite = s.satelliteMap
+                invalidate()
+            }
         }
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
@@ -120,6 +124,8 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
             .addItem(Row.Builder().setTitle("Satellite map")
                 .setImage(CarUi.icon(carContext, R.drawable.ic_action_layers))
                 .setToggle(Toggle.Builder { on ->
+                    // Kept here at once: the next template must not show the old state (it snapped back).
+                    satellite = on
                     lifecycleScope.launch { session.deps.settings().update { it.copy(satelliteMap = on) } }
                 }.setChecked(satellite).build())
                 .build())

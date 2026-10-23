@@ -60,7 +60,8 @@ class SearchScreen(
 
     init {
         lifecycle.addObserver(this)
-        if (query.isNotBlank()) submit(query)
+        // A contact's "Which address?" list opens as it is: a submit would clear it (§8.3).
+        if (query.isNotBlank() && initialChoice == null) submit(query)
     }
 
     /** Recents reload each time the screen comes back (a Go on the preview adds one, §8). */

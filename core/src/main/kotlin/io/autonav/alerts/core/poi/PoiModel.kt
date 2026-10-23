@@ -6,7 +6,18 @@ package io.autonav.alerts.core.poi
 /** Which travel directions a POI applies to. See DESIGN.md §4.1 for the meaning of `bearing`. */
 enum class DirectionType { ANY, ONE_WAY, BOTH }
 
-enum class SpeedUnit { MPH, KMH }
+enum class SpeedUnit {
+    MPH, KMH;
+
+    /** A limit in this unit as shown in the display units, rounded (DESIGN.md §8.4 "Units"). */
+    fun toDisplay(limit: Int, imperial: Boolean): Int = when {
+        this == MPH && !imperial -> Math.round(limit * KMH_PER_MPH).toInt()
+        this == KMH && imperial -> Math.round(limit / KMH_PER_MPH).toInt()
+        else -> limit
+    }
+
+    private companion object { const val KMH_PER_MPH = 1.609344 }
+}
 
 /** Role of a POI in an average-speed zone (DESIGN.md §11 step 8). */
 enum class ZoneRole { NONE, ZONE_START, ZONE_END, ZONE_POINT }

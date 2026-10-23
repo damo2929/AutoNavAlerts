@@ -30,15 +30,17 @@ import kotlinx.coroutines.launch
 
 /**
  * The map screen: free drive, or guidance with turn cards (DESIGN.md §8). Action strip:
- * Search · Report · Recents · More; while navigating the first slot reads "Stop navigation",
- * on arrival "Done", both through `stopGuidance(reason)` (§9.3). The host's trip feed is the
- * session's `TripPublisher`, not this screen's (§9.3), so it never stalls while another screen is up.
+ * Search · Report · Recents · More (Recents leaves it while a route is set). Nothing of ours stops
+ * a route: Google's X on the host's travel-estimate card does, and arrival ends guidance by itself
+ * (§9.3). The host's trip feed is the session's `TripPublisher`, not this screen's (§9.3), so it
+ * never stalls while another screen is up.
  */
 class HomeScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
     private var navInfo: NavInfo? = null
     private var guiding = false
-    private var arrived = false
+    /** The last travel estimate, sent again while rerouting so the host's card and its X stay (§8). */
+    private var lastEstimate: androidx.car.app.navigation.model.TravelEstimate? = null
     private var unavailable: NavUnavailable? = null
     private var lastInvalidate = 0L
     private var pendingInvalidate: Job? = null
@@ -50,12 +52,12 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
     override fun onCreate(owner: LifecycleOwner) {
         lifecycleScope.launch {
             combine(
-                NavUpdatesService.navInfo, deps.guidance().guiding, deps.guidance().arrived, deps.navigator().unavailable,
-            ) { info, g, a, u -> listOf(info, g, a, u) }.collect { (info, g, a, u) ->
-                navInfo = info as NavInfo?
-                guiding = g as Boolean
-                arrived = a as Boolean
-                unavailable = u as NavUnavailable?
+                NavUpdatesService.navInfo, deps.guidance().guiding, deps.navigator().unavailable,
+            ) { info, g, u -> Triple(info, g, u) }.collect { (info, g, u) ->
+                navInfo = info
+                guiding = g
+                unavailable = u
+                if (!g) lastEstimate = null
                 invalidateThrottled()
             }
         }
@@ -104,19 +106,16 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
                     .setImage(CarUi.icon(carContext, R.drawable.ic_action_report))
                     .build(),
             )
-            arrived -> b.setNavigationInfo(
-                MessageInfo.Builder(carContext.getString(R.string.car_arrived))
-                    .setText(deps.guidance().destination.value?.title ?: "")
-                    .setImage(CarUi.icon(carContext, R.drawable.ic_action_place))
-                    .build(),
-            )
             guiding && info != null && info.navState == NavState.ENROUTE -> {
                 mapper.routingInfo(info)?.let { b.setNavigationInfo(it) }
-                mapper.travelEstimate(info)?.let { b.setDestinationTravelEstimate(it) }
+                (mapper.travelEstimate(info) ?: lastEstimate)?.let { lastEstimate = it; b.setDestinationTravelEstimate(it) }
             }
-            guiding && info?.navState == NavState.REROUTING -> b.setNavigationInfo(
-                androidx.car.app.navigation.model.RoutingInfo.Builder().setLoading(true).build(),
-            )
+            guiding && info?.navState == NavState.REROUTING -> {
+                b.setNavigationInfo(androidx.car.app.navigation.model.RoutingInfo.Builder().setLoading(true).build())
+                lastEstimate?.let { b.setDestinationTravelEstimate(it) }
+            }
+            // Before the first update of a route: keep the card if there was one (a restored route).
+            guiding -> lastEstimate?.let { b.setDestinationTravelEstimate(it) }
         }
         return b.build()
     }
@@ -145,7 +144,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
             screenManager.push(SearchScreen(carContext, session))
         })
         strip.addAction(CarUi.action(carContext, R.drawable.ic_action_report, persistent = true) { openReport() })
-        if (!guiding && !arrived) {
+        if (!guiding) {
             strip.addAction(CarUi.action(carContext, R.drawable.ic_action_recents, persistent = true) {
                 screenManager.push(RecentsScreen(carContext, session))
             })
