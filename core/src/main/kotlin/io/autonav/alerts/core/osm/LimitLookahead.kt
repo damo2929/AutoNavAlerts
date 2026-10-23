@@ -22,7 +22,8 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
         val maxSteps: Int = 200,
     )
 
-    data class Change(val newMph: Int, val distanceM: Double, val viaRoute: Boolean)
+    /** [lat]/[lon]: where the new limit starts (the joining point on the road, or the route sample), for the map marker (§8.4a). */
+    data class Change(val newMph: Int, val distanceM: Double, val viaRoute: Boolean, val lat: Double = Double.NaN, val lon: Double = Double.NaN)
 
     /**
      * @param routeAhead the route from the car onward (first point at the car), or null in free drive.
@@ -42,7 +43,7 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
         while (d <= config.maxM && steps++ < config.maxSteps) {
             val next = index.connectedFrom(end.lat, end.lon, out, exclude = piece) ?: return null
             val mph = index.mphOf(next)
-            if (mph != mph0) return Change(mph, d, viaRoute = false)
+            if (mph != mph0) return Change(mph, d, viaRoute = false, lat = end.lat, lon = end.lon)
             val start = index.startOf(next)
             val stop = index.endOf(next, true)
             forward = Geo.distanceM(end.lat, end.lon, start.lat, start.lon) <= Geo.distanceM(end.lat, end.lon, stop.lat, stop.lon)
@@ -73,7 +74,7 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
             val pLon = a.lon + t * (b.lon - a.lon)
             val bearing = Geo.bearingDeg(a.lat, a.lon, b.lat, b.lon)
             val mph = index.limitAt(pLat, pLon, bearing)
-            if (mph != null && mph != mph0) return Change(mph.toInt(), s, viaRoute = true)
+            if (mph != null && mph != mph0) return Change(mph.toInt(), s, viaRoute = true, lat = pLat, lon = pLon)
             s += config.sampleM
         }
         return null

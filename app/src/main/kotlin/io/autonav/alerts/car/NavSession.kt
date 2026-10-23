@@ -58,6 +58,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
     lateinit var surface: MapSurface
         private set
     private lateinit var markers: PoiMarkerLayer
+    private lateinit var limitMarker: io.autonav.alerts.map.LimitChangeMarker
     private lateinit var eventLog: EventLog
     private var tripPublisher: TripPublisher? = null
     /** The SDK's road-snapped position, for the follow watchdog (DESIGN.md §8); registered once the navigator exists. */
@@ -89,7 +90,8 @@ class NavSession : Session(), DefaultLifecycleObserver {
         surface = MapSurface(carContext) { deps.navigator().applyApiKey() }
         surface.guidingProvider = { deps.guidance().guiding.value }
         markers = PoiMarkerLayer(deps.icons(), (36 * carContext.resources.displayMetrics.density).toInt())
-        surface.onMapReady = { m -> markers.map = m; m.setOnCameraIdleListener { redrawMarkers() } }
+        limitMarker = io.autonav.alerts.map.LimitChangeMarker(carContext.resources.displayMetrics.density)
+        surface.onMapReady = { m -> markers.map = m; limitMarker.map = m; m.setOnCameraIdleListener { redrawMarkers() } }
         carContext.getCarService(AppManager::class.java).setSurfaceCallback(surface)
         carContext.getCarService(NavigationManager::class.java).setNavigationManagerCallback(object : NavigationManagerCallback {
             // The X on the host's travel-estimate card (the one cancel on the car screen, DESIGN.md §8),
@@ -254,20 +256,19 @@ class NavSession : Session(), DefaultLifecycleObserver {
 
     /**
      * The next change of limit on our road, from the OSM data on the phone and the route ahead:
-     * the panel's "→ 30" chevron, one `limitAhead` line per change, and one spoken announcement
+     * the grey limit marker on the map where it starts, one `limitAhead` line per change, and one spoken announcement
      * within max(300 m, speed × 12 s) when `announceLimitChanges` is on (voice on, not muted).
      */
     private fun tickLimitAhead() {
-        val panel = surface.speedPanel ?: return
         val fix = deps.alerts().lastFix.value
         val heading = fix?.heading
-        if (fix == null || heading == null || !osmLimitsOn) { setUpcoming(panel, null); return }
+        if (fix == null || heading == null || !osmLimitsOn) { setUpcoming(null); return }
         val route = deps.guidance().routePointsAhead()
         val change = deps.speedLimits().nextChange(fix.lat, fix.lon, heading, route.takeIf { it.size >= 2 })
         // Already under it (the panel shows that limit): nothing ahead to say. Both in display units (§8.4).
         val upcoming = change?.let { io.autonav.alerts.core.osm.OsmSpeedLimits.display(it.newMph.toDouble(), imperial) }
-        if (change == null || upcoming == lastLimit?.limit) { setUpcoming(panel, null); return }
-        setUpcoming(panel, upcoming)
+        if (change == null || upcoming == lastLimit?.limit) { setUpcoming(null); return }
+        setUpcoming(change, upcoming)
         eventLog.onChange("alerts.limitAhead", change.newMph to change.viaRoute, EventLog.Channel.ALERT, "Alerts") {
             "limitAhead new=${change.newMph} d=${change.distanceM.toInt()} via=${if (change.viaRoute) "route" else "road"}"
         }
@@ -278,9 +279,9 @@ class NavSession : Session(), DefaultLifecycleObserver {
         if (speak) deps.tts().speak(LimitAnnouncer.text(upcoming!!), 10, -1, false, kind = io.autonav.alerts.core.alerts.AlertKind.LIMIT_CHANGE)
     }
 
-    private fun setUpcoming(panel: SpeedPanelView, limit: Int?) {
-        if (panel.upcoming == limit) return
-        panel.post { panel.upcoming = limit }
+    /** The map marker for the change ahead ([limit] in display units), or none; redrawn only on a change (§8.4a). */
+    private fun setUpcoming(change: io.autonav.alerts.core.osm.LimitLookahead.Change?, limit: Int? = null) {
+        if (change == null || limit == null) limitMarker.clear() else limitMarker.show(limit, change.lat, change.lon)
         if (limit == null) eventLog.onChange("alerts.limitAhead", null, EventLog.Channel.ALERT, "Alerts") { "limitAhead none" }
     }
 
@@ -416,6 +417,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         deps.dispatcher().carSink = null
         deps.alerts().stop()
         markers.clear()
+        limitMarker.clear()
         surface.close()
         deps.driveRecorder().stop()
         eventLog.flush("session")

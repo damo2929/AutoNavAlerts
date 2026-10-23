@@ -3,6 +3,7 @@
 
 package io.autonav.alerts.core.osm
 
+import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.geo.LatLngPoint
 import io.autonav.alerts.core.osm.LimitLookahead.Change
 import org.junit.Assert.assertEquals
@@ -115,7 +116,10 @@ class LimitLookaheadTest {
     @Test
     fun junctionReportsTheContinuationNotTheSideRoad() {
         val idx = junction()
-        assertEquals(Change(40, 450.0, viaRoute = false), next(idx, 50.0, 0.0, 0.0)!!.let { it.copy(distanceM = Math.round(it.distanceM).toDouble()) })
+        val c = next(idx, 50.0, 0.0, 0.0)!!
+        assertEquals(Change(40, 450.0, viaRoute = false), c.copy(distanceM = Math.round(c.distanceM).toDouble(), lat = Double.NaN, lon = Double.NaN))
+        // The change is marked where the 40 road starts: the junction 500 m north (§8.4a).
+        assertEquals(0.0, Geo.distanceM(latAt(500.0), lonAt(0.0), c.lat, c.lon), 1.0)
         assertEquals(40, next(idx, 250.0, 0.0, 0.0)!!.newMph)
         // On the side road, just past the junction, heading east: a 30 road with no change ahead.
         assertNull(next(idx, 300.0, 50.0, 90.0))
@@ -143,6 +147,8 @@ class LimitLookaheadTest {
         assertEquals(40, straight.newMph)
         assertTrue(straight.viaRoute)
         assertTrue("d=${straight.distanceM}", straight.distanceM in 450.0..475.0) // 25 m samples
+        // Marked at the route sample where the 40 is first found: on the road, that far along it.
+        assertTrue(Geo.distanceM(latAt(50.0 + straight.distanceM), lonAt(0.0), straight.lat, straight.lon) < 1.0)
         // No change within 600 m of route: null. A one-point route falls back to the road walk.
         assertNull(next(idx, 50.0, 0.0, 0.0, listOf(pt(50.0, 0.0), pt(400.0, 0.0))))
         assertEquals(40, next(idx, 50.0, 0.0, 0.0, listOf(pt(50.0, 0.0)))!!.newMph)
