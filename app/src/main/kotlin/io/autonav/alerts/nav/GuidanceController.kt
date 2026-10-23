@@ -121,26 +121,39 @@ class GuidanceController @Inject constructor(
         App.appScope.launch { location.fixes.collect { lastHeading = it.heading } }
     }
 
+    /** The car is more than [CAR_OFF_ROUTE_M] from its route segment, as of the last [locateCar]. */
+    @Volatile private var carOffRoute = false
+
     /**
-     * Route geometry for the alert engine's parallel-road check (DESIGN.md §11 step 4): the
-     * cross-track distance to the route ahead of the car, never to segments behind. Called from
-     * the alert thread once per fix; `locate` first, so [RoutePolyline.carIndex] follows the car.
+     * Places the car on the route, once per fix and from the car's own position, before the engine
+     * runs (DESIGN.md §11 step 4), so [RoutePolyline.carIndex] follows the car and [routeMatcher]
+     * only measures POIs. Called from the alert thread.
      */
-    val routeMatcher = RouteMatcher { lat, lon ->
-        val p = polyline ?: return@RouteMatcher null
-        if (!_guiding.value) return@RouteMatcher null
+    fun locateCar(lat: Double, lon: Double, headingDeg: Double?) {
+        val p = polyline ?: return
+        if (!_guiding.value) return
         // With the heading: a route that doubles back along this road (the SDK's U-turn route from a
         // parked car) must not pin the car to the leg going the other way (bench, 2026-10-13).
-        p.locate(lat, lon, lastHeading)
+        p.locate(lat, lon, headingDeg)
         // Off the SDK's route (it hasn't rerouted yet, or routed a parallel road): the route says
         // nothing about the road the car is on, so the engine falls back to its free-drive corridor
         // (DESIGN.md §11 step 4; bench 2026-10-13: cameras on the driven A61 were 1.2 km from the route).
         val carOff = p.carDistanceM(lat, lon)
         val offRoute = carOff > CAR_OFF_ROUTE_M
+        carOffRoute = offRoute
         eventLog.onChange("guidance.carOffRoute", offRoute, EventLog.Channel.NAV, "Guidance") {
             if (offRoute) "carOffRoute d=${carOff.toInt()} m: free-drive matching until the SDK reroutes" else "carOnRoute d=${carOff.toInt()} m"
         }
-        if (offRoute) return@RouteMatcher null
+    }
+
+    /**
+     * Route geometry for the alert engine's parallel-road check (DESIGN.md §11 step 4): a POI's
+     * cross-track distance to the route ahead of the car, never to segments behind. Called by the
+     * engine once per POI, after [locateCar] for the fix; null with no route or the car off it.
+     */
+    val routeMatcher = RouteMatcher { lat, lon ->
+        val p = polyline ?: return@RouteMatcher null
+        if (!_guiding.value || carOffRoute) return@RouteMatcher null
         p.distanceToRouteM(lat, lon).coerceAtMost(10_000.0)
     }
 
@@ -426,6 +439,7 @@ class GuidanceController @Inject constructor(
         waypoint = null
         routePoints = emptyList()
         polyline = null
+        carOffRoute = false
         ecoReaskPending = false
         _guiding.value = state.guiding
         _destination.value = null

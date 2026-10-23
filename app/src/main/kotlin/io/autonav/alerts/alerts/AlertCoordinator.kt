@@ -388,6 +388,7 @@ class AlertCoordinator @Inject constructor(
         // Mute never changes the candidates (§12.3): PASSING still fires and the card still shows.
         val candidates = if (quiet.isEmpty()) alertable else alertable.filter { it.id !in quiet }
         val (events, verdicts, away) = synchronized(engineLock) {
+            guidance.locateCar(fix.lat, fix.lon, fix.heading)
             Triple(
                 runCatching { engine.onFix(fix, candidates, guidance.routeMatcher) }
                     .onFailure { Log.e(TAG, "engine", it) }.getOrDefault(emptyList()),
