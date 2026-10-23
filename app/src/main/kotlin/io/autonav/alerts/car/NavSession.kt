@@ -65,6 +65,8 @@ class NavSession : Session(), DefaultLifecycleObserver {
 
     @Volatile private var speedingPct: Float = 0f
     @Volatile private var speedingSeverity = SpeedPanelView.Severity.NONE
+    /** When the SDK last reported speeding; an older % isn't used to work out the limit (§8.4). */
+    @Volatile private var speedingAtMs = 0L
     @Volatile private var derivedLimit: Pair<Int, Long>? = null
     @Volatile var imperial = true
         private set
@@ -217,6 +219,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         nav.setSpeedAlertOptions(SpeedAlertOptions(5f, 10f, 5.0))
         nav.setSpeedingListener { pct, severity ->
             speedingPct = pct
+            speedingAtMs = System.currentTimeMillis()
             speedingSeverity = when (severity) {
                 SpeedAlertSeverity.MAJOR -> SpeedPanelView.Severity.MAJOR
                 SpeedAlertSeverity.MINOR -> SpeedPanelView.Severity.MINOR
@@ -299,9 +302,10 @@ class NavSession : Session(), DefaultLifecycleObserver {
         val now = System.currentTimeMillis()
         // While speeding, the SDK reports % over Google's limit, so the limit can be worked out: from
         // the engine's speed (GPS or the car's raw), not the dashboard figure, which reads high (§8.4).
-        if (speedingSeverity != SpeedPanelView.Severity.NONE && speedingPct > 0f) {
+        // Snapped to a limit that exists, and only from an update in the last 2 s (bench, 2026-10-23: "45").
+        if (speedingSeverity != SpeedPanelView.Severity.NONE && speedingPct > 0f && now - speedingAtMs <= 2_000) {
             val measured = if (imperial) speedMps / Geo.MPS_PER_MPH else speedMps * 3.6
-            val lim = (measured / (1 + speedingPct / 100.0) / 5.0).roundToInt() * 5
+            val lim = io.autonav.alerts.core.osm.LimitSnap.snap(measured / (1 + speedingPct / 100.0), imperial)
             derivedLimit = lim to now
         }
         val google = derivedLimit?.takeIf { now - it.second < 60_000 }?.first
