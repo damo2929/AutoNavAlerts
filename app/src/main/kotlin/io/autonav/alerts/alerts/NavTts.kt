@@ -7,7 +7,6 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.media.AudioPlaybackConfiguration
 import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
@@ -31,10 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Speech on the navigation-guidance channel (DESIGN.md §12.3): ducks media, never pauses it, and
- * queues behind the Navigation SDK's own prompts. The policy lives in the core [SpeechScheduler]
- * (bounded waits, staleness by distance, PASSING never dropped, retry then fall back, a 50-entry
- * record ring); this class is the Android side: the `TextToSpeech` engine, audio focus, the chime,
+ * Speech on the navigation-guidance channel (DESIGN.md §12.3), the alerts and the directions in
+ * one voice: ducks media, never pauses it. The policy lives in the core [SpeechScheduler]
+ * (staleness by distance, PASSING never dropped, retry then fall back, a 50-entry record ring); this class is the Android side: the `TextToSpeech` engine, audio focus, the chime,
  * the watchdog timer and the `Tts …` lines in alert-debug. Everything runs on the main handler.
  */
 @Singleton
@@ -277,29 +275,21 @@ class NavTts @Inject constructor(
         pump()
     }
 
-    private fun sdkSpeaking(): Boolean = runCatching {
-        audio.activePlaybackConfigurations.any { c: AudioPlaybackConfiguration ->
-            c.audioAttributes.usage == AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE
-        }
-    }.getOrDefault(false)
-
     private fun pump() {
         main.removeCallbacks(pumpRunnable)
         if (!ready) {
             // No engine (it failed to start): each waiting alert goes through the error path, so it is
             // retried once and then chimed, never left queued and silent for the whole drive.
             if (initFailed && current == null) {
-                val d = scheduler.next(now(), channelBusy = false)
+                val d = scheduler.next(now())
                 if (d is Decision.Speak) { current = d.utterance; engineError(d.utterance, ERROR_NO_ENGINE) }
                 else if (d is Decision.Wait) main.postDelayed(pumpRunnable, max(50L, d.untilMs - now()))
             }
             return
         }
         val now = now()
-        // Our own voice shows on the channel too: only look while we aren't speaking.
-        val busy = current == null && sdkSpeaking()
-        when (val d = scheduler.next(now, channelBusy = busy)) {
-            is Decision.Speak -> start(d.utterance, d.waitedMs, busy)
+        when (val d = scheduler.next(now)) {
+            is Decision.Speak -> start(d.utterance, d.waitedMs)
             // While we speak, onDone/onStop/the watchdog pump again: no polling loop meanwhile.
             is Decision.Wait -> if (d.reason != "speaking") main.postDelayed(pumpRunnable, max(50L, d.untilMs - now))
             Decision.Idle -> if (current == null) abandonFocus()
@@ -308,12 +298,12 @@ class NavTts @Inject constructor(
         syncRecords()
     }
 
-    private fun start(u: Utterance, waitedMs: Long, busy: Boolean) {
+    private fun start(u: Utterance, waitedMs: Long) {
         val engine = tts ?: return
         current = u
         val engineId = "autonav-${u.id}"
         currentEngineId = engineId
-        log("start ${u.kind} poi=${u.poiId} waited=$waitedMs sdkSpeaking=$busy queue=${scheduler.waiting.size}")
+        log("start ${u.kind} poi=${u.poiId} waited=$waitedMs queue=${scheduler.waiting.size}")
         val granted = requestFocus()
         scheduler.onFocus(u, granted, now())
         if (!granted) log("focus=denied ${u.kind} poi=${u.poiId}")
@@ -400,7 +390,6 @@ class NavTts @Inject constructor(
             Outcome.TTS_ERROR -> true // logged by engineError
             Outcome.MUTED -> { log("muted ${u.kind} poi=${u.poiId}"); true }
             Outcome.FOCUS_DENIED -> false
-            Outcome.DEFERRED -> { log("wait ${u.kind} poi=${u.poiId} reason=channel busy"); false }
         }
         if (terminal) spokenCallback?.invoke(u.poiId, u.kind, r.outcome == Outcome.SPOKEN, r.waitedMs, r.outcome.name)
     }

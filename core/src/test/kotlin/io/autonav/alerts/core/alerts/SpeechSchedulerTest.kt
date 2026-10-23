@@ -22,8 +22,8 @@ class SpeechSchedulerTest {
         text: String = "Speed camera ahead", priority: Int = when (kind) { AlertKind.PASSING -> 100; AlertKind.SECOND -> 50; else -> 10 },
     ) = Utterance(nextId++, poi, kind, text, priority, distanceM, staleBelowM, chime = false, queuedMs = queuedMs)
 
-    private fun speak(s: SpeechScheduler, now: Long, busy: Boolean = false): Utterance {
-        val d = s.next(now, busy)
+    private fun speak(s: SpeechScheduler, now: Long): Utterance {
+        val d = s.next(now)
         assertTrue("expected Speak at $now, got $d", d is Decision.Speak)
         val utt = (d as Decision.Speak).utterance
         s.onStarted(utt, now)
@@ -59,9 +59,9 @@ class SpeechSchedulerTest {
         assertEquals(a, speak(s, 0))
         val b = u(AlertKind.FIRST, poi = 2, queuedMs = 500)
         s.offer(b, 500)
-        assertTrue(s.next(600, false) is Decision.Wait)
-        s.onInterrupted(a, 800) // the SDK voice cut in
-        assertTrue(s.next(900, false) is Decision.Wait) // the 400 ms gap
+        assertTrue(s.next(600) is Decision.Wait)
+        s.onInterrupted(a, 800) // the car's audio cut in
+        assertTrue(s.next(900) is Decision.Wait) // the 400 ms gap
         assertEquals(b, speak(s, 1_200))
         assertEquals(listOf(Outcome.INTERRUPTED), outcomes(s))
     }
@@ -88,17 +88,19 @@ class SpeechSchedulerTest {
     @Test
     fun laterStageReplacesWaitingEarlierOne() {
         val s = SpeechScheduler()
+        val other = u(AlertKind.FIRST, poi = 9)
+        s.offer(other, 0); speak(s, 0) // another camera is being spoken: the FIRST waits
         val first = u(AlertKind.FIRST, poi = 1)
         s.offer(first, 0)
-        assertTrue(s.next(0, true) is Decision.Wait) // the channel is busy: it waits
         val second = u(AlertKind.SECOND, poi = 1, queuedMs = 300, distanceM = 200.0)
         val decisions = s.offer(second, 300)
         assertTrue(decisions.any { it is Decision.Replaced && it.old == first && it.by == second })
         assertEquals(listOf(second), s.waiting)
-        assertEquals(second, speak(s, 400))
-        assertEquals(listOf(Outcome.DEFERRED, Outcome.REPLACED), outcomes(s))
-        assertEquals(first, s.records().last().utterance)
-        assertEquals(AlertKind.SECOND, s.records().last().byKind)
+        s.onDone(other, 350)
+        assertEquals(second, speak(s, 800))
+        assertEquals(listOf(Outcome.REPLACED, Outcome.SPOKEN), outcomes(s))
+        assertEquals(first, s.records().first().utterance)
+        assertEquals(AlertKind.SECOND, s.records().first().byKind)
         // The other way round: an earlier stage never replaces a later one still waiting.
         val s2 = SpeechScheduler()
         val sec = u(AlertKind.SECOND, poi = 1)
@@ -118,7 +120,7 @@ class SpeechSchedulerTest {
         s.offer(first, 100)
         s.onDistance(1, 200.0) // already inside the 2nd trigger by the time the channel frees
         s.onDone(other, 2_000)
-        assertEquals(Decision.Idle, s.next(2_000, false)) // the FIRST is stale: nothing left to say
+        assertEquals(Decision.Idle, s.next(2_000)) // the FIRST is stale: nothing left to say
         assertEquals(listOf(Outcome.SPOKEN, Outcome.STALE), outcomes(s))
         assertTrue(s.waiting.isEmpty())
         val second = u(AlertKind.SECOND, poi = 1, queuedMs = 2_500, distanceM = 200.0, staleBelowM = 142.0)
@@ -127,59 +129,18 @@ class SpeechSchedulerTest {
     }
 
     @Test
-    fun passingNeverDroppedOrDeferredBeyondHalfASecond() {
+    fun passingNeverDroppedAndSpokenFirst() {
         val s = SpeechScheduler()
         val p = u(AlertKind.PASSING, poi = 1, queuedMs = 1_000, distanceM = 90.0, staleBelowM = 50.0)
         s.offer(p, 1_000)
         s.onDistance(1, 10.0) // staleness never applies to PASSING
-        val w = s.next(1_000, true)
-        assertEquals(Decision.Wait(1_500, "channel busy"), w)
-        assertTrue(s.next(1_499, true) is Decision.Wait)
-        assertEquals(p, speak(s, 1_500, busy = true))
-        assertEquals(listOf(Outcome.DEFERRED), outcomes(s))
-        // Not busy: spoken at once, ahead of a higher-queued FIRST.
+        assertEquals(p, speak(s, 1_000))
+        // Spoken at once, ahead of a FIRST queued earlier.
         val s2 = SpeechScheduler()
         s2.offer(u(AlertKind.FIRST, poi = 2, queuedMs = 0, distanceM = 400.0), 0)
         val p2 = u(AlertKind.PASSING, poi = 3, queuedMs = 50, distanceM = 90.0)
         s2.offer(p2, 50)
         assertEquals(p2, speak(s2, 50))
-    }
-
-    @Test
-    fun channelBusyCapsAtTwoSecondsForStages() {
-        val s = SpeechScheduler()
-        val f = u(AlertKind.FIRST, poi = 1, queuedMs = 1_000)
-        s.offer(f, 1_000)
-        assertEquals(Decision.Wait(3_000, "channel busy"), s.next(1_000, true))
-        assertEquals(Decision.Wait(3_000, "channel busy"), s.next(2_999, true))
-        assertEquals(f, speak(s, 3_000, busy = true))
-        // When the channel frees early, it speaks then.
-        val s2 = SpeechScheduler()
-        val g = u(AlertKind.SECOND, poi = 1, queuedMs = 0)
-        s2.offer(g, 0)
-        assertTrue(s2.next(0, true) is Decision.Wait)
-        assertEquals(g, speak(s2, 700, busy = false))
-    }
-
-    @Test
-    fun channelBusyForFiveSecondsIsIgnored() {
-        val s = SpeechScheduler()
-        // Android Auto keeps the guidance usage busy from t=0.
-        for (t in 0L..5_000L step 500) assertEquals(Decision.Idle, s.next(t, true))
-        val f = u(AlertKind.FIRST, poi = 1, queuedMs = 5_100)
-        s.offer(f, 5_100)
-        assertEquals(f, speak(s, 5_100, busy = true)) // busy ignored: spoken at once
-        s.onDone(f, 7_000)
-        // Still ignored within the 60 s window...
-        val g = u(AlertKind.FIRST, poi = 2, queuedMs = 30_000)
-        s.offer(g, 30_000)
-        assertEquals(g, speak(s, 30_000, busy = true))
-        s.onDone(g, 31_000)
-        // ...and respected again once the channel has been quiet and goes busy afresh.
-        assertEquals(Decision.Idle, s.next(70_000, false))
-        val h = u(AlertKind.FIRST, poi = 3, queuedMs = 70_100)
-        s.offer(h, 70_100)
-        assertEquals(Decision.Wait(72_100, "channel busy"), s.next(70_100, true))
     }
 
     @Test
@@ -229,7 +190,7 @@ class SpeechSchedulerTest {
         val d = s.offer(a, 0, muted = true)
         assertEquals(listOf(Decision.Dropped(a, Outcome.MUTED)), d)
         assertTrue(s.waiting.isEmpty())
-        assertEquals(Decision.Idle, s.next(0, false))
+        assertEquals(Decision.Idle, s.next(0))
         assertEquals(listOf(Outcome.MUTED), outcomes(s))
         s.onFocus(a, granted = false, nowMs = 5)
         assertEquals(listOf(Outcome.MUTED, Outcome.FOCUS_DENIED), outcomes(s))
@@ -344,7 +305,7 @@ class SpeechSchedulerTest {
         s.offer(prepare, 10)
         s.onDistance(-2, 50.0)
         s.onDone(busy, 2_000)
-        assertEquals(Decision.Idle, s.next(3_000, false))
+        assertEquals(Decision.Idle, s.next(3_000))
         assertTrue(s.records().any { it.utterance == prepare && it.outcome == Outcome.STALE })
     }
 }

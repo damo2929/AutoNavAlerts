@@ -7,25 +7,22 @@ import kotlin.math.min
 
 /**
  * The speech queue policy (DESIGN.md §12.3), pure with the clock passed in. `NavTts` drives it:
- * [offer] each alert's utterance, [next] whenever something changes (a new utterance, the channel
- * going quiet, an utterance ending, a timer), then tell it what the engine did.
+ * [offer] each alert's utterance, [next] whenever something changes (a new utterance, an
+ * utterance ending, a timer), then tell it what the engine did.
  *
  * Policy: only a later stage replaces an earlier one still waiting for the same POI; a waiting
  * FIRST or SECOND is stale once the car is closer than [Utterance.staleBelowM]; PASSING goes first,
- * then priority, then distance; at least 400 ms between utterances; behind a busy channel a stage
- * waits at most 2 s and a PASSING 0.5 s; a channel busy for more than 5 s on end is ignored for
- * 60 s; a stuck engine is freed by [onWatchdog] after 1500 + 70·chars ms (at most 12 s); an engine
- * error is retried once, then the caller falls back to the chime and banner. Every decision goes
+ * then priority, then distance; at least 400 ms between utterances; a stuck engine is freed by
+ * [onWatchdog] (see [Config.watchdogBaseMs]); an engine error is retried once, then the caller
+ * falls back to the chime and banner. Ours is the only voice on the guidance channel (the
+ * Navigation SDK's is off while we speak the directions, DESIGN.md §12.3), so nothing waits
+ * behind another speaker. Every decision goes
  * into a 50-entry [records] ring. Directions (GUIDANCE, §12.3): a newer one replaces one waiting,
  * they go stale by distance like a stage, and mute never touches them (it is the alerts' control).
  */
 class SpeechScheduler(private val config: Config = Config()) {
     data class Config(
         val minGapMs: Long = 400,
-        val stageBusyWaitMs: Long = 2_000,
-        val passingBusyWaitMs: Long = 500,
-        val busyIgnoreAfterMs: Long = 5_000,
-        val busyIgnoreForMs: Long = 60_000,
         /**
          * Allowance before an utterance counts as stuck: numbers speak far longer than their characters
          * ("148 yards" is "one hundred and forty-eight yards"), and on the bench 1500 + 70/char cut every
@@ -51,7 +48,7 @@ class SpeechScheduler(private val config: Config = Config()) {
         val queuedMs: Long,
     )
 
-    enum class Outcome { SPOKEN, REPLACED, STALE, INTERRUPTED, TIMED_OUT, TTS_ERROR, MUTED, FOCUS_DENIED, DEFERRED }
+    enum class Outcome { SPOKEN, REPLACED, STALE, INTERRUPTED, TIMED_OUT, TTS_ERROR, MUTED, FOCUS_DENIED }
 
     data class Record(
         val utterance: Utterance,
@@ -83,11 +80,8 @@ class SpeechScheduler(private val config: Config = Config()) {
     private var currentSpeakMs = 0L
     private var currentStartMs: Long? = null
     private var lastDoneMs = Long.MIN_VALUE / 2
-    private var busySinceMs: Long? = null
-    private var ignoreBusyUntilMs = Long.MIN_VALUE
     private val distances = HashMap<Long, Double>()
     private val retried = HashSet<Long>()
-    private val deferred = HashSet<Long>()
     private val ring = ArrayDeque<Record>()
 
     val speaking: Utterance? get() = current
@@ -161,22 +155,12 @@ class SpeechScheduler(private val config: Config = Config()) {
         return speakingNow != null
     }
 
-    fun next(nowMs: Long, channelBusy: Boolean): Decision {
-        updateBusy(nowMs, channelBusy)
+    fun next(nowMs: Long): Decision {
         current?.let { return Decision.Wait(deadlineMs()!!, "speaking") }
         dropStale(nowMs)
         if (queue.isEmpty()) return Decision.Idle
         if (nowMs < lastDoneMs + config.minGapMs) return Decision.Wait(lastDoneMs + config.minGapMs, "gap")
         val head = pick()
-        val busy = channelBusy && nowMs >= ignoreBusyUntilMs
-        if (busy) {
-            val maxWait = if (head.kind == AlertKind.PASSING) config.passingBusyWaitMs else config.stageBusyWaitMs
-            val deadline = head.queuedMs + maxWait
-            if (nowMs < deadline) {
-                if (deferred.add(head.id)) record(Record(head, Outcome.DEFERRED, nowMs, detail = "channel busy"))
-                return Decision.Wait(deadline, "channel busy")
-            }
-        }
         queue.remove(head)
         current = head
         currentSpeakMs = nowMs
@@ -235,14 +219,6 @@ class SpeechScheduler(private val config: Config = Config()) {
         lastDoneMs = nowMs
     }
 
-    private fun updateBusy(nowMs: Long, channelBusy: Boolean) {
-        if (!channelBusy) { busySinceMs = null; return }
-        val since = busySinceMs ?: nowMs.also { busySinceMs = it }
-        if (nowMs - since > config.busyIgnoreAfterMs && nowMs >= ignoreBusyUntilMs) {
-            ignoreBusyUntilMs = nowMs + config.busyIgnoreForMs
-        }
-    }
-
     private fun dropStale(nowMs: Long) {
         val it = queue.iterator()
         while (it.hasNext()) {
@@ -267,10 +243,9 @@ class SpeechScheduler(private val config: Config = Config()) {
     private fun record(r: Record) {
         ring.addLast(r)
         while (ring.size > config.ringSize) ring.removeFirst()
-        // A finished utterance needs no retry/defer bookkeeping, nor its POI's distance once nothing else waits.
-        if (r.outcome != Outcome.DEFERRED && r.outcome != Outcome.FOCUS_DENIED) {
+        // A finished utterance needs no retry bookkeeping, nor its POI's distance once nothing else waits.
+        if (r.outcome != Outcome.FOCUS_DENIED) {
             retried.remove(r.utterance.id)
-            deferred.remove(r.utterance.id)
             if (queue.none { it.poiId == r.utterance.poiId }) distances.remove(r.utterance.poiId)
         }
     }
