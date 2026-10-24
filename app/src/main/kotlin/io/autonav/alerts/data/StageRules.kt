@@ -5,7 +5,7 @@ package io.autonav.alerts.data
 
 /**
  * DESIGN.md §11.1 checks on a set's alert stages, shared by the set editor and the backup restore:
- * the 2nd at least 142 m (a fixed floor, well outside the 20 yd passing alert), the 1st at least 100 m
+ * the 2nd at least 142 m (a fixed floor, well outside the passing alert's 1 s / 20 yd), the 1st at least 100 m
  * before the 2nd. The 1st alert is never off.
  */
 object StageRules {

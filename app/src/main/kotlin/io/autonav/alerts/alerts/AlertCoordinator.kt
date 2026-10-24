@@ -535,7 +535,8 @@ class AlertCoordinator @Inject constructor(
 
     /**
      * The free-drive road ahead and when it was walked (DESIGN.md §11 step 4): once a second, and at
-     * once when the heading has turned [ROAD_TURN_DEG] since the walk (a turn at a junction).
+     * once when the heading has turned [ROAD_TURN_DEG] since the walk (a turn at a junction), though
+     * no more than every [ROAD_TURN_MIN_MS] so a wandering heading can't re-walk on every fix.
      */
     private var road: Pair<Long, RoadAheadMatcher?> = 0L to null
     private var roadHeading = 0.0
@@ -548,7 +549,8 @@ class AlertCoordinator @Inject constructor(
     private fun matcherFor(fix: Fix): RouteMatcher {
         val now = System.currentTimeMillis()
         val heading = fix.heading
-        if (heading != null && (now - road.first >= ROAD_EVERY_MS || Geo.absAngleDiffDeg(heading, roadHeading) >= ROAD_TURN_DEG)) {
+        val since = now - road.first
+        if (heading != null && (since >= ROAD_EVERY_MS || (since >= ROAD_TURN_MIN_MS && Geo.absAngleDiffDeg(heading, roadHeading) >= ROAD_TURN_DEG))) {
             val m = speedLimits.roadAhead(fix.lat, fix.lon, heading, ROAD_AHEAD_M)?.let { RoadAheadMatcher(it) }
             road = now to m
             roadHeading = heading
@@ -600,6 +602,7 @@ class AlertCoordinator @Inject constructor(
         private const val ROAD_AHEAD_M = 2_000.0
         private const val ROAD_EVERY_MS = 1_000L
         private const val ROAD_TURN_DEG = 10.0
+        private const val ROAD_TURN_MIN_MS = 250L
 
         /** PGW mobile and pending-mobile sites (any format), and mobile camera reports. */
         fun isMobileSite(set: PoiSetEntity, cat: PoiCategoryEntity?): Boolean {

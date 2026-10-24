@@ -77,6 +77,13 @@ class PoiMarkerLayer(
         val bounds = screenBounds(m) ?: return
         var south = bounds.southwest.latitude; var north = bounds.northeast.latitude
         var west = bounds.southwest.longitude; var east = bounds.northeast.longitude
+        // Clipped to MAX_RANGE_M around the car (§8.1): the tilted camera's top corners sit near the horizon.
+        if (fix != null) {
+            val dLat = MAX_RANGE_M / 111_195.0
+            val dLon = dLat / Math.cos(Math.toRadians(fix.lat)).coerceAtLeast(0.1)
+            south = maxOf(south, fix.lat - dLat); north = minOf(north, fix.lat + dLat)
+            if (west <= east) { west = maxOf(west, fix.lon - dLon); east = minOf(east, fix.lon + dLon) }
+        }
         // A 10 % margin, so markers at the edge don't drop out as the map moves (§8.1).
         val latMargin = (north - south) * BOUNDS_MARGIN
         south -= latMargin; north += latMargin
@@ -167,8 +174,10 @@ class PoiMarkerLayer(
         return runCatching {
             val p = m.projection
             val b = LatLngBounds.builder()
-            for ((x, y) in listOf(0 to 0, size.width to 0, 0 to size.height, size.width to size.height)) {
-                b.include(p.fromScreenLocation(android.graphics.Point(x, y)))
+            val pt = android.graphics.Point()
+            for (i in 0 until 4) {
+                pt.set(if (i and 1 == 0) 0 else size.width, if (i < 2) 0 else size.height)
+                b.include(p.fromScreenLocation(pt))
             }
             b.build()
         }.getOrNull()
@@ -220,6 +229,8 @@ class PoiMarkerLayer(
 
     companion object {
         const val MAX_MARKERS = 200
+        /** Markers are drawn this far from the car at most (§8.1). */
+        private const val MAX_RANGE_M = 3_000.0
         /** The arrow square is this many times the icon, so the head sits outside the icon (§8.1). */
         const val ARROW_SCALE = 2.2f
         private const val BOUNDS_MARGIN = 0.10

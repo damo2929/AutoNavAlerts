@@ -29,7 +29,7 @@ Do not rely on a summary of these files from memory or from an earlier session. 
 | Icons and alert templates | §7 |
 | Car UI: screens, action strip, map buttons, markers, follow watchdog, satellite, contacts, route options, speed panel, OSM limits, camera reports | §8 |
 | Replacing Google Maps: intents, background guidance, `stopGuidance` | §9 |
-| Location: 10 Hz GPS, car speed/GPS, `FixEstimator` heading and speed | §10 |
+| Location: GPS at the phone's own rate, car speed/GPS, `FixEstimator` heading and speed | §10 |
 | **Alert engine maths and the direction hard rule** | §11 |
 | Alert stages and their defaults | §11.1 |
 | Alert dispatch, banner, notification, speech policy, cluster | §12 |
@@ -70,8 +70,8 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 
 ### 3.2 Other fixed behaviours to preserve
 
-- Phone GPS always requested at 10 Hz; car speed and car GPS at `UPDATE_RATE_FASTEST` when the car provides them (§10).
-- Three alert stages: 1st and 2nd from the global lead-time slider (N s and N/2 s at current speed, floors 242 m and 142 m), and the **compulsory 20 yd passing alert whenever sound is on**; the trigger ratchets and never shrinks on an approach; events are never dropped, PASSING is never dropped (§11, §11.1, §12.3).
+- Phone GPS taken at the rate the phone offers, never forced faster (asked at 1 Hz, any faster fix accepted; owner, 2026-10-24); car speed and car GPS at `UPDATE_RATE_FASTEST` when the car provides them (§10).
+- Three alert stages: 1st and 2nd from the global lead-time slider (N s and N/2 s at current speed, floors 242 m and 142 m), and the **compulsory passing alert 1 s before the camera at the current speed, never less than 20 yd, whenever sound is on**; the trigger ratchets and never shrinks on an approach; events are never dropped, PASSING is never dropped (§11, §11.1, §12.3).
 - Average-speed zones only start with a same-limit camera ahead and end at the last camera (§11 step 8).
 - Over-limit slider −5% to +20%, default −0.1% (§11 step 9).
 - Alert templates use only `{category} {speed} {units} {distance} {direction}` (§7.2).

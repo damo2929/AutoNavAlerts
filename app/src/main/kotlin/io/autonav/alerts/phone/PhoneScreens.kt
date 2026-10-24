@@ -732,7 +732,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         Section("Show and alert") {
             SwitchRow("Show on map", set.showOnMap) { set = set.copy(showOnMap = it) }
             SwitchRow("Alerts", set.alertsEnabled) { set = set.copy(alertsEnabled = it) }
-            SwitchRow("Sound (makes the 20 yd passing alert compulsory)", set.soundEnabled) { set = set.copy(soundEnabled = it) }
+            SwitchRow("Sound (makes the passing alert compulsory)", set.soundEnabled) { set = set.copy(soundEnabled = it) }
         }
         Section("Icon") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -759,7 +759,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         val sliderNote = "Seconds: from the Alerts slider ($leadSeconds s / ${halfSecondsLabel(leadSeconds)})"
         StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(firstAlert = it) }
         StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(secondAlert = it) }
-        Section("Passing alert (20 yd)") {
+        Section("Passing alert (1 s ahead, at least 20 yd)") {
             Text("Always on while sound is enabled for this set.", style = MaterialTheme.typography.bodySmall)
         }
         Section("Spoken text") {

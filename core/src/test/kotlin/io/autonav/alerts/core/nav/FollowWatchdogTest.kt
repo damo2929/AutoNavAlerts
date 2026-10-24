@@ -15,9 +15,36 @@ class FollowWatchdogTest {
     ) = check(now, following, guiding, preview, age, d)
 
     @Test
+    fun inPlaceDecidesWhenKnownTheDistanceOnlyBefore() {
+        val w = FollowWatchdog()
+        // Free drive with a frame: in place beats a big distance (the tilted camera's target is far ahead).
+        assertEquals(Decision.None("in place"), w.check(0, true, false, false, 100, 2_000f, inPlace = true))
+        assertEquals(Decision.Refollow(100f), w.check(0, true, false, false, 100, 100f, inPlace = false))
+        assertEquals(Decision.None("in place"), w.check(1_000, true, false, false, 100, 100f, inPlace = true))
+        assertEquals(0, w.misses)
+        // No frame yet: free drive falls back to the distance, guidance waits.
+        assertEquals(Decision.None("within 500 m"), w.check(2_000, true, false, false, 100, 100f, inPlace = null))
+        assertEquals(Decision.None("guiding, no frame"), w.check(3_000, true, true, false, 100, 100f, inPlace = null))
+        // The guidance camera's target is hundreds of metres ahead: a big distance alone is no miss.
+        assertEquals(Decision.None("in place"), w.check(0, true, true, false, 100, 4_000f, inPlace = true))
+        assertEquals(Decision.None("guiding, no frame"), w.check(1_000, true, true, false, 100, 4_000f, inPlace = null))
+        assertEquals(0, w.misses)
+        // Off the padded map: follow again, then the usual 5 s count to a rebuild.
+        assertEquals(Decision.Refollow(300f), w.check(2_000, true, true, false, 100, 300f, inPlace = false))
+        assertTrue(w.check(3_000, true, true, false, 100, 300f, inPlace = false) is Decision.None)
+        assertEquals(Decision.Refollow(300f), w.check(7_000, true, true, false, 100, 300f, inPlace = false))
+        assertEquals(Decision.Rebuild(300f), w.check(12_000, true, true, false, 100, 300f, inPlace = false))
+        // Back on screen clears the count; the preview still stands the watchdog down.
+        w.check(13_000, true, true, false, 100, 300f, inPlace = false)
+        assertEquals(Decision.None("in place"), w.check(14_000, true, true, false, 100, 300f, inPlace = true))
+        assertEquals(0, w.misses)
+        assertEquals(Decision.None("preview"), w.check(15_000, true, true, true, 100, 300f, inPlace = false))
+    }
+
+    @Test
     fun noActionWhileGuidingOnThePreviewOrWithoutAnSdkFix() {
         val w = FollowWatchdog()
-        assertEquals(Decision.None("guiding"), w.at(0, 4_000f, guiding = true))
+        assertEquals(Decision.None("guiding, no frame"), w.at(0, 4_000f, guiding = true))
         assertEquals(Decision.None("preview"), w.at(1_000, 4_000f, preview = true))
         assertEquals(Decision.None("no SDK fix"), w.at(2_000, null, age = null))
         assertEquals(Decision.None("no SDK fix"), w.at(2_000, 4_000f, age = null))
@@ -51,7 +78,7 @@ class FollowWatchdogTest {
         assertEquals(Decision.Refollow(2_000f), w.at(7_000, 2_000f))
         assertTrue(w.at(12_000, 2_000f) is Decision.Refollow)
         // Guiding in between also clears it.
-        assertEquals(Decision.None("guiding"), w.at(17_000, 2_000f, guiding = true))
+        assertEquals(Decision.None("in place"), w.check(17_000, true, true, false, 100, 2_000f, inPlace = true))
         assertEquals(0, w.misses)
     }
 

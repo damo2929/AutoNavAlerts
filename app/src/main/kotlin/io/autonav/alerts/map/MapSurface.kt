@@ -26,6 +26,7 @@ import io.autonav.alerts.core.nav.FollowWatchdog
 import io.autonav.alerts.diag.EventLog
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.FollowMyLocationOptions
 import com.google.android.libraries.navigation.ForceNightMode
 import com.google.android.libraries.navigation.NavigationView
@@ -59,15 +60,17 @@ class MapSurface(
     private var setup: Job? = null
     /** Free-drive-only follow check against the SDK's own position (DESIGN.md §8). */
     private val watchdog = FollowWatchdog()
-    /** Set by `RoutePreviewScreen` while it's on screen: the route overview moves the camera on purpose. */
+    /** Set by `RoutePreviewScreen` while it's on screen: the route overview moves the camera on purpose, so the zoom lock lifts (§8). */
     @Volatile var previewShowing = false
+        set(v) { if (field != v) { field = v; applyView("preview") } }
     /**
-     * Whether our template puts one of the host's cards over the map's left (route preview, turn card,
-     * travel estimate, set-up message): set by `HomeScreen` and `RoutePreviewScreen` before the template
-     * goes out, so the visible area the host reports after it is read right (DESIGN.md §8 "Where the car
-     * sits": the cards never push the car).
+     * Whether `HomeScreen`'s template puts one of the host's cards over the map's left (turn card,
+     * travel estimate, set-up message): set in its `onGetTemplate`, before the template goes out, so the
+     * visible area the host reports after it is read right (DESIGN.md §8 "Where the car sits").
      */
-    @Volatile var hostCard = false
+    @Volatile var homeCard = false
+    /** A host card over the map's left: the route preview's, or Home's. The cards never push the car (§8). */
+    private val hostCard: Boolean get() = previewShowing || homeCard
     /** Whether guidance is running (the watchdog never acts then); set by `NavSession`. */
     @Volatile var guidingProvider: () -> Boolean = { false }
     private var display: VirtualDisplay? = null
@@ -158,7 +161,11 @@ class MapSurface(
         surfaceWidth = container.width
         surfaceHeight = container.height
         log("surface ${surfaceWidth}×$surfaceHeight dpi=${container.dpi} ($reason)")
+        // Areas belong to the surface they were reported for; a report before any surface counts for this one.
+        if (areasFor != null && areasFor != sizeKey) { visibleArea = null; stableArea = null; panel = null; cardInset = 0 }
+        areasFor = sizeKey
         restoreAreas()
+        saveAreas()
         val dm = carContext.getSystemService(DisplayManager::class.java)
         val vd = dm.createVirtualDisplay(
             "autonav-map", container.width, container.height, container.dpi, surface,
@@ -248,17 +255,28 @@ class MapSurface(
 
     override fun onVisibleAreaChanged(area: Rect) {
         log("visible $area stable=$stableArea surface=${surfaceWidth}×$surfaceHeight")
+        if (!usable(area)) return
         visibleArea = area
+        areasFor = sizeKey
         updatePanel(area)
         saveAreas()
         applyView("visible")
     }
 
     override fun onStableAreaChanged(area: Rect) {
+        if (!usable(area)) return
         stableArea = area
+        areasFor = sizeKey
         saveAreas()
         applyView("stable")
     }
+
+    /** A report narrower or shorter than the smallest map (a screen without the map, or nothing) changes nothing (§8). */
+    private fun usable(area: Rect?): Boolean = area != null && area.width() >= MIN_MAP_PX && area.height() >= MIN_MAP_PX
+
+    /** "w×h" of the surface the areas were reported for, or null before any surface. */
+    private var areasFor: String? = null
+    private val sizeKey: String? get() = if (surfaceWidth > 0 && surfaceHeight > 0) "${surfaceWidth}x$surfaceHeight" else null
 
     /**
      * The map panel from the host's report (DESIGN.md §8 "Where the car sits"): with no card of ours up
@@ -286,16 +304,24 @@ class MapSurface(
      */
     private fun saveAreas() {
         val w = surfaceWidth.takeIf { it > 0 } ?: return
-        areaPrefs.edit().putString("${w}x$surfaceHeight", "${visibleArea?.flattenToString() ?: ""}|${stableArea?.flattenToString() ?: ""}|${panel?.flattenToString() ?: ""}|$cardInset").apply()
+        val value = "${visibleArea?.flattenToString() ?: ""}|${stableArea?.flattenToString() ?: ""}|${panel?.flattenToString() ?: ""}|$cardInset"
+        // The host sends a burst of reports while its layout animates; one write per change, not per report.
+        if (value == lastSaved) return
+        lastSaved = value
+        areaPrefs.edit().putString("${w}x$surfaceHeight", value).apply()
     }
+
+    private var lastSaved: String? = null
 
     private fun restoreAreas() {
         if (visibleArea != null || stableArea != null) return
         val saved = areaPrefs.getString("${surfaceWidth}x$surfaceHeight", null) ?: return
         val f = saved.split('|')
-        visibleArea = Rect.unflattenFromString(f[0])
-        stableArea = Rect.unflattenFromString(f.getOrElse(1) { "" })
-        panel = Rect.unflattenFromString(f.getOrElse(2) { "" })
+        val inside = Rect(0, 0, surfaceWidth, surfaceHeight)
+        fun rect(i: Int) = Rect.unflattenFromString(f.getOrElse(i) { "" })?.takeIf { usable(it) && inside.contains(it) }
+        visibleArea = rect(0)
+        stableArea = rect(1)
+        panel = rect(2)
         cardInset = f.getOrNull(3)?.toIntOrNull() ?: 0
         log("visible restored $visibleArea stable=$stableArea panel=$panel inset=$cardInset surface=${surfaceWidth}×$surfaceHeight")
     }
@@ -363,6 +389,7 @@ class MapSurface(
     private fun followOff(how: String) {
         if (following) log("followOff ($how)")
         following = false
+        applyView("followOff")
     }
 
     override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
@@ -386,9 +413,9 @@ class MapSurface(
 
     fun recenter() {
         val m = _map.value ?: return
-        log("recenter wasFollowing=$following")
+        log("recenter wasFollowing=$following zoom=$followZoom")
+        // The chosen zoom lasts the session (DESIGN.md §8): recenter only puts the car back.
         following = true
-        followZoom = MAX_ZOOM
         applyView("recenter")
     }
 
@@ -421,7 +448,9 @@ class MapSurface(
         val target = m.cameraPosition.target
         val d = FloatArray(1)
         Location.distanceBetween(target.latitude, target.longitude, loc.latitude, loc.longitude, d)
-        when (val r = watchdog.check(now, following, guidingProvider(), previewShowing, ageMs, d[0])) {
+        // In guidance: is the car drawn inside the padded map at the locked zoom (DESIGN.md §8 "Follow watchdog")?
+        val inPlace = carInPlace(m, loc)
+        when (val r = watchdog.check(now, following, guidingProvider(), previewShowing, ageMs, d[0], inPlace)) {
             is FollowWatchdog.Decision.None ->
                 eventLog.onChange("map.watchdog", r.reason, EventLog.Channel.NAV, "Map") { "watchdog skip (${r.reason}) d=${d[0].toInt()} age=${ageMs}ms" }
             is FollowWatchdog.Decision.Refollow -> {
@@ -436,6 +465,24 @@ class MapSurface(
             }
         }
     }
+
+    /**
+     * Whether the car is in place: the SDK's position projects inside the padded map area (a margin of a
+     * tenth of the surface each way) and the camera is at the locked zoom; null before the map has a
+     * frame. Same for both map types (DESIGN.md §8 "One view with and without a route").
+     */
+    private fun carInPlace(m: GoogleMap, loc: Location): Boolean? {
+        val pad = lastPadding ?: return null
+        val w = surfaceWidth.takeIf { it > 0 } ?: return null
+        val h = surfaceHeight.takeIf { it > 0 } ?: return null
+        val p = runCatching { m.projection.toScreenLocation(LatLng(loc.latitude, loc.longitude)) }.getOrNull() ?: return null
+        val mx = w / 10; val my = h / 10
+        val onScreen = p.x >= pad[0] - mx && p.x <= w - pad[2] + mx && p.y >= pad[1] - my && p.y <= h - pad[3] + my
+        return onScreen && abs(m.cameraPosition.zoom - followZoom) <= ZOOM_TOLERANCE
+    }
+
+    /** The padding [applyPadding] last set, "l,t,r,b", for [carOnScreen]. */
+    private var lastPadding: IntArray? = null
 
     /**
      * Turns the SDK's own on-map controls off (DESIGN.md §8 step 6): no touch reaches the SDK view,
@@ -531,14 +578,39 @@ class MapSurface(
         layoutOverlays()
         val m = _map.value ?: return
         val padding = applyPadding(m)
-        if (following) follow(m)
-        val frame = "$padding@$followZoom"
-        if (frame != lastFrame) { lastFrame = frame; log("view $reason padding=$padding zoom=$followZoom following=$following") }
-        if (settle && following) for (ms in REFOLLOW_MS) main.postDelayed({ _map.value?.let { mm -> if (following) follow(mm) } }, ms)
+        val locked = applyZoomLock(m)
+        val frame = "$padding@$followZoom${if (locked) "!" else ""}"
+        val changed = frame != lastFrame
+        // A camera request only with a reason: the frame changed, or the SDK's camera was moved or
+        // dropped. A host report that left the padding as it was sends nothing (no shake).
+        val refollow = following && (changed || settle || reason in FOLLOW_REASONS)
+        if (refollow) follow(m)
+        if (changed) { lastFrame = frame; log("view $reason padding=$padding zoom=$followZoom following=$following") }
+        if (settle && following) {
+            main.removeCallbacks(settleFollow)
+            for (ms in REFOLLOW_MS) main.postDelayed(settleFollow, ms)
+        }
     }
+
+    /**
+     * The one view with and without a route, hard set (DESIGN.md §8): while following, and not on the
+     * route preview, the map's min and max zoom are both [followZoom], so the SDK's own camera can't
+     * change it; panned or on the preview the range is open (3–17). True while locked.
+     */
+    private fun applyZoomLock(m: GoogleMap): Boolean {
+        val lock = following && !previewShowing
+        m.setMinZoomPreference(if (lock) followZoom else MIN_FOLLOW_ZOOM)
+        m.setMaxZoomPreference(if (lock) followZoom else MAX_ZOOM)
+        return lock
+    }
+
+    /** The settle re-follow (one runnable, so a second settle replaces the first's timers). */
+    private val settleFollow = Runnable { _map.value?.let { mm -> if (following) follow(mm) } }
 
     /** What [applyView] last set, so it logs only on a change. */
     private var lastFrame: String? = null
+    /** What [layoutOverlays] last laid out. */
+    private var lastOverlayKey: String? = null
 
     /** The map's camera padding (DESIGN.md §8 "Where the car sits"), as "l,t,r,b"; only [applyView] calls it. */
     private fun applyPadding(m: GoogleMap): String? {
@@ -565,6 +637,7 @@ class MapSurface(
             (2 * carY - (h - bottom)).toInt().coerceIn(top, h - bottom - 1)
         }
         m.setPadding(left, padTop, right, bottom)
+        lastPadding = intArrayOf(left, padTop, right, bottom)
         return "$left,$padTop,$right,$bottom"
     }
 
@@ -576,6 +649,11 @@ class MapSurface(
     private fun layoutOverlays() {
         val w = surfaceWidth.takeIf { it > 0 } ?: return
         val h = surfaceHeight.takeIf { it > 0 } ?: return
+        // Only when the areas, the surface or the views changed: zoom, recenter and the watchdog come
+        // through applyView too and must not re-lay out the overlays for nothing.
+        val key = "$w×$h $visibleArea $stableArea ${System.identityHashCode(speedPanel)}"
+        if (key == lastOverlayKey) return
+        lastOverlayKey = key
         val area = stableArea ?: visibleArea ?: Rect(0, 0, w, h)
         speedPanel?.let { p ->
             (p.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
@@ -627,6 +705,8 @@ class MapSurface(
 
     fun release() {
         _map.value = null
+        lastOverlayKey = null
+        lastFrame = null
         speedPanel = null
         alertBanner = null
         mapTypeButton = null
@@ -659,9 +739,13 @@ class MapSurface(
         private const val MIN_MAP_PX = 200
         /** A right edge moved by more than this while a card is up means the host re-laid out (§8). */
         private const val PANEL_MOVE_PX = 32
+        /** The camera's zoom may differ from the locked one by this much before the watchdog re-follows (§8). */
+        private const val ZOOM_TOLERANCE = 0.25f
         /** Where the SDK's guidance camera puts the car: this far down the padded area (measured on the DHU, 2026-10-23). */
         private const val GUIDED_CAR_FRACTION = 0.917f
         /** Follows again after guidance starts or stops: the SDK moves its camera a moment later (§8). */
         private val REFOLLOW_MS = longArrayOf(300, 700, 1_200, 2_000)
+        /** Events after which the SDK's camera was moved or dropped, so the follow is sent whatever the frame (§8). */
+        private val FOLLOW_REASONS = setOf("ready", "mapType", "navUi on", "recenter", "watchdog")
     }
 }

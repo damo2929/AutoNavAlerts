@@ -26,7 +26,7 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
 - **POI alerts**
   - Import iGO TXT, KML, GPX, OV2 or CSV files (with column mapping), zipped or not
   - Per-set icon (built-in or your own image) and spoken text, with a live preview and **Test speak**
-  - Three alert stages: a 1st and 2nd at distances you set, and a **compulsory 20 yd passing alert** whenever sound is on
+  - Three alert stages: a 1st and 2nd at distances you set, and a **compulsory passing alert 1 s before the camera** (at least 20 yd) whenever sound is on
   - Direction-aware: cameras facing the other way, or on a parallel road, don't alert
   - Average-speed zones (only real ones: a zone needs another camera with the same limit ahead; it ends at the last camera) and over-limit warnings that name the zone's limit and show its set icon
   - Shown as a banner at the bottom of the car map (tap to dismiss), or as a navigation notification when another app fills the screen
@@ -36,7 +36,7 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
   - **OpenStreetMap speed limits for the UK**, downloaded once from Geofabrik (about 1.1 GB fetched, Wi-Fi only by default; 29 MB kept on the phone), fill in the panel's limit when Google and the cameras have none (grey dot). Nothing is looked up online while driving.
 - **Route options**: avoid tolls (on by default) and **energy-efficient routes for electric cars**: the preview offers the fastest and Google's eco-friendly route side by side and you pick (Routes API on your own key; falls back to the fastest route)
 - **Uses the car's own speed and GPS** from Android Auto when the car shares them. The speed panel matches your dashboard; alerts use the car's measured speed and GPS position (the phone's GPS drops to a 1 Hz backup). Falls back to the phone.
-- **10 Hz GPS**: the phone's GPS is always read at 10 positions a second, so alerts fire at the right distance at speed
+- **GPS at the phone's own rate**: the phone's GPS is taken at the rate it offers (never forced faster), and the car's own GPS and speed at the fastest rate the car provides
 - **PocketGPSWorld**, with **your own** subscription
   - Choose **TomTom OV2** (default: direction, camera make, roadworks cameras, PGW camera IDs) or **iGO** (exact direction in degrees). Every file in the download becomes its own set (never merged). For TomTom OV2 that's one set per type and speed, e.g. "PGW fixed cameras · 30 mph".
   - Checks their RSS feed daily and logs in to download a new release by itself

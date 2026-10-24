@@ -93,17 +93,11 @@ car() {
 # connected car screen restarted the app mid-session and left the map flat or the car out of place.
 # A running tools/drive.py keeps going; the app picks the drive up again when it starts.
 reload() {
-  apk=app/build/outputs/apk/debug/app-debug.apk
-  [ -f "$apk" ] || { echo "No $apk: build it first (./gradlew :app:assembleDebug)."; exit 1; }
-  if [ -f "$LOGDIR/dhu.pid" ]; then
-    kill -- -"$(cat "$LOGDIR/dhu.pid")" 2>/dev/null || true
-    rm -f "$LOGDIR/dhu.pid"
-    echo "Head unit stopped."
-  fi
+  stop_dhu
   sleep 2
   $ADB -s "$(serial)" shell am force-stop io.autonav.alerts
   echo "App stopped."
-  $ADB -s "$(serial)" install -r -g "$apk"
+  install
   sleep 2
   car "${1:-}"
   echo "Head unit started: the app starts with the car screen. Check its place: tools/bench.sh dhu screenshot <file>."
@@ -115,10 +109,16 @@ dhu() {
   echo "$*" >>"$LOGDIR/dhu.in"
 }
 
-stop() {
-  # Match the real binaries only (the [d]/[q] trick stops pkill matching this shell's own command line).
+# Stops the head unit by its pid file, then any left over (a stale pid file would otherwise leave one running).
+# Match the real binaries only (the [d]/[q] trick stops pkill matching this shell's own command line).
+stop_dhu() {
   [ -f "$LOGDIR/dhu.pid" ] && { kill -- -"$(cat "$LOGDIR/dhu.pid")" 2>/dev/null || true; rm -f "$LOGDIR/dhu.pid"; }
   pkill -f '[d]esktop-head-unit -c' || true
+  echo "Head unit stopped."
+}
+
+stop() {
+  stop_dhu
   s=$(serial)
   [ -n "$s" ] && $ADB -s "$s" emu kill >/dev/null 2>&1 || true
   pkill -TERM -f '[q]emu/linux-x86_64/qemu-system' || true

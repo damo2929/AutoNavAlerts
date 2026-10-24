@@ -234,8 +234,10 @@ class AdaptiveLocationSource @Inject constructor(
         phoneHz = hz
         val interval = 1000L / hz
         client.removeLocationUpdates(callback)
+        // The phone's own rate, never forced (DESIGN.md §10.2, owner 2026-10-24): asked at the natural
+        // GPS rate, and any faster fix the phone already delivers is taken rather than dropped.
         val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
-            .setMinUpdateIntervalMillis(interval)
+            .setMinUpdateIntervalMillis(0)
             .setMaxUpdateDelayMillis(0)
             .setWaitForAccurateLocation(false)
             .build()
@@ -244,7 +246,7 @@ class AdaptiveLocationSource @Inject constructor(
                 Log.w(TAG, "Location request failed: ${it.message}")
                 eventLog.record(EventLog.Channel.NAV, "Location", "request failed: ${it.message}")
             }
-        eventLog.record(EventLog.Channel.NAV, "Location", "request hz=$hz")
+        eventLog.record(EventLog.Channel.NAV, "Location", "request interval=${interval}ms min=0")
     }
 
     /** Forgets the track (handover, simulation on/off) and says so (§10.6a, §15.5). */
@@ -366,8 +368,8 @@ class AdaptiveLocationSource @Inject constructor(
 
     companion object {
         private const val TAG = "AdaptiveLocation"
-        /** The phone's GPS is always asked for 10 fixes a second (DESIGN.md §10), whatever the speed. */
-        const val GPS_HZ = 10
+        /** The natural GPS rate asked for; faster fixes the phone offers are accepted (DESIGN.md §10.2). */
+        const val GPS_HZ = 1
         private const val GAP_MS = 5_000L
         /** Car fixes in a row before the car takes over from the phone again (§10.7). */
         private const val CAR_RETURN_FIXES = 2

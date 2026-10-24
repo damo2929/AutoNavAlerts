@@ -7,6 +7,7 @@ import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.core.poi.ZoneRole
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
 
@@ -48,7 +49,7 @@ data class AlertPoi(
     val zoneRole: ZoneRole,
     val first: AlertStage,
     val second: AlertStage,
-    /** Sound on for this POI: makes the 20 yd passing alert compulsory. */
+    /** Sound on for this POI: makes the passing alert (1 s ahead, ≥ 20 yd) compulsory. */
     val soundOn: Boolean,
     /**
      * How far to the side of the road it may be (route and lateral checks), when more than the
@@ -134,6 +135,8 @@ class AlertEngine(
         /** Free drive: the corridor widens to d·sin(this) beyond the lateral tolerance (§11 step 4). */
         val freeDriveFarDeg: Double = 12.0,
         val passingM: Double = PASSING_METRES,
+        /** The passing alert comes this long before the camera at the current speed, never under [passingM] (§11.1). */
+        val passingLeadS: Double = PASSING_LEAD_S,
         /** Moving above this; the moving flag drops again below [stoppedMps]. */
         val minMovingMps: Double = 2.0,
         val stoppedMps: Double = 1.0,
@@ -321,27 +324,32 @@ class AlertEngine(
             val canStage = verdict == Verdict.AHEAD_OK
             val canPass = (verdict == Verdict.AHEAD_OK || verdict == Verdict.NOT_MOVING) && fix.speedMps >= config.passingMinMps
             // Stages: only the closest crossed stage is spoken; skipped stages are marked fired.
-            val crossedPassing = canPass && poi.soundOn && !state.passingFired && d <= config.passingM
+            // Passing is measured along the track (§11.1): a camera beside the carriageway is announced
+            // as the car draws level with it; straight ahead, along equals d.
+            val along = if (offAxis <= 90.0) d * cos(Math.toRadians(offAxis)) else d
+            // One second ahead at the current speed, never less than 20 yd (§11.1, owner 2026-10-24).
+            val passingTrigger = max(config.passingM, fix.speedMps * config.passingLeadS)
+            val crossedPassing = canPass && poi.soundOn && !state.passingFired && along <= passingTrigger
             val secondTrigger = effectiveSecondTrigger(poi, state)
             val crossedSecond = canStage && secondTrigger != null && !state.secondFired && d <= secondTrigger
             val crossedFirst = canStage && !state.firstFired && d <= state.firstTriggerM
             when {
                 crossedPassing -> {
                     markFired(state, AlertKind.PASSING, now, d)
-                    out += emit(poi, AlertKind.PASSING, d, fix, config.passingM, null)
+                    out += emit(poi, AlertKind.PASSING, d, fix, passingTrigger, null)
                     handleZonePass(poi, fix, out)
                 }
                 crossedSecond -> {
                     markFired(state, AlertKind.SECOND, now, d)
-                    out += emit(poi, AlertKind.SECOND, d, fix, secondTrigger!!, config.passingM)
+                    out += emit(poi, AlertKind.SECOND, d, fix, secondTrigger!!, passingTrigger)
                 }
                 crossedFirst -> {
                     markFired(state, AlertKind.FIRST, now, d)
-                    out += emit(poi, AlertKind.FIRST, d, fix, state.firstTriggerM, secondTrigger ?: config.passingM)
+                    out += emit(poi, AlertKind.FIRST, d, fix, state.firstTriggerM, secondTrigger ?: passingTrigger)
                 }
             }
             // Without sound, a zone point still counts as passed once we're very close.
-            if (!poi.soundOn && canPass && d <= config.passingM && !state.passingFired) {
+            if (!poi.soundOn && canPass && along <= passingTrigger && !state.passingFired) {
                 state.passingFired = true
                 handleZonePass(poi, fix, out)
             }
@@ -598,6 +606,7 @@ class AlertEngine(
     companion object {
         /** 20 yards: the compulsory passing alert (DESIGN.md §11.1; owner, 2026-10-23, was 100 yd). */
         const val PASSING_METRES = 18.288
+        const val PASSING_LEAD_S = 1.0
         /** The 2nd alert is never closer than this (§11.1); fixed, not tied to the passing distance. */
         const val SECOND_FLOOR_M = 142.0
     }

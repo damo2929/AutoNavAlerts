@@ -114,7 +114,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         val info = navInfo
         val mapper = TripMapper(carContext, session.imperial)
         // Told before the template goes out: the host's report that follows is read against it (DESIGN.md §8).
-        session.surface.hostCard = unavailable != null || (guiding && (info != null || lastEstimate != null))
+        session.surface.homeCard = unavailable != null || (guiding && (info != null || lastEstimate != null))
         when {
             unavailable != null -> b.setNavigationInfo(
                 MessageInfo.Builder(carContext.getString(R.string.car_setup_title))

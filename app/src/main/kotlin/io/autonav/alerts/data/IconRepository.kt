@@ -172,8 +172,8 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     }
 
     companion object {
-        /** The PocketGPSWorld download's icons (`user:pgw_…`) and our built-in camera icons. */
-        fun isCameraIcon(id: String): Boolean = id.startsWith("user:pgw_") || id.startsWith("builtin:camera_")
+        /** A camera set's own icon (PocketGPSWorld's or a zip import's, [isSuppliedIcon]) or our built-in camera icons. */
+        fun isCameraIcon(id: String): Boolean = isSuppliedIcon(id) || id.startsWith("builtin:camera_")
 
         const val CAMERA_FIXED = "builtin:camera_fixed"
         const val CAMERA_MOBILE = "builtin:camera_mobile"

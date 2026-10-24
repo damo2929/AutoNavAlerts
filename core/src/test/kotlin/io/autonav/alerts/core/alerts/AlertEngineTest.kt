@@ -91,6 +91,38 @@ class AlertEngineTest {
     }
 
     @Test
+    fun passingIsAnnouncedDrawingLevelWithACameraBesideTheRoad() {
+        // 30 m to the side: never within 20 yd in a straight line, so the trigger is along the track (§11.1).
+        val engine = AlertEngine()
+        val pois = listOf(camera(eastM = 30.0))
+        val kinds = ArrayList<AlertKind>()
+        var passedAtM = Double.NaN
+        val mps = 30.0 * Geo.MPS_PER_MPH
+        var pos = 0.0; var t = 0L
+        while (pos <= 3_000.0) {
+            for (e in engine.onFix(Fix(latAt(pos), 0.0, mps, 0.0, t), pois)) { kinds += e.kind; if (e.kind == AlertKind.PASSING) passedAtM = pos }
+            pos += mps * 0.2; t += 200
+        }
+        assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND, AlertKind.PASSING), kinds)
+        // Level with the camera (within 20 yd along the track), not from the missed-passing net once behind.
+        assertTrue("passing at $passedAtM m north", passedAtM >= 2_000.0 - AlertEngine.PASSING_METRES && passedAtM <= 2_000.0 + 1.0)
+    }
+
+    @Test
+    fun passingComesOneSecondAheadAtSpeed() {
+        // 70 mph: 31.3 m a second, so the trigger is 1 s ahead, well outside the 20 yd floor (§11.1).
+        val engine = AlertEngine()
+        val events = drive(engine, listOf(camera()), mph = 70.0, stepMs = 100)
+        val passing = events.first(AlertKind.PASSING)
+        val lead = 70.0 * Geo.MPS_PER_MPH
+        assertTrue("fired at ${passing.distanceM} m", passing.distanceM <= lead + 0.01 && passing.distanceM > lead - 4.0)
+        assertEquals(lead, passing.triggerM, 0.01)
+        // At 30 mph the floor rules: 1 s is 13.4 m, under 20 yd.
+        val slow = drive(AlertEngine(), listOf(camera()))
+        assertEquals(AlertEngine.PASSING_METRES, slow.first(AlertKind.PASSING).triggerM, 0.01)
+    }
+
+    @Test
     fun noPassingAlertWhenSoundIsOff() {
         val events = drive(AlertEngine(), listOf(camera(sound = false)))
         assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND), events.kinds())

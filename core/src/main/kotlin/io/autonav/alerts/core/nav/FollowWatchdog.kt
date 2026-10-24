@@ -34,13 +34,21 @@ class FollowWatchdog(
         previewShowing: Boolean,
         sdkFixAgeMs: Long?,
         distanceM: Float?,
+        inPlace: Boolean? = null,
     ): Decision {
         if (!following) return skip("not following")
-        if (guiding) return skip("guiding")
         if (previewShowing) return skip("preview")
         if (sdkFixAgeMs == null || distanceM == null) return Decision.None("no SDK fix")
         if (sdkFixAgeMs > maxFixAgeMs) return Decision.None("SDK fix ${sdkFixAgeMs / 1000} s old")
-        if (distanceM <= thresholdM) return skip("within ${thresholdM.toInt()} m")
+        // The car is followed when it is drawn inside the padded map at the locked zoom (DESIGN.md §8).
+        // The camera's target sits well ahead of the car (2 km at zoom 15), so the distance is only the
+        // fallback before the map has a frame, and never in guidance.
+        when (inPlace) {
+            true -> return skip("in place")
+            false -> {}
+            null -> if (guiding) return Decision.None("guiding, no frame")
+                else if (distanceM <= thresholdM) return skip("within ${thresholdM.toInt()} m")
+        }
         if (misses > 0 && nowMs - lastMissMs < intervalMs) return Decision.None("miss $misses, waiting")
         misses++
         lastMissMs = nowMs
