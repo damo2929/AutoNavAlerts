@@ -69,8 +69,9 @@ phone() {
 install() {
   apk=app/build/outputs/apk/debug/app-debug.apk
   [ -f "$apk" ] || ./gradlew :app:assembleDebug
-  $ADB -s "$(serial)" install -r -g "$apk"
-  echo "Installed AutoNavAlerts (runtime permissions pre-granted with -g)."
+  # -i com.android.vending records the Play Store as installer; Android Auto hides a sideloaded app without it (DESIGN.md §16 row 10).
+  $ADB -s "$(serial)" install -r -g -i com.android.vending "$apk"
+  echo "Installed AutoNavAlerts (runtime permissions pre-granted with -g, Play Store recorded as installer)."
 }
 
 car() {
@@ -95,7 +96,7 @@ car() {
 reload() {
   stop_dhu
   sleep 2
-  $ADB -s "$(serial)" shell am force-stop io.autonav.alerts
+  $ADB -s "$(serial)" shell am force-stop uk.damiendye.autonav
   echo "App stopped."
   install
   sleep 2

@@ -20,6 +20,7 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 01
 | D2 | Our POI alerts in the host's turn card: no custom field exists; car `Alert` + heads-up is the fallback | DESIGN §16 row 3 |
 | D3 | Submitting camera reports to PocketGPSWorld automatically: the camera-ID lookup endpoint, the success text and whether automated sending is allowed are unknown; review-first with "Open in browser" meanwhile | DESIGN §16 row 19 |
 | D4 | Camera alerts in the cluster's media card: unknown whether the cluster takes a `MediaSession` from a non-media app | DESIGN §16 row 27 |
+| D5 | **Distribute through Google Play's internal testing track** (owner, 2026-10-24: the app must be in Android Auto "without needing to set up a head server", surviving reboots). Needs a Google Play developer account (one-time fee), the app created for `uk.damiendye.autonav`, Play App Signing enrolled with the **shared key** as the app signing key (PEPK upload, so the SHA-1 stays `6C:48:A1:E5…`), the release bundle uploaded, testers' emails added. Available to testers within minutes, no Play review, up to 100 testers. Internal app sharing is not suitable: it re-signs with Google's own key, so the Maps key and OAuth client would stop matching | DESIGN §1.3, §16 row 10; CHECKPOINT §4g |
 
 ## 3. Not yet verified
 
@@ -60,4 +61,4 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 01
 | N2 | EV chargers (Electroverse has no public API; Places + Open Charge Map and a hand-off meanwhile) | DESIGN §18; §16 row 20 |
 | N3 | PGW automation hardening: terms, site changes, captcha (`PgwConfig`, manual import fallback) | DESIGN §16 row 6 |
 | N4 | iGO TYPE code 11 (RedSpeed) is a best guess; confirm against package 288 | DESIGN §16 row 5 |
-| N5 | Play internal testing instead of sideloading, if Android Auto's unknown-sources handling bites | DESIGN §16 row 10 |
+| N5 | Google Play **internal testing track** (the supported way to run a Car App Library app in a real car; the sideload is a developer path and never stays in Android Auto's Customise Launcher). Waiting on D5 | DESIGN §1.3 Distribution, §16 row 10 |

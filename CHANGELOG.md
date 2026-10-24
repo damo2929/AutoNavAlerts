@@ -4,6 +4,9 @@ What changed for the person using the app, by day. Each entry names the DESIGN.m
 
 ## 2026-10-24 — `dcd5f02`, `a84061d`
 
+- **Installing on a phone for the car:** `adb install -r -i com.android.vending …` (the Play Store recorded as installer). The phone's Customise Launcher does not keep a sideloaded Car App Library app, and Google says Unknown sources doesn't cover such apps, so a **Google Play internal testing release is the planned route** (§1.3 Distribution, §16 row 10, ISSUES D5). README, docs/SETTINGS.md and TESTING.md updated; `tools/bench.sh install` uses the same flag.
+- **Application ID is now `uk.damiendye.autonav`** (was `io.autonav.alerts`), for the Google Play listing (§13.3). Android sees it as a new app: install it, restore your settings backup, then uninstall the old one. Keys made by **Create a key with my Google account** are made again for the new package; a pasted key needs the new package in its Android restriction.
+- **New [docs/INSTALLATION.md](docs/INSTALLATION.md)**: the test user's guide from the Releases APK to a working car screen, with the install flag, phone setup, Android Auto's Customise Launcher check, cameras and limits, and how to send the diagnostics logs.
 - **The car view is the same with and without a route**, and it is held: tilted, heading up, at the zoom you chose, the car at one spot. The zoom is locked while the map follows the car, so the Navigation SDK's guidance auto-zoom can't change it; it unlocks while you have panned or while the route preview shows its overview (§8 "One view with and without a route").
 - **The zoom you pick with + / − lasts the whole car session**, route or no route; recenter only puts the car back (§8).
 - **The follow watchdog works during guidance too** and judges "in place" by where the car is drawn (inside the map at the locked zoom), after the SDK dropped its own guidance camera once on a bench drive (§8 "Follow watchdog").

@@ -10,6 +10,7 @@ An Android Auto navigation app built on the Google Navigation SDK. It's meant to
 - **Resuming work:** [CHECKPOINT.md](CHECKPOINT.md) has the current state, what has been tested, and next steps.
 - **Testing without a car:** [TESTING.md](TESTING.md) is the complete bench guide (Desktop Head Unit, simulated drives, test data, checklist).
 - **What changed and what's open:** [CHANGELOG.md](CHANGELOG.md) by day, and [ISSUES.md](ISSUES.md) for outstanding bugs, decisions, unverified and unbuilt items.
+- **Installing as a test user** (APK, adb, Android Auto, car): [docs/INSTALLATION.md](docs/INSTALLATION.md).
 - **Every setting explained:** [docs/SETTINGS.md](docs/SETTINGS.md).
 
 The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, and record design changes there first. [DESIGN.md Appendix B](DESIGN.md#appendix-b--implementation-status-first-test-build-2026-10-11) tracks what's built and what isn't.
@@ -78,7 +79,7 @@ PGW_IGO_FILE=/path/to/pocketgps_uk_sc.txt ./gradlew :core:test --tests '*realPgw
 ```
 
 ### Google Maps API key
-You need a Google Maps Platform key with the **Navigation SDK** (access must be approved by Google), **Maps SDK for Android** and **Places API (New)** enabled. Restrict it to the package `io.autonav.alerts` and your build's signing SHA-1, and to those three APIs.
+You need a Google Maps Platform key with the **Navigation SDK** (access must be approved by Google), **Maps SDK for Android** and **Places API (New)** enabled. Restrict it to the package `uk.damiendye.autonav` and your build's signing SHA-1, and to those three APIs.
 
 **Get the key in the phone app's Settings tab after installing**: press **Create a key with my Google account** to have the app make one in your own Google Cloud account, or paste one you already have. It's stored encrypted on the device and applied at run time, so no rebuild is needed and each user can bring their own key. There's no built-in key and no way to build one in: everyone's Maps use is billed to their own Google account.
 
@@ -91,9 +92,9 @@ Official builds are all signed with one shared key, so Google sign-in and restri
 
 ### Install and set up
 1. `adb install app/build/outputs/apk/debug/app-debug.apk`
-   (for a phone you'll drive with, build and install the release: `./gradlew :app:assembleRelease` and `adb install -r app/build/outputs/apk/release/app-release.apk`; it's smaller and has no bench hooks)
+   (for a phone you'll drive with, build and install the release: `./gradlew :app:assembleRelease` and `adb install -r -i com.android.vending app/build/outputs/apk/release/app-release.apk`; it's smaller and has no bench hooks. The `-i com.android.vending` records the Play Store as the installer, which Android Auto looks for)
 2. In the phone app's **Settings** tab (the app opens there until setup is done): add the Maps API key, press **Allow** (location, notifications, microphone and car speed), then **Allow all the time** (recommended), and accept Google's navigation terms (available once the key is saved).
-3. In Android Auto: tap the version number repeatedly to turn on developer mode, then enable **Unknown sources**. This app is sideloaded. Pick AutoNavAlerts as your navigation app.
+3. In Android Auto: tap the version number repeatedly to turn on developer mode, then enable **Unknown sources**. This app is sideloaded, so it won't stay in Android Auto's Customise Launcher list (Google's Unknown sources setting doesn't cover Car App Library apps); it still appears on the car. Pick AutoNavAlerts there as your navigation app. A Google Play internal-test release is planned to make it a normal install (ISSUES.md D5).
 4. **Already have a settings backup?** Settings → Backup → **Restore from backup…** brings back your Maps key, PocketGPSWorld login and settings (accept the navigation terms again afterwards). **Save settings backup…** makes one; it's plain text with your key and password in it, so keep it private.
 5. Add cameras: either enter your PocketGPSWorld login on the **Cameras** tab and press **Sync now**, or import a POI file on the **POIs** tab.
 

@@ -10,6 +10,7 @@ This file is for AI agents and anyone else picking the project up cold. It says 
 | [DESIGN.md](DESIGN.md) | **The source of truth.** Every behaviour, rule, data format, threshold and decision. Nothing is built that isn't designed here first | Before any change; again before you commit |
 | [TESTING.md](TESTING.md) | The bench: Desktop Head Unit, emulator, `tools/drive.py`, scenarios, the debug broadcast hooks, the full checklist (§6) and the real-car protocol (§6.12) | Before testing or claiming something works |
 | [docs/SETTINGS.md](docs/SETTINGS.md) | Every user-facing setting explained | When touching settings, the phone UI or the backup file |
+| [docs/INSTALLATION.md](docs/INSTALLATION.md) | The tester's guide: APK from Releases, `adb install -r -i com.android.vending`, phone setup, Android Auto, the car, sending logs | When the install, setup or Android Auto steps change, or a tester reports a setup problem |
 | [README.md](README.md) | The public overview, build steps, licensing | For orientation and when user-facing behaviour changes |
 | [CHANGELOG.md](CHANGELOG.md) | What changed for the user, by day, with the DESIGN.md section for each | When reporting a change; add a line for anything the user will notice |
 | [ISSUES.md](ISSUES.md) | Outstanding bugs, decisions waiting on the owner, what isn't verified yet, what isn't built | When picking the next thing up, and to move an item out when it's done |
@@ -63,7 +64,7 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 4. **Every on-screen button on the car map is on the right-hand side only** (§8). Satellite pill, zoom, recenter, anything added later: down the right edge under the action strip. Speed panel bottom-right. Nothing of ours on the left. Check every layout change with a DHU screenshot.
 5. **Never a built-in or fallback Maps API key** (§1.4). Each user's Maps use is billed to their own Google account. No manifest key, no `local.properties` key, no SDK call before `applyApiKey()`.
 6. **PocketGPSWorld data never enters the repo, the app build, tests or fixtures** (§5.2, §6.4). Each user downloads their own watermarked copy with their own login. Fixtures are made up.
-7. **Signing key stays in the private repo** `damo2929/autonavalerts-signing`, never here (§13.3).
+7. **Signing key stays in the private repo** `damo2929/autonavalerts-signing`, never here (§13.3). **The Google Play developer account's details** (owner account, account ID, Console links, tester emails) stay out of this repo too (CHECKPOINT §5; owner, 2026-10-24).
 8. **Review and Send of camera reports happen on the phone only, never in the car or while driving.** One tap captures in the car; no auto-send (§8.5).
 9. **Every file in a PGW or zip download becomes its own set; never merge.** No set-name prompt on import; names from file names, icons from matching `.bmp`/`.png` (§5, §5.2a).
 10. **Kotlin only**; Android Auto and the Navigation SDK through the Car App Library; all car UI from navigation-family templates (§1.3, §8).

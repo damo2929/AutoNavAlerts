@@ -27,7 +27,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "io.autonav.alerts"
+        applicationId = "uk.damiendye.autonav"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

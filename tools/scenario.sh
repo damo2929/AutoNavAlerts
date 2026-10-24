@@ -26,7 +26,7 @@ ADB=$ANDROID_HOME/platform-tools/adb
 LOGDIR=${TMPDIR:-/tmp}/autonav-bench
 mkdir -p "$LOGDIR"
 DRY=${SCENARIO_DRY_RUN:-}
-PKG=io.autonav.alerts
+PKG=uk.damiendye.autonav
 
 # The A61 south of Clay Cross (single carriageway, 30/40/50 mph), lon,lat. CLAY is on the A61 just south
 # of the Holmgate Road junction; MID is 1.7 km south on the straight; HIGHAM is at the Higham end (4.9 km).
