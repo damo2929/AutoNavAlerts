@@ -1571,7 +1571,7 @@ Setup: phone with Android Auto developer mode → "Start head unit server"; `adb
 | 4a | PGW data licence | Mostly covered: each user signs in with their own subscription and gets their own watermarked copy, with no redistribution (§6.4). Remaining doubt: the "incorporated in any application" clause | Low priority for personal use; email PGW before sharing the app with others |
 | 5 | iGO TYPE codes (mostly resolved) | Real file has 1, 3, 4, 5, 11; 11 is a best guess (RedSpeed); SPECS start/end not marked | Confirm 11 using package 288 once; SPECS zones worked out from chains of points (§11 step 8); unknown codes become "Type N". |
 | 6 | PGW automation | Terms of use; site changes; captcha | Everything in `PgwConfig`; manual import fallback; switch to turn it off. |
-| 7 | 10 Hz GPS on phones | Many chips cap below 10 Hz | Measure the actual rate; lower the request to match (§10.4). |
+| 7 | ~~10 Hz GPS on phones~~ **Resolved 2026-10-24** | Many chips cap below 10 Hz | The phone is asked at its natural 1 Hz and any faster fix it offers is accepted; nothing is forced (§10.2, owner). The actual rate shows in More → GPS. |
 | 8 | Background location | Android 14+ foreground-service rules; OEM battery killers | `foregroundServiceType=location`, started while the car UI is visible; onboarding asks to ignore battery optimisation. |
 | 9 | Default nav app selection | Android Auto UI for choosing the default varies by version | Document the steps; handle `ACTION_NAVIGATE` either way. |
 | 10 | Sideload restrictions | Android Auto may hide unknown-source apps without developer mode | Documented in onboarding; switch to Play internal testing later if needed. |

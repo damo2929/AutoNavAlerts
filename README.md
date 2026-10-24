@@ -9,6 +9,7 @@ An Android Auto navigation app built on the Google Navigation SDK. It's meant to
 
 - **Resuming work:** [CHECKPOINT.md](CHECKPOINT.md) has the current state, what has been tested, and next steps.
 - **Testing without a car:** [TESTING.md](TESTING.md) is the complete bench guide (Desktop Head Unit, simulated drives, test data, checklist).
+- **What changed and what's open:** [CHANGELOG.md](CHANGELOG.md) by day, and [ISSUES.md](ISSUES.md) for outstanding bugs, decisions, unverified and unbuilt items.
 - **Every setting explained:** [docs/SETTINGS.md](docs/SETTINGS.md).
 
 The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, and record design changes there first. [DESIGN.md Appendix B](DESIGN.md#appendix-b--implementation-status-first-test-build-2026-10-11) tracks what's built and what isn't.

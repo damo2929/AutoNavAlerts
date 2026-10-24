@@ -11,6 +11,8 @@ This file is for AI agents and anyone else picking the project up cold. It says 
 | [TESTING.md](TESTING.md) | The bench: Desktop Head Unit, emulator, `tools/drive.py`, scenarios, the debug broadcast hooks, the full checklist (§6) and the real-car protocol (§6.12) | Before testing or claiming something works |
 | [docs/SETTINGS.md](docs/SETTINGS.md) | Every user-facing setting explained | When touching settings, the phone UI or the backup file |
 | [README.md](README.md) | The public overview, build steps, licensing | For orientation and when user-facing behaviour changes |
+| [CHANGELOG.md](CHANGELOG.md) | What changed for the user, by day, with the DESIGN.md section for each | When reporting a change; add a line for anything the user will notice |
+| [ISSUES.md](ISSUES.md) | Outstanding bugs, decisions waiting on the owner, what isn't verified yet, what isn't built | When picking the next thing up, and to move an item out when it's done |
 
 Do not rely on a summary of these files from memory or from an earlier session. The design changes on most working days and the dated amendments ("owner, 2026-10-12") override older text in the same section.
 
