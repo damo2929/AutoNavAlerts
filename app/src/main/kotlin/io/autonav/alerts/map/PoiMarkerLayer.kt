@@ -29,6 +29,19 @@ import java.util.concurrent.atomic.AtomicBoolean
  * is drawn. The emphasis comes from the engine's verdict (one source of truth): cameras on our road
  * that point the other way are drawn dimmed with their arrow, never hidden (owner, 2026-10-12).
  * Every camera with a bearing gets a second, flat marker: a chevron rotated to its bearing.
+ *
+ * Lifecycle: created by `NavSession.onCreateScreen`, given the map in `MapSurface.onMapReady`
+ * (a new map drops everything drawn on the old one), fed from the session's alert collector on
+ * every fix and from the camera-idle listener, and cleared in the session's `onDestroy`.
+ * [redraw] may be called from any thread; all `GoogleMap` calls happen in one main-thread post
+ * per fix (§8.1 step 5). No Room access and no bitmap allocation per redraw: the POIs come from
+ * the in-memory cache and the images from `IconRepository`'s cache (§8.1 "Cost").
+ *
+ * The direction hard rule (rule 1) shows here as the dimmed, never hidden, facing-away camera
+ * with its arrow; the verdict itself is the engine's. Map calls are made only for what differs
+ * (rule 3): a redraw with nothing changed touches no marker.
+ *
+ * @param basePx the marker icon's side in pixels (36 dp on the car display); ACTIVE is 1.3× it.
  */
 class PoiMarkerLayer(
     private val icons: IconRepository,
@@ -36,6 +49,7 @@ class PoiMarkerLayer(
     /** The whole car surface in pixels (`MapSurface.surfaceSize`); null falls back to the visible region. */
     private val screenSize: () -> android.util.Size? = { null },
 ) {
+    /** What is drawn for one POI and the state it was drawn with, so a redraw changes only what differs (§8.1 step 4). */
     private class Shown(
         val marker: Marker, var emphasis: Emphasis, var iconKey: String,
         var arrow: Marker?, var arrowRotation: Float, var arrowDir: DirectionType,
@@ -43,6 +57,7 @@ class PoiMarkerLayer(
 
     private val main = Handler(Looper.getMainLooper())
     private val shown = HashMap<Long, Shown>()
+    /** A main-thread draw is queued; a second fix before it runs only replaces [latest] (conflation, §8.1 step 5). */
     private val pending = AtomicBoolean(false)
     private class State(
         val pois: List<ResolvedPoi>, val fix: Fix?, val active: ActiveAlert?, val facingAway: Set<Long>,
@@ -51,6 +66,7 @@ class PoiMarkerLayer(
     @Volatile private var latest: State? = null
     /** Marker images handed to the map once and reused, keyed by icon, limit and emphasis. */
     private val descriptors = HashMap<String, BitmapDescriptor>()
+    /** The map to draw on. Setting a different map forgets the old markers (they went with it) and its descriptors. */
     var map: GoogleMap? = null
         set(value) {
             if (field !== value) { shown.clear(); descriptors.clear() }
@@ -60,6 +76,11 @@ class PoiMarkerLayer(
     /**
      * Called on every fix (any thread). [verdicts] (from `AlertCoordinator.verdicts`) drives the
      * emphasis; when it's empty (not wired yet) [facingAway] alone marks the dimmed cameras.
+     *
+     * @param pois the nearby POIs from the grid cache with their set, category and resolved icon.
+     * @param fix the fix the engine used (position in degrees), or null before the first fix: then
+     *   no range clip, no distance ranking and no ACTIVE.
+     * @param active the alert being shown, whose POI is drawn ACTIVE for 15 s.
      */
     fun redraw(
         pois: List<ResolvedPoi>, fix: Fix?, active: ActiveAlert?, facingAway: Set<Long> = emptySet(),
@@ -69,6 +90,8 @@ class PoiMarkerLayer(
         if (pending.compareAndSet(false, true)) main.post { pending.set(false); drawLatest() }
     }
 
+    // One redraw on the main thread for the newest state: pick (§8.1 step 1), rank and cap (step 2),
+    // work out each marker's state (step 3), diff against what's drawn (step 4).
     private fun drawLatest() {
         val m = map ?: return
         val state = latest ?: return
@@ -79,6 +102,7 @@ class PoiMarkerLayer(
         var west = bounds.southwest.longitude; var east = bounds.northeast.longitude
         // Clipped to MAX_RANGE_M around the car (§8.1): the tilted camera's top corners sit near the horizon.
         if (fix != null) {
+            // Metres per degree of latitude; longitude shrinks with the cosine (floored away from the poles).
             val dLat = MAX_RANGE_M / 111_195.0
             val dLon = dLat / Math.cos(Math.toRadians(fix.lat)).coerceAtLeast(0.1)
             south = maxOf(south, fix.lat - dLat); north = minOf(north, fix.lat + dLat)
@@ -91,6 +115,7 @@ class PoiMarkerLayer(
             val lonMargin = (east - west) * BOUNDS_MARGIN
             west -= lonMargin; east += lonMargin
         }
+        // A plain loop without allocation per POI; the bounds may cross the antimeridian (west > east).
         val onScreen = ArrayList<ResolvedPoi>()
         for (r in pois) {
             if (!r.set.showOnMap || !r.set.enabled || zoom < r.set.minZoom) continue
@@ -124,6 +149,7 @@ class PoiMarkerLayer(
         for (r in visible) {
             val emphasis = emphasisOf(r, state)
             val iconKey = "${r.iconId}:${r.poi.speedLimit}"
+            // ACTIVE on top of everything (§8.1); the arrow sits half a level under its own icon.
             val z = if (emphasis == Emphasis.ACTIVE) 10f else 1f
             val existing = shown[r.poi.id]
             val arrowWanted = hasArrow(r)
@@ -140,6 +166,7 @@ class PoiMarkerLayer(
                 shown[r.poi.id] = Shown(marker, emphasis, iconKey, arrow, bearing, r.poi.directionType)
                 continue
             }
+            // Still visible: change only what differs (§8.1 step 4); in steady driving that's 0–3 markers a fix.
             if (existing.emphasis != emphasis || existing.iconKey != iconKey) {
                 existing.marker.setIcon(descriptor(r, iconKey, emphasis))
                 existing.marker.zIndex = z
@@ -199,8 +226,11 @@ class PoiMarkerLayer(
         }
     }
 
+    // An arrow for every camera with a bearing in its data: single-headed ONE_WAY, two-headed BOTH (§8.1).
     private fun hasArrow(r: ResolvedPoi): Boolean = r.poi.bearing != null && r.poi.directionType != DirectionType.ANY
 
+    // Flat and rotated to the true bearing: the follow camera is heading-up, so the icon itself stays
+    // upright and the arrow is a second marker beneath it (§8.1 "direction arrow").
     private fun addArrow(m: GoogleMap, r: ResolvedPoi, emphasis: Emphasis, bearing: Float, z: Float): Marker? =
         m.addMarker(
             MarkerOptions().position(LatLng(r.poi.lat, r.poi.lon))
@@ -216,6 +246,8 @@ class PoiMarkerLayer(
         return icons.arrow(dir, emphasis, (iconPx * ARROW_SCALE).toInt())
     }
 
+    // One descriptor per (icon, limit badge, emphasis), handed to the map once; a crude cap keeps the
+    // table bounded over a long drive through many sets.
     private fun descriptor(r: ResolvedPoi, iconKey: String, emphasis: Emphasis): BitmapDescriptor {
         if (descriptors.size > 256) descriptors.clear()
         return descriptors.getOrPut("$iconKey:$emphasis") {
@@ -223,16 +255,19 @@ class PoiMarkerLayer(
         }
     }
 
+    /** Removes every marker (the session is ending); posted to the main thread like the redraws. */
     fun clear() {
         main.post { shown.values.forEach { it.marker.remove(); it.arrow?.remove() }; shown.clear() }
     }
 
     companion object {
+        /** The cap on markers drawn, arrows included (§8.1 step 2: the closest 200). */
         const val MAX_MARKERS = 200
         /** Markers are drawn this far from the car at most (§8.1). */
         private const val MAX_RANGE_M = 3_000.0
         /** The arrow square is this many times the icon, so the head sits outside the icon (§8.1). */
         const val ARROW_SCALE = 2.2f
+        /** The 10 % margin round the screen bounds, so markers at the edge don't drop out (§8.1 step 1). */
         private const val BOUNDS_MARGIN = 0.10
     }
 }

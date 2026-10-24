@@ -28,15 +28,23 @@ import javax.inject.Singleton
  * `files/diag/`. Lines collect in memory and go to the file in one write every 15 s as a block
  * headed by the span and a fix summary; a forced [flush] writes what's pending now.
  *
- * Rules for callers: never a line per 10 Hz fix (use [fix] for the header and [sample] for a
+ * Rules for callers: never a line per fix (the car can report several a second) (use [fix] for the header and [sample] for a
  * periodic line), nothing in marker redraws or `onGetTemplate`; [onChange] for sources and
  * verdicts that only matter when they change. Every line is mirrored to `Log.i("AutoNav")`.
  *
  * Any method may be called from any thread. The only thread that touches the files is the
  * `diag` [HandlerThread], exposed as [handler] for the drive recorder's flush tick.
+ *
+ * Lifecycle: a Hilt singleton created with the process (§2); `App.onCreate` writes `App start`
+ * to both files, and the 15 s tick runs for the life of the process. The 1 MB cap and the one
+ * rotation (`*.1.log`) are [BatchLog]'s, in `:core`, so the batching and rotation are JVM-tested;
+ * this class adds the thread, the clock, the logcat mirror and the sample/on-change helpers.
+ * Forced flushes come from the car session's destroy, `App.onTrimMemory`, the phone's
+ * Diagnostics screen and the bench receiver (§15.5).
  */
 @Singleton
 class EventLog @Inject constructor(@ApplicationContext context: Context) {
+    /** The two files of §15.5; [fileName] is under [dir]. */
     enum class Channel(val fileName: String) {
         NAV("debug-nav.log"),
         ALERT("alert-debug.log");
@@ -45,21 +53,27 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
         val shortName: String get() = fileName.removeSuffix(".log")
     }
 
+    /** `files/diag/`: excluded from Android backup (§15.5). */
     val dir: File = File(context.filesDir, "diag")
 
+    /** The only thread that writes the files. */
     private val thread = HandlerThread("diag").apply { start() }
 
     /** The diag thread. Other diagnostics (the drive recorder's one-second flush) post here. */
     val handler: Handler = Handler(thread.looper)
 
+    /** One in-memory batch per channel: at most [MAX_LINES] lines, the oldest replaced by a `…dropped N` marker. */
     private val logs = EnumMap<Channel, BatchLog>(Channel::class.java).apply {
         for (c in Channel.entries) put(c, BatchLog(MAX_LINES, BatchLog.DEFAULT_MAX_BYTES))
     }
+    /** Per-key state for [sample] (last time, epoch ms) and [onChange] (last value). */
     private val lastSample = ConcurrentHashMap<String, Long>()
     private val lastValue = ConcurrentHashMap<String, Any>()
 
+    /** Epoch ms when the current block began, for the `--- from–to ---` header. */
     @Volatile private var blockStartMs = System.currentTimeMillis()
 
+    /** The 15 s batch write (DESIGN.md §15.5), rescheduled after each run so writes never overlap. */
     private val tick = object : Runnable {
         override fun run() {
             flushNow()
@@ -71,12 +85,18 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
         handler.postDelayed(tick, BLOCK_MS)
     }
 
+    /** The channel's current file (its rotation sits beside it as `*.1.log`). */
     fun file(channel: Channel): File = File(dir, channel.fileName)
 
     /** The channel's rotation (if any) then its current file: what Save and Share export. */
     fun files(channel: Channel): List<File> = BatchLog.files(file(channel))
 
-    /** One line: `HH:mm:ss.SSS TAG msg`. Any thread. */
+    /**
+     * One line: `HH:mm:ss.SSS TAG msg`. Any thread.
+     *
+     * The stamp is the wall clock in the phone's zone, so a line can be matched to what the driver saw;
+     * the mirror to logcat is for the emulator bench, since the owner's phone keeps no logcat (§15.5).
+     */
     fun record(channel: Channel, tag: String, msg: String) {
         val line = STAMP.format(Instant.ofEpochMilli(System.currentTimeMillis()).atZone(ZONE)) + " " + tag + " " + msg
         logs.getValue(channel).record(line)
@@ -124,6 +144,7 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
     /** The last [n] lines of the channel's file, oldest first, spanning the rotation if short. */
     fun tail(channel: Channel, n: Int): List<String> = BatchLog.tail(file(channel), n)
 
+    /** The channel's current file size, bytes, for the Diagnostics screen. */
     fun sizeBytes(channel: Channel): Long = BatchLog.sizeBytes(file(channel))
 
     /** "yyyy-MM-dd HH:mm:ss" of the channel's oldest entry, or null when the files are empty. */
@@ -139,6 +160,7 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
         }
     }
 
+    /** Runs [block] on the diag thread and waits up to [FLUSH_WAIT_MS]; runs it inline when already there (no self-deadlock). */
     private fun runOnDiag(block: () -> Unit) {
         if (Looper.myLooper() == thread.looper) { block(); return }
         val done = CountDownLatch(1)
@@ -164,9 +186,13 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
 
     private companion object {
         const val LOGCAT_TAG = "AutoNav"
+        /** One write per channel every 15 s (DESIGN.md §15.5): a hard kill loses at most that much. */
         const val BLOCK_MS = 15_000L
+        /** How long a waiting [flush] holds its caller: enough for two small appends, never a visible stall. */
         const val FLUSH_WAIT_MS = 500L
+        /** The in-memory batch is bounded (§15.5): at 15 s that is well over the rate rules allow. */
         const val MAX_LINES = 400
+        /** Stands in for a null value in [onChange]'s map, which can't hold null. */
         val NULL = Any()
         val ZONE: ZoneId = ZoneId.systemDefault()
         val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")

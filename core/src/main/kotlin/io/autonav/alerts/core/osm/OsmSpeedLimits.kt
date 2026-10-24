@@ -8,7 +8,11 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.hypot
 
-/** One straight piece of a road with a posted limit (DESIGN.md §8.4a). */
+/**
+ * One straight piece of a road with a posted limit (DESIGN.md §8.4a). Degrees and mph. The
+ * [dir] field exists for tag input with `maxspeed:forward/backward`; the Geofabrik extract has no
+ * such split, so everything from the limit file is [BOTH].
+ */
 data class LimitSegment(
     val lat1: Double, val lon1: Double, val lat2: Double, val lon2: Double,
     val mph: Double,
@@ -22,11 +26,19 @@ data class LimitSegment(
     }
 }
 
-/** OpenStreetMap `maxspeed` reading, tiles and road matching (DESIGN.md §8.4a). Plain Kotlin. */
+/**
+ * OpenStreetMap `maxspeed` reading, tiles and road matching (DESIGN.md §8.4a). Plain Kotlin,
+ * stateless. The tile keys here are the ones the limit file is indexed by ([tileKey], [within]:
+ * used by `SpeedLimitRepository` to decide what to load); [limitAt] over [LimitSegment]s is the
+ * reference matcher that [LimitIndex] reproduces without allocating, and tests use it;
+ * [display] converts for the panel (`NavSession`). Degrees in; mph out unless stated.
+ */
 object OsmSpeedLimits {
     /** Tile size in degrees, both ways. */
+    // 0.1° tiles (§8.4a): about 11 km by 7 km in the UK; one, up to four near a corner, covers the car.
     const val TILE_DEG = 0.1
     /** A segment further than this from the fix isn't our road. */
+    // The nearest piece within 20 m running within 30° of the heading, either way (§8.4a "Finding the limit").
     const val MATCH_M = 20.0
     /** A segment more than this off our heading is a side road or crossing. */
     const val MATCH_DEG = 30.0
@@ -34,6 +46,8 @@ object OsmSpeedLimits {
     private const val KMH_TO_MPH = 0.621371
 
     /** mph from one `maxspeed` value, or null if it isn't a usable limit. */
+    // UK national speed limit tags: single carriageway 60, dual carriageway and motorway 70.
+    // Anything outside 5–90 mph isn't a road limit.
     fun mph(value: String?, highway: String? = null): Double? {
         val v = value?.split(';')?.first()?.trim()?.lowercase() ?: return null
         return when {
@@ -71,6 +85,7 @@ object OsmSpeedLimits {
 
     // --- Tiles ------------------------------------------------------------------------------
 
+    /** The key of the tile containing the point: row in the high 32 bits, column in the low. */
     fun tileKey(lat: Double, lon: Double): Long = tileKey(floor(lat / TILE_DEG).toInt(), floor(lon / TILE_DEG).toInt())
 
     private fun tileKey(row: Int, col: Int): Long = (row.toLong() shl 32) or (col.toLong() and 0xffffffffL)
@@ -143,5 +158,6 @@ object OsmSpeedLimits {
     }
 
     /** The limit in the panel's units, whole. */
+    // OSM limits are mph in the file; a metric panel shows them converted (§8.4 "Units").
     fun display(mph: Double, imperial: Boolean): Int = Math.round(if (imperial) mph else mph / KMH_TO_MPH).toInt()
 }

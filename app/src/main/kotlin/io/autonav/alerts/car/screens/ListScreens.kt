@@ -43,10 +43,16 @@ import kotlinx.coroutines.withContext
  * refresh is a host "refresh", not a new template). Re-sending an identical template made the host
  * animate every row below the first change point once a second, a visible "shake" on a parked car
  * (owner, bench, 2026-10-13).
+ *
+ * Pushed from Home's strip; a `ListTemplate`, so the map stays behind. Main thread throughout
+ * (`lifecycleScope`). Hard rule 3 (no shake) is the whole point of the ticker's compare-first
+ * design; the mute row here is the one Mute on the car screen (the banner has no buttons, §12.1,
+ * hard rule 2).
  */
 class MoreScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var mutedUntil = 0L
     private var satellite = false
+    /** The live lines as last sent, compared by the ticker before any re-send. */
     private var liveKey: List<String> = emptyList()
     private var ticker: Job? = null
 
@@ -61,6 +67,7 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                 invalidate()
             }
         }
+        // The ticker runs only while the screen is showing (STARTED), and compares before it re-sends.
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 ticker?.cancel()
@@ -100,6 +107,7 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
         )
     }
 
+    /** The More list; the live lines sent are remembered in [liveKey] for the ticker's comparison. */
     override fun onGetTemplate(): Template {
         val muted = mutedUntil > System.currentTimeMillis()
         val live = liveTexts().also { liveKey = it }
@@ -112,6 +120,7 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
                 .setImage(CarUi.icon(carContext, if (muted) R.drawable.ic_action_volume_on else R.drawable.ic_action_volume_off))
                 .setOnClickListener {
                     lifecycleScope.launch {
+                        // Mute silences speech only for 30 min; banners and cards still show (§12.3).
                         val until = if (muted) 0L else System.currentTimeMillis() + 30 * 60_000L
                         session.deps.settings().update { it.copy(mutedUntilMs = until) }
                         mutedUntil = until
@@ -160,7 +169,12 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
     }
 }
 
-/** Avoid tolls and energy-efficient EV routes (DESIGN.md §8.3a); used from the next route. */
+/**
+ * Avoid tolls and energy-efficient EV routes (DESIGN.md §8.3a); used from the next route. Pushed
+ * from More; a `ListTemplate` with a toggle per option. The same two settings as the phone's
+ * Settings → Routing, so both always agree. Main thread; the settings update suspends on its own
+ * dispatcher. Re-sent only after a load or a change (hard rule 3).
+ */
 class RouteOptionsScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var settings: io.autonav.alerts.settings.AppSettings? = null
 
@@ -168,6 +182,7 @@ class RouteOptionsScreen(carContext: CarContext, private val session: NavSession
         lifecycleScope.launch { settings = session.deps.settings().current(); invalidate() }
     }
 
+    /** The two toggles, or a loading template before the settings have been read. */
     override fun onGetTemplate(): Template {
         val header = Header.Builder().setTitle("Route options").setStartHeaderAction(Action.BACK).build()
         val s = settings ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
@@ -179,6 +194,7 @@ class RouteOptionsScreen(carContext: CarContext, private val session: NavSession
         return ListTemplate.Builder().setHeader(header).setSingleList(list.build()).build()
     }
 
+    // Written to the store first, then read back, so the toggle shows what was actually saved.
     private fun update(change: (io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) {
         lifecycleScope.launch {
             session.deps.settings().update(change)
@@ -192,15 +208,23 @@ class RouteOptionsScreen(carContext: CarContext, private val session: NavSession
  * Show/hide each POI set, and switch its alerts on or off. Each row carries the set's own map icon
  * (its default icon, the one its markers use unless a category overrides it), so the list reads like
  * the map (owner, 2026-10-13).
+ *
+ * The POI layers screen of DESIGN.md §8 (a `ListTemplate` pushed from More; the map stays
+ * behind). The icon bitmaps are rendered on `Dispatchers.IO` (§2), the template on the main
+ * thread. A toggle writes the set through `PoiRepository`, which the marker layer and the alert
+ * engine both read, so the map follows at the next fix. Re-sent only after the load or a toggle
+ * (hard rule 3).
  */
 class PoiLayersScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var sets: List<PoiSetEntity>? = null
+    /** One car icon per distinct default icon id, so sets sharing an icon share the bitmap. */
     private var icons: Map<String, CarIcon> = emptyMap()
 
     init {
         lifecycleScope.launch {
             val s = session.deps.pois().activeSets.first()
             icons = withContext(Dispatchers.IO) {
+                // 48 dp, never under 48 px, so the host's small-image slot doesn't upscale a tiny bitmap.
                 val px = (ICON_DP * carContext.resources.displayMetrics.density).toInt().coerceAtLeast(48)
                 s.map { it.defaultIconId }.distinct().associateWith { CarUi.icon(session.deps.icons().bitmap(it, px)) }
             }
@@ -209,6 +233,7 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
         }
     }
 
+    /** One row per set up to the host's list limit, with its icon, counts and the on/off toggle. */
     override fun onGetTemplate(): Template {
         val header = Header.Builder().setTitle("POI layers").setStartHeaderAction(Action.BACK).build()
         val s = sets ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
@@ -227,6 +252,7 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
         return ListTemplate.Builder().setHeader(header).setSingleList(list.build()).build()
     }
 
+    // The local copy is patched rather than re-read, so the toggle doesn't snap back before Room has caught up.
     private fun update(set: PoiSetEntity) {
         lifecycleScope.launch {
             session.deps.pois().updateSet(set)
@@ -242,16 +268,23 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
  * The speech scheduler's decisions, newest first (DESIGN.md §12.3): what was spoken, replaced,
  * dropped as stale, interrupted, timed out, failed or muted, and how long each waited. A snapshot
  * when opened; Refresh takes a new one.
+ *
+ * The car side of the 50-entry speech record ring (the phone's Diagnostics shows the same one).
+ * Pushed from More's Alerts row; a `ListTemplate`. A snapshot rather than a collector, so the
+ * list never changes under the driver's finger and nothing re-sends on its own (hard rule 3).
+ * Main thread only.
  */
 class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Screen(carContext) {
     private var records: List<SpeechScheduler.Record> = tts.records.value
 
+    /** The newest records up to the host's list limit: kind, POI, outcome, time, wait and detail. */
     override fun onGetTemplate(): Template {
         val header = Header.Builder().setTitle("Alerts").setStartHeaderAction(Action.BACK).build()
         val limit = CarUi.listLimit(carContext)
         val list = ItemList.Builder()
         if (records.isEmpty()) list.setNoItemsMessage("No alerts spoken yet")
         val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)
+        // Limit changes and directions are their own kinds, never shown as a camera stage (§8.4a, §12.3).
         records.asReversed().take(limit).forEach { r ->
             val u = r.utterance
             list.addItem(
@@ -273,11 +306,20 @@ class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Scr
     }
 }
 
-/** Recents and favourites, with delete on the car screen (DESIGN.md §8.2); reloaded whenever it comes back on top. */
+/**
+ * Recents and favourites, with delete on the car screen (DESIGN.md §8.2); reloaded whenever it comes back on top.
+ *
+ * Pushed from Home's strip (free drive only) and from More; a `ListTemplate`. From car API 6 a
+ * row carries its own delete action and a tap navigates; below that a tap opens
+ * [PlaceDetailScreen], which has Navigate and Remove. Favourites can't be removed here (§8.2:
+ * Unfavourite or the phone app). Main thread; the place repository does its Room work on its
+ * own dispatcher (§2). Re-sent once per load (hard rule 3).
+ */
 class RecentsScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
     private var places: List<PlaceEntity>? = null
 
     init {
+        // On resume, not create: a Go on the preview adds a recent, and the host's limit shows the newest first.
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onResume(owner: LifecycleOwner) = reload()
         })
@@ -287,9 +329,11 @@ class RecentsScreen(carContext: CarContext, private val session: NavSession) : S
         lifecycleScope.launch { places = session.deps.places().recents(50); invalidate() }
     }
 
+    /** The rows, a Clear all action when any recent exists, or a loading template before the first load. */
     override fun onGetTemplate(): Template {
         val header = Header.Builder().setTitle("Recents").setStartHeaderAction(Action.BACK).build()
         val p = places ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
+        // Row.addAction needs car API 6 (§8.2 "Deleting from the car screen").
         val rowActions = carContext.carAppApiLevel >= CarAppApiLevels.LEVEL_6
         val list = ItemList.Builder()
         if (p.isEmpty()) list.setNoItemsMessage("No recent places")
@@ -328,13 +372,20 @@ class RecentsScreen(carContext: CarContext, private val session: NavSession) : S
     }
 }
 
-/** Fallback for older car hosts without row actions: Navigate / Favourite / Remove. */
+/**
+ * Fallback for older car hosts without row actions: Navigate / Favourite / Remove.
+ *
+ * The place-detail screen of DESIGN.md §8.2 for car API < 6, pushed from [RecentsScreen]. A
+ * `MessageTemplate` with the address as its text. [onChanged] tells the recents list to reload
+ * after a removal. Main thread; one template, never re-sent.
+ */
 class PlaceDetailScreen(
     carContext: CarContext,
     private val session: NavSession,
     private val place: PlaceEntity,
     private val onChanged: () -> Unit,
 ) : Screen(carContext) {
+    /** Navigate always; Remove only for a recent (favourites are removed on the phone, §8.2). */
     override fun onGetTemplate(): Template {
         val b = MessageTemplate.Builder(place.address ?: place.name)
             .setHeader(Header.Builder().setTitle(place.name).setStartHeaderAction(Action.BACK).build())
@@ -350,7 +401,13 @@ class PlaceDetailScreen(
     }
 }
 
+/**
+ * A Yes / No question on a `MessageTemplate` (DESIGN.md §8.2 "Clear all recents", "with a
+ * confirmation step"). Pushed by the caller; pops itself on either answer and runs [onYes] on
+ * Yes, on the main thread. A couple of taps, as the design asks; nothing to type.
+ */
 class ConfirmScreen(carContext: CarContext, private val question: String, private val onYes: () -> Unit) : Screen(carContext) {
+    /** The question with Yes and No; the header's Back is a No as well. */
     override fun onGetTemplate(): Template = MessageTemplate.Builder(question)
         .setHeader(Header.Builder().setTitle("Confirm").setStartHeaderAction(Action.BACK).build())
         .addAction(CarUi.textAction("Yes") { onYes(); screenManager.pop() })

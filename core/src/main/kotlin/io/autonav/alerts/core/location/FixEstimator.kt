@@ -8,13 +8,24 @@ import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/** Where a fix came from (DESIGN.md §10.6a). */
+/**
+ * Where a fix came from (DESIGN.md §10.6a, §10.7). The app maps it onto the engine's
+ * `alerts.LocationSource` when it builds a `Fix`; the two enums are kept apart so `:core`'s
+ * location and alert halves don't depend on each other.
+ */
 enum class LocationSource { PHONE, CAR, SIM }
 
-/** How the speed was worked out (DESIGN.md §10.2). */
+/**
+ * How the speed was worked out (DESIGN.md §10.2): a reported GPS or car speed, displacement over
+ * time when the fix carried none, a simulated feed, or nothing yet. (The engine's
+ * `alerts.SpeedSource` calls DISPLACEMENT "DERIVED"; the app maps between them.)
+ */
 enum class SpeedSource { GPS, DISPLACEMENT, CAR_RAW, SIMULATED, NONE }
 
-/** How the heading was worked out (DESIGN.md §10.6a). */
+/**
+ * How the heading was worked out (DESIGN.md §10.6a): the GPS bearing alone, the chord track alone,
+ * the two blended, the last track held while the car is slow, or none.
+ */
 enum class HeadingSource { GPS, TRACK, BLEND, HELD, NONE }
 
 /**
@@ -22,11 +33,15 @@ enum class HeadingSource { GPS, TRACK, BLEND, HELD, NONE }
  * a null [bearingDeg] means no bearing. A reported 0 is a real 0.
  */
 data class FixInput(
+    /** Position, degrees. */
     val lat: Double,
     val lon: Double,
+    /** Milliseconds on one clock for every feed: the app uses the time since boot (§10.7), so gaps and jumps compare. */
     val timeMs: Long,
+    /** Horizontal accuracy, metres (1σ); null means unknown and is taken as [FixEstimator.Config.defaultAccuracyM]. */
     val accuracyM: Double? = null,
     val speedMps: Double? = null,
+    /** The feed's own bearing, degrees true, and its accuracy in degrees when the feed gives one. */
     val bearingDeg: Double? = null,
     val bearingAccuracyDeg: Double? = null,
     val source: LocationSource = LocationSource.PHONE,
@@ -69,9 +84,22 @@ data class Estimate(
  * accuracy is ≤ 20° and it agrees with the track within 45°; a bearing that is bit-identical for
  * 10 fixes while the track turned more than 20° is stale for the rest of the session. After 30 s
  * under 1 m/s the heading is null.
+ *
+ * DESIGN.md §3 calls the two halves `HeadingEstimator` and `SpeedEstimator`; they share the ring
+ * because the chord and the displacement speed both need the recent positions. No Android, no
+ * threads of its own: the app's `AdaptiveLocationSource` keeps one instance and calls [onFix] on
+ * its `adaptive-location` thread for every phone, car or simulated fix in turn (§10.7), and calls
+ * [resetTrack] on a feed handover; [onFix] resets itself on a gap over 5 s or a jump over 200 m.
+ * Units: degrees in and out for positions and bearings, metres, m/s, milliseconds on the fix clock.
+ *
+ * The heading this produces is what the camera direction rule (§11 step 3, the owner's hard rule)
+ * is judged against, so it must stay a track heading with an honest accuracy: never a stale GPS
+ * bearing, never a heading invented from parked jitter.
  */
 class FixEstimator(private val config: Config = Config()) {
     data class Config(
+        // The displacement speed needs more than max(3 m, accuracy) of movement over at least 1 s, on two
+        // fixes in a row (§10.2), so jitter while parked reads as 0.
         val minDisplacementM: Double = 3.0,
         val displacementMinDtMs: Long = 1_000,
         /** Standing still this long re-anchors the displacement reference (drift can't build up). */
@@ -79,22 +107,29 @@ class FixEstimator(private val config: Config = Config()) {
         /** Fixes worse than this don't feed the displacement speed or the track. */
         val maxAccuracyM: Double = 30.0,
         val defaultAccuracyM: Double = 10.0,
+        // The track chord is clamp(speed × 2 s, 10–60 m) back along the ring (§10.6a).
         val chordSeconds: Double = 2.0,
         val minChordM: Double = 10.0,
         val maxChordM: Double = 60.0,
+        /** The circular EMA's weight on the newest chord bearing. */
         val emaAlpha: Double = 0.5,
         /** No new track samples below this speed. */
         val minTrackMps: Double = 1.0,
+        // The GPS bearing is blended in only over 3 m/s, with accuracy ≤ 20° and within 45° of the track (§10.6a).
         val gpsMinMps: Double = 3.0,
         val gpsMaxAccuracyDeg: Double = 20.0,
         val gpsDefaultAccuracyDeg: Double = 10.0,
         val gpsMaxOffTrackDeg: Double = 45.0,
+        // Stale-bearing guard (§10.6a): the same bits for 10 fixes while the track turned over 20°.
         val staleBearingFixes: Int = 10,
         val staleBearingTurnDeg: Double = 20.0,
+        // Under 1 m/s is "still"; after 30 s of it the heading is null and the ring is kept empty (§10.6a).
         val stillMps: Double = 1.0,
         val stillHeadingMs: Long = 30_000,
+        // A gap over 5 s or a jump over 200 m resets the track (§10.6a `resetTrack`).
         val gapMs: Long = 5_000,
         val jumpM: Double = 200.0,
+        /** The ring of recent positions is bounded in time and count; 60 m of chord needs far less. */
         val ringMaxMs: Long = 60_000,
         val ringMax: Int = 1_000,
     )
@@ -149,6 +184,11 @@ class FixEstimator(private val config: Config = Config()) {
         lastResetReason = reason
     }
 
+    /**
+     * One fix in, one [Estimate] out. Never throws and never returns NaN: a feed's accuracy of 0 is
+     * floored, a missing accuracy defaulted, and a fix worse than [Config.maxAccuracyM] still gets a
+     * reported speed but doesn't feed the track or the displacement speed.
+     */
     fun onFix(f: FixInput): Estimate {
         var resetReason: String? = null
         last?.let { prev ->
@@ -232,6 +272,7 @@ class FixEstimator(private val config: Config = Config()) {
             if (pick != null) {
                 val b = Geo.bearingDeg(pick.lat, pick.lon, f.lat, f.lon)
                 ema = ema?.let { Geo.normalizeDeg(it + config.emaAlpha * Geo.angleDiffDeg(b, it)) } ?: b
+                // headingAccuracyDeg ≈ atan2(2 × accuracy, chord) (§10.6a): 3 m fixes over 40 m give about 8.5°.
                 trackAccDeg = Math.toDegrees(atan2(2 * acc, pickD))
                 chord = pickD
             }
@@ -266,6 +307,7 @@ class FixEstimator(private val config: Config = Config()) {
         var gpsUsed: Double? = null
         when {
             track != null && tAcc != null && gpsUsable && Geo.absAngleDiffDeg(b!!, track) <= config.gpsMaxOffTrackDeg -> {
+                // Inverse-variance blend (§10.6a): the better-known of track and GPS bearing pulls harder.
                 val wT = 1.0 / (tAcc * tAcc)
                 val wG = 1.0 / (bAcc * bAcc)
                 heading = Geo.normalizeDeg(track + wG / (wT + wG) * Geo.angleDiffDeg(b, track))
@@ -287,10 +329,15 @@ class FixEstimator(private val config: Config = Config()) {
     }
 }
 
-/** Median of the last three speed samples (DESIGN.md §10.3). */
+/**
+ * Median of the last three speed samples (DESIGN.md §10.2 "Speed"): one bad reading can't show,
+ * and a real stop still reads 0 within two fixes. Used for both the reported and the displacement
+ * speed. m/s in, m/s out.
+ */
 class SpeedSmoother(private val window: Int = 3) {
     private val samples = ArrayDeque<Double>()
 
+    /** Adds a sample and returns the median of the window so far. */
     fun add(mps: Double): Double {
         samples.addLast(mps)
         while (samples.size > window) samples.removeFirst()

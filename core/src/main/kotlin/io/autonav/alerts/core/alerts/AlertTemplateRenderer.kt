@@ -7,6 +7,7 @@ import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.poi.SpeedUnit
 import kotlin.math.roundToInt
 
+/** The user's display units (DESIGN.md §13 settings): yards and miles with mph, or metres and km with km/h. */
 enum class Units { IMPERIAL, METRIC }
 
 /**
@@ -22,14 +23,23 @@ data class TemplateValues(
     val setName: String? = null,
 )
 
+/** The two forms of one alert (DESIGN.md §7.2): short units on screen ("30 mph"), full words for speech. */
 data class RenderedAlert(val display: String, val spoken: String)
 
 /**
  * Renders "{category} ahead, {speed} limit" style templates. Clauses are split on commas; a clause
  * that references a missing placeholder is dropped, then spacing and punctuation are tidied.
+ *
+ * DESIGN.md §7.2 is the spec: the only placeholders are {category} {speed} {units} {distance}
+ * {direction}, the display and spoken texts come from the same template, and a missing value drops
+ * its clause ("Fixed camera ahead" when there's no limit). No Android, no threads of its own: the
+ * app's `AlertCoordinator` renders each event on the alert thread; `PoiRepository` takes the default
+ * templates from it and the phone's set editor renders previews. Speeds come in with their own unit and go out converted to
+ * [units]; distances are metres in.
  */
 class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
 
+    /** Both forms of [template] filled from [v]. Never throws on an unknown placeholder: it is left as typed. */
     fun render(template: String, v: TemplateValues): RenderedAlert =
         RenderedAlert(display = renderOne(template, v, spoken = false), spoken = renderOne(template, v, spoken = true))
 
@@ -44,8 +54,12 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
         )
         val clauses = template.split(',').mapNotNull { clause ->
             val keys = PLACEHOLDER.findAll(clause).map { it.groupValues[1] }.toList()
+            // A clause naming a known placeholder with no value goes (§7.2 "Rendering rules"); an unknown
+            // placeholder name is not ours to judge and stays in the text.
             if (keys.any { values[it] == null && it in values }) return@mapNotNull null
             var text = PLACEHOLDER.replace(clause) { m -> values[m.groupValues[1]] ?: m.value }
+            // On screen a bare "{speed}" reads as "30 mph", not "30": the unit is added unless the template
+            // already has {units} or the number already carries one.
             if (!spoken && "{speed}" in clause && "{units}" !in clause && speedInUnits != null) {
                 text = text.replace(Regex("""\b$speedInUnits\b(?!\s*(mph|km/h))"""), "$speedInUnits ${shortSpeedUnits()}")
             }
@@ -63,6 +77,7 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
     private fun shortSpeedUnits() = if (units == Units.IMPERIAL) "mph" else "km/h"
     private fun spokenSpeedUnits() = if (units == Units.IMPERIAL) "miles per hour" else "kilometres per hour"
 
+    /** Display form of [m] metres: "140 yd" (10 yd steps) / "1.2 mi", or "300 m" / "1.2 km" (§7.2, §12.1 subtitle). */
     fun shortDistance(m: Double): String = if (units == Units.IMPERIAL) {
         val yd = m / Geo.METRES_PER_YARD
         if (yd < 1000) "${roundTo(yd, 10)} yd" else "%.1f mi".format(m / 1609.344)
@@ -70,6 +85,11 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
         if (m < 1000) "${roundTo(m, 10)} m" else "%.1f km".format(m / 1000)
     }
 
+    /**
+     * Spoken form of [m] metres (§7.2 {distance}): whole miles from 0.9 mi, then "three quarters of a
+     * mile", "half a mile", "a quarter of a mile", else yards in 50 yd steps (never under 50); metric
+     * is kilometres to one decimal or metres in 50 m steps.
+     */
     fun spokenDistance(m: Double): String = if (units == Units.IMPERIAL) {
         val miles = m / 1609.344
         when {
@@ -88,6 +108,7 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
     companion object {
         private val PLACEHOLDER = Regex("""\{(\w+)\}""")
 
+        // The default templates of §7.2: one per stage, and the three zone texts of §11 step 8.
         const val DEFAULT_FIRST = "{category} ahead, {speed} limit"
         const val DEFAULT_SECOND = "{category}, {distance}"
         const val DEFAULT_PASSING = "{category} now"

@@ -23,21 +23,40 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
+/**
+ * One row of the car's search list: an autocomplete prediction (no position yet, [placeId] only), a text-search
+ * result (position known), or a contact address turned into a hit. [distanceM] from the car, when known.
+ */
 data class SearchHit(val placeId: String?, val title: String, val subtitle: String?, val distanceM: Int?, val lat: Double? = null, val lon: Double? = null)
 
+/** Awaits a Play Services Task; any failure becomes null, so a search error shows as "no results", never a crash on the car screen. */
 private suspend fun <T> Task<T>.awaitOrNull(): T? = suspendCancellableCoroutine { cont ->
     addOnCompleteListener { t -> cont.resume(if (t.isSuccessful) t.result else null) }
 }
 
-/** Places search (session tokens, location bias, 3-char minimum) and recents (DESIGN.md §8, §8.2). */
+/**
+ * Places search for the car's Search screen, and the recents it feeds (DESIGN.md §8 "Search", §8.2). A Hilt
+ * singleton. Called by `SearchScreen` (autocomplete as you type, text search on submit or voice, resolve on a
+ * tap), `ContactsSource.locate` (text search of an address, §8.3) and the phone's Places screen (recents).
+ * Suspend functions, callable from any coroutine; the Places client does its own threading.
+ * The client comes from `NavigatorHolder.placesClient()`, which applies the user's own Maps key first and
+ * returns null without one (§1.4, hard rule 5): every search is billed to the user's account.
+ * Cost rules of §16 #12: one session token per search session, a 3-character minimum, and a 50 km bias.
+ */
 @Singleton
 class PlacesSearch @Inject constructor(
     private val holder: NavigatorHolder,
     private val db: AppDatabase,
     private val eventLog: EventLog,
 ) {
+    // The autocomplete session (§16 #12): one token from the first keystroke until resolve() fetches the place,
+    // so Google bills the typing and the fetch as one session rather than per request.
     private var token: AutocompleteSessionToken? = null
 
+    /**
+     * Autocomplete predictions for [query], biased to within 50 km of [near] (§8 "Search": debounced by the
+     * caller). Empty below 3 characters, without a Maps key, or on any error. At most 6: the car list is short.
+     */
     suspend fun autocomplete(query: String, near: Location?): List<SearchHit> {
         if (query.trim().length < 3) return emptyList()
         val client = holder.placesClient() ?: return emptyList()
@@ -54,7 +73,11 @@ class PlacesSearch @Inject constructor(
         }
     }
 
-    /** Places Text Search; every call is logged `Search Places textSearch n= ms= status=OK|empty|error` (DESIGN.md §15.5). */
+    /**
+     * Places Text Search (New) for a submitted or spoken query, or a contact's address (§8.3 "Geocoding"), up to
+     * 6 results with positions, biased to 50 km of [near]. Every call is logged
+     * `Search Places textSearch n= ms= status=OK|empty|error` to debug-nav (DESIGN.md §15.5).
+     */
     suspend fun textSearch(query: String, near: Location?): List<SearchHit> {
         val t0 = android.os.SystemClock.elapsedRealtime()
         val client = holder.placesClient() ?: run { log(0, t0, "error noClient"); return emptyList() }
@@ -72,16 +95,22 @@ class PlacesSearch @Inject constructor(
         return hits
     }
 
+    /** The §15.5 log line for a text search. */
     private fun log(n: Int, t0: Long, status: String) =
         eventLog.record(EventLog.Channel.NAV, "Search", "Places textSearch n=$n ms=${android.os.SystemClock.elapsedRealtime() - t0} status=$status")
 
-    /** Resolves a hit to a destination, fetching its location if needed (ends the session token). */
+    /**
+     * Resolves a hit to a destination: a hit that already has a position is returned as it is; an autocomplete
+     * prediction is fetched by place id. The fetch closes the autocomplete session (the token is sent with it and
+     * then dropped, §16 #12). Null without a Maps key or when the place can't be fetched.
+     */
     suspend fun resolve(hit: SearchHit): Destination? {
         if (hit.lat != null && hit.lon != null) return Destination(hit.title, hit.lat, hit.lon, hit.placeId)
         val id = hit.placeId ?: return null
         val client = holder.placesClient() ?: return null
         val req = FetchPlaceRequest.builder(id, listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.LOCATION, Place.Field.FORMATTED_ADDRESS))
             .apply { token?.let { setSessionToken(it) } }.build()
+        // The session ends with this fetch; the next keystroke starts a new one.
         token = null
         val place = client.fetchPlace(req).awaitOrNull()?.place ?: return null
         val loc = place.location ?: return null
@@ -90,8 +119,14 @@ class PlacesSearch @Inject constructor(
 
     // --- Recents -----------------------------------------------------------------------------
 
+    /** Favourites then recents, newest first (§8.2 "Car screen use"); the caller passes the host's list limit. */
     suspend fun recents(limit: Int = 50) = db.places().list(limit)
 
+    /**
+     * Records a destination the user navigated to (§8.2 "Our own app"): the same Google Place ID bumps the
+     * existing row's time and count, anything else is a new recent; then the list is trimmed to 200.
+     * A destination without a place id (a contact address with no match) is never deduped.
+     */
     suspend fun remember(dest: Destination, address: String? = null) {
         val now = System.currentTimeMillis()
         val existing = dest.placeId?.let { db.places().byPlaceId(it) }
@@ -100,8 +135,12 @@ class PlacesSearch @Inject constructor(
         db.places().trimRecents()
     }
 
+    /** Delete from the car row's action or the phone's swipe (§8.2 "Deleting"). */
     suspend fun delete(p: PlaceEntity) = db.places().delete(p)
+    /** Undo after a delete (§8.2: a 5 s Alert with Undo): the row goes back with a new id. */
     suspend fun restore(p: PlaceEntity) { db.places().insert(p.copy(id = 0)) }
+    /** "Clear all recents" after its confirmation (§8.2). */
     suspend fun clearRecents() = db.places().clearRecents()
+    /** Favourite / Unfavourite (§8.2): flips RECENT and FAVOURITE. */
     suspend fun setKind(p: PlaceEntity, kind: PlaceKind) = db.places().update(p.copy(kind = kind))
 }

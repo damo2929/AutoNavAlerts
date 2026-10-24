@@ -15,6 +15,14 @@ import kotlin.math.sqrt
  * The road pieces of a few tiles around the car, in plain arrays (DESIGN.md §8.4a): ends in
  * micro-degrees, the limit, and a sorted index of 0.002° cells. Looking a fix up allocates
  * nothing; the tiles stay on disk until the car comes near them.
+ *
+ * No Android, no threads of its own. The app's `SpeedLimitRepository` [build]s one on IO for the
+ * tiles within 400 m of the car (again when the car comes within 60 m of a tile not loaded).
+ * `NavSession` reads it once a second ([limitAt] for the panel, §8.4, and the limit-change walk
+ * through [LimitLookahead], §8.4a); `AlertCoordinator` reads it from the alert thread for the
+ * free-drive road ahead (§11 step 4). An instance is immutable, so a new one can replace it under
+ * readers. Units: degrees in, mph out, metres for distances, degrees true for bearings; piece
+ * ends are stored in micro-degrees.
  */
 class LimitIndex private constructor(
     /** The tiles this index was built from. */
@@ -24,6 +32,7 @@ class LimitIndex private constructor(
     private val cells: LongArray, // (cell << IDX_BITS) | piece, sorted
     private val wide: IntArray, // pieces spanning too many cells to index: always checked
 ) {
+    /** Number of straight pieces loaded. */
     val pieces: Int get() = mph.size
 
     /**
@@ -37,6 +46,7 @@ class LimitIndex private constructor(
 
     /** The piece [limitAt] would use (its index), or null. For the lookahead (DESIGN.md §8.4a). */
     fun pieceAt(lat: Double, lon: Double, headingDeg: Double?): Int? {
+        // A flat projection around the fix (metres per degree east, by latitude) is plenty at 20 m scale.
         val h = headingDeg
         val kx = 111_320.0 * cos(Math.toRadians(lat))
         var best = -1
@@ -64,12 +74,14 @@ class LimitIndex private constructor(
         return Geo.bearingDeg(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
     }
 
+    /** The piece's straight length, metres. */
     fun lengthOf(piece: Int): Double {
         val o = 4 * piece
         return Geo.distanceM(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
     }
 
     /** A join from [joinFrom]: the next piece, whether it is walked in its drawn direction, and whether this was a fork. */
+    /** [piece] is an index into this index; [forward] whether we walk it start to end; [fork] see [joinFrom]. */
     class Join(val piece: Int, val forward: Boolean, val fork: Boolean)
 
     /** As [joinFrom], the piece only. */
@@ -96,6 +108,7 @@ class LimitIndex private constructor(
             val o = 4 * p
             val dA = pointDistanceM(ends[o], ends[o + 1], lat, lon, kx)
             val dB = pointDistanceM(ends[o + 2], ends[o + 3], lat, lon, kx)
+            // Which end of the candidate touches the join point says which way we would walk it.
             val forward = when {
                 dA <= JOIN_M && dA <= dB -> true
                 dB <= JOIN_M -> false
@@ -110,6 +123,8 @@ class LimitIndex private constructor(
         if (best < 0) return null
         // Only branches walked the same way round as ours: on a dual carriageway the other
         // carriageway, walked backwards, isn't a road we could take.
+        // Open question (§16 row 28): a two-way branch drawn towards the node is walked the other way round
+        // and so is missed here; the planned fix is a one-way flag in the file. Owner's call; unchanged.
         val fork = outs.any { (out, fwd) -> fwd == bestForward && Geo.absAngleDiffDeg(out, bestOut) in FORK_MIN_DEG..FORK_DEG }
         return Join(best, bestForward, fork)
     }
@@ -160,6 +175,8 @@ class LimitIndex private constructor(
         val EMPTY = LimitIndex(emptySet(), IntArray(0), ByteArray(0), LongArray(0), IntArray(0))
 
         /** Two pieces join when an end of one is within this of the other's (DESIGN.md §8.4a). */
+        // Joins within 40 m (widened from 20 m, owner 2026-10-23) and 45° of heading; a fork is another
+        // branch leaving 3–25° from the chosen one (DESIGN.md §8.4a "Same road without names").
         const val JOIN_M = 40.0
         /** Two branches leaving this close in angle are a fork, either could be the road on (§8.4a). */
         const val FORK_DEG = 25.0
@@ -168,10 +185,13 @@ class LimitIndex private constructor(
         /** Heading continuity across a join. */
         const val JOIN_DEG = 45.0
 
+        // 0.002° cells (about 220 m by 130 m in the UK): a lookup scans the 3×3 block around the fix.
         private const val CELL_DEG = 0.002
+        /** Metres per degree of latitude. */
         private const val KY = 110_540.0
         private const val IDX_BITS = 26 // up to 67 million pieces
         private const val IDX_MASK = (1L shl IDX_BITS) - 1
+        /** A piece spanning more cells than this isn't indexed per cell; it goes in [wide] and is always checked. */
         private const val MAX_CELLS = 64
 
         private fun cellRow(lat: Double) = floor(lat / CELL_DEG).toInt()
@@ -180,6 +200,7 @@ class LimitIndex private constructor(
         private fun cellKey(row: Int, col: Int): Long = ((row + 45_000).toLong() shl 18) or (col + 90_000).toLong()
 
         /** Builds the index for [tiles] from the file, reading each tile once. */
+        // Called on IO: this is the one place that reads the file and allocates. Arrays grow by doubling.
         fun build(reader: OsmLimitFile.Reader, tiles: Collection<Long>): LimitIndex {
             var ends = IntArray(4096)
             var mph = ByteArray(1024)

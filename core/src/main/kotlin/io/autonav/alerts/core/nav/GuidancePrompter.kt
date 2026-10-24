@@ -13,20 +13,30 @@ package io.autonav.alerts.core.nav
  *   clamp(speed × 30 s, 150 m, 2 km), with the distance rounded down to one worth saying;
  * - **now**: the instruction alone at clamp(speed × 5 s, 40 m, 300 m);
  * - **continue**: "Continue for 3 miles" when a step longer than 3 km starts.
+ *
+ * No Android, no threads of its own: the app's `DirectionsSpeaker` keeps one instance and calls
+ * [onUpdate] on the main thread for every `NavInfo` from the Navigation SDK while its own voice is
+ * off, then hands the prompt to `NavTts` as `AlertKind.GUIDANCE` (priority 80, §12.3). A step that
+ * starts already inside a prompt's distance skips the earlier prompt; nothing repeats for one step;
+ * nothing is said while rerouting. Metres and m/s in; the words follow the app's units.
  */
 class GuidancePrompter(private val config: Config = Config()) {
     data class Config(
+        // prepare at clamp(speed × 30 s, 150 m, 2 km); now at clamp(speed × 5 s, 40 m, 300 m);
+        // "Continue for …" on a step over 3 km (§12.3 "When").
         val prepareS: Double = 30.0, val prepareMinM: Double = 150.0, val prepareMaxM: Double = 2_000.0,
         val nowS: Double = 5.0, val nowMinM: Double = 40.0, val nowMaxM: Double = 300.0,
         val continueOverM: Double = 3_000.0,
     )
 
+    /** Which of the three prompts; also the log's `kind=`. */
     enum class Kind { PREPARE, NOW, CONTINUE }
 
     /** The last step: the SDK's instruction is only the waypoint's title, so it's worded as Google does. */
     enum class Destination { AHEAD, LEFT, RIGHT }
 
     /** [staleBelowM]: not worth saying once the car is closer to the turn than this (the speech queue's rule). */
+    /** [step] is the SDK's step number, [distanceM] the distance to the manoeuvre when the prompt was made. */
     data class Prompt(val kind: Kind, val step: Int, val text: String, val distanceM: Double, val staleBelowM: Double?)
 
     private var stepKey: String? = null
@@ -72,6 +82,7 @@ class GuidancePrompter(private val config: Config = Config()) {
             if (Kind.PREPARE in said) return null
             said += Kind.PREPARE; said += Kind.CONTINUE
             // Not worth a "prepare" just before the "now" one.
+            // Inside 1.5 × the now distance the "now" prompt follows within a second or two: one is enough.
             if (distanceM < nowM * 1.5) return null
             val (_, words) = spokenDistance(distanceM, imperial) ?: return null
             return Prompt(Kind.PREPARE, step, "In $words, ${lowerFirst(text)}", distanceM, nowM)

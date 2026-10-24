@@ -22,6 +22,18 @@ import kotlinx.coroutines.launch
  * whichever of our screens is on top, a loading trip while rerouting (the cluster shows a
  * spinner, not a stale turn), and `navigationEnded()` when guidance stops. The current and next
  * step go in the trip ([TripMapper.trip]); each update is sampled into `debug-nav` every 5 s.
+ *
+ * What the host does with the trip (§9.3, §12.4): the travel-estimate card at the bottom left of
+ * our map, with Google's X on it (the one stop on the car screen, hard rule 2); the rail and
+ * widget while another app is full screen; and the turn card on the instrument cluster of cars
+ * that support it.
+ *
+ * Lifecycle: created by `NavSession.onCreateScreen`, started on the session's `lifecycleScope`
+ * and stopped from the session's `onDestroy`. Everything runs on the main thread (the scope is
+ * the session's; `NavigationManager` calls must be on it). The host's trip ends with the session;
+ * guidance itself carries on in the foreground service (§9.3).
+ *
+ * @param imperial read on every update, so a units change on the phone shows on the next one.
  */
 class TripPublisher(
     private val carContext: CarContext,
@@ -34,6 +46,10 @@ class TripPublisher(
 
     private val manager: NavigationManager get() = carContext.getCarService(NavigationManager::class.java)
 
+    /**
+     * Starts collecting the SDK's turn-by-turn feed together with the guiding flag on [scope].
+     * Calling it again replaces the earlier collection. Each pair goes to [publish].
+     */
     fun start(scope: CoroutineScope) {
         job?.cancel()
         job = scope.launch {
@@ -48,6 +64,8 @@ class TripPublisher(
         job = null
     }
 
+    // The host must hear navigationStarted() before any trip and navigationEnded() once after it, so
+    // the edges are tracked here with `active`, not taken from the SDK's state (which has none for ended).
     private fun publish(info: NavInfo?, guiding: Boolean) {
         if (guiding && !active) {
             runCatching { manager.navigationStarted() }.onFailure { Log.w(TAG, "navigationStarted", it) }
@@ -60,6 +78,8 @@ class TripPublisher(
             log("navigationEnded")
         }
         if (!guiding || info == null) return
+        // A loading trip while rerouting shows a spinner on the cluster instead of a stale turn (§12.4);
+        // any other state (stopped, no route) sends nothing rather than a half-built trip.
         val trip = when (info.navState) {
             NavState.ENROUTE -> TripMapper(carContext, imperial()).trip(info, deps.guidance().destination.value?.title)
             NavState.REROUTING -> Trip.Builder().setLoading(true).build()

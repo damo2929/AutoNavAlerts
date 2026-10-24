@@ -15,13 +15,24 @@ import com.google.android.libraries.mapsplatform.turnbyturn.model.NavInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** Receives the Navigation SDK's turn-by-turn feed (registered via registerServiceForNavUpdates). */
+/**
+ * Receives the Navigation SDK's turn-by-turn feed (registered via `registerServiceForNavUpdates`
+ * in `GuidanceController.startGuidance`, unregistered in `stopGuidance`; DESIGN.md §9.3, §12.3).
+ * The SDK binds this bound service and posts a `NavInfo` bundle on every guidance update; the
+ * latest one is published through [navInfo], a process-wide StateFlow, for the turn card
+ * (`TurnByTurnMapper`), the cluster trip (`TripPublisher`, §12.4) and the spoken directions
+ * (`DirectionsSpeaker`). Declared in the manifest; the SDK creates it, so it isn't Hilt-managed
+ * and keeps no injected state. Messages are handled on the main looper.
+ */
 class NavUpdatesService : Service() {
+    /** The SDK's decoder for the `NavInfo` bundle it sends in each message. */
     private val manager = TurnByTurnManager.createInstance()
 
+    /** The binder the SDK talks to; one message type, [TurnByTurnManager.MSG_NAV_INFO]. */
     private val messenger = Messenger(object : Handler(Looper.getMainLooper()) {
         override fun handleMessage(msg: Message) {
             if (msg.what == TurnByTurnManager.MSG_NAV_INFO) {
+                // A bundle that fails to decode (an SDK version skew) is dropped rather than crashing guidance.
                 runCatching { manager.readNavInfoFromBundle(msg.data) }.getOrNull()?.let { latest.value = it }
             } else {
                 super.handleMessage(msg)
@@ -31,6 +42,7 @@ class NavUpdatesService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = messenger.binder
 
+    /** The SDK let go (guidance ended): the feed goes null so the turn card and cluster clear (§9.3). */
     override fun onUnbind(intent: Intent?): Boolean {
         latest.value = null
         return super.onUnbind(intent)
@@ -39,6 +51,7 @@ class NavUpdatesService : Service() {
     companion object {
         /** Latest turn-by-turn state; null when no guidance is running. */
         val latest = MutableStateFlow<NavInfo?>(null)
+        /** Read-only view for collectors: the current step, distances, ETA and nav state, or null without guidance. */
         val navInfo: StateFlow<NavInfo?> get() = latest
     }
 }

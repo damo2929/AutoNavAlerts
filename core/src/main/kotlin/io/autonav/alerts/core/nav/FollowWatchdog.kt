@@ -4,29 +4,46 @@
 package io.autonav.alerts.core.nav
 
 /**
- * Decides when the map has stopped following the car (DESIGN.md §8, "Follow watchdog"). Pure:
- * `MapSurface` calls [check] on each of the SDK's road-snapped fixes with the distance from the
- * camera target to that fix. It never acts while guiding or on the route preview; on the first
- * miss it re-follows; a rebuild comes only after [missesBeforeRebuild] consecutive misses at least
- * [intervalMs] apart, and the count resets as soon as the map is back within [thresholdM].
+ * Decides when the map has stopped following the car (DESIGN.md §8, "Follow watchdog"). Pure, with
+ * only the miss counter as state: `MapSurface` calls [check] on the main thread for each of the
+ * SDK's road-snapped fixes (never our own fix, which may be the car's GPS while the SDK follows the
+ * phone's), with whether the car is drawn in place and, as a fallback, the distance from the
+ * camera target to that fix. It never acts on the route preview (the SDK's overview legitimately
+ * moves the camera away, §16 row 22). In free drive and in guidance alike (guidance added
+ * 2026-10-24), on the first miss it re-follows; a rebuild comes only after [missesBeforeRebuild]
+ * consecutive misses at least [intervalMs] apart, and the count resets as soon as the car is back
+ * in place (or, with no frame, within [thresholdM]). Metres and milliseconds.
  */
 class FollowWatchdog(
+    // 500 m camera-target test, free drive only and only before the map has a frame; 5 s between
+    // misses; a rebuild on the third; an SDK fix older than 10 s says nothing (§8 "Follow watchdog").
     private val thresholdM: Double = 500.0,
     private val intervalMs: Long = 5_000,
     private val missesBeforeRebuild: Int = 3,
     /** An SDK fix older than this says nothing about where the car is now. */
     private val maxFixAgeMs: Long = 10_000,
 ) {
+    /** [None] with the reason to log (skips included), [Refollow] at the chosen zoom, or [Rebuild] the map on its surface. */
     sealed interface Decision {
         data class None(val reason: String) : Decision
         data class Refollow(val distanceM: Float) : Decision
         data class Rebuild(val distanceM: Float) : Decision
     }
 
+    /** Consecutive misses so far, for the log. */
     var misses: Int = 0
         private set
     private var lastMissMs = Long.MIN_VALUE / 2
 
+    /**
+     * @param following camera-follow is on (the user hasn't panned).
+     * @param guiding a route is being guided (the distance test is then not used).
+     * @param previewShowing the route preview is up: never act.
+     * @param sdkFixAgeMs age of the SDK's last road-snapped fix, null if none yet.
+     * @param distanceM camera target to the SDK fix, metres; the fallback test only.
+     * @param inPlace the car projects inside the padded map at the locked zoom (`MapSurface.carInPlace`),
+     *   null before the map has a frame.
+     */
     fun check(
         nowMs: Long,
         following: Boolean,

@@ -13,8 +13,14 @@ import java.util.zip.ZipFile
  * after the first entry (it returns only `_Need_Help.htm`), while the central directory lists all
  * five files. Nested zips are opened up to [maxDepth] levels. Entries with ".." are ignored
  * (zip-slip), and the total size is capped.
+ *
+ * This is the "never all in memory" rule of DESIGN.md §5.2 and §1.3 (Memory): the map handed
+ * back reads each entry from disk when it is used and keeps nothing. Called by the app's
+ * `PoiRepository` on IO for PGW downloads and picked zips; the phone's import dialog lists a
+ * zip with [names] without inflating anything.
  */
 object ZipEntries {
+    /** 200 MB cap on the declared total and on any one entry's inflated size (§5.2, §5.8). */
     const val MAX_TOTAL_BYTES = 200L * 1024 * 1024
 
     /**
@@ -29,6 +35,7 @@ object ZipEntries {
     }
 
     /** The open zip(s) behind [read]'s map. */
+    /** Closing it closes the zip files and deletes any temp copies of nested zips. */
     class Opened internal constructor() : LazyBytes(LinkedHashMap()), java.io.Closeable {
         internal val zips = ArrayList<ZipFile>()
         internal val temps = ArrayList<File>()
@@ -45,6 +52,7 @@ object ZipEntries {
         }
     }
 
+    /** Walks the central directory, registering a loader per entry; [total] carries the running declared size. */
     private fun index(zip: File, out: Opened, depth: Int, maxDepth: Int, total: LongArray) {
         val zf = ZipFile(zip).also { out.zips += it }
         val entries = zf.entries()
@@ -99,7 +107,11 @@ object ZipEntries {
 
 }
 
-/** A map whose values are read when used (each time) and not kept: see [ZipEntries.read]. */
+/**
+ * A map whose values are read when used (each time) and not kept: see [ZipEntries.read]. Reading
+ * a value twice reads the zip twice; callers that need the bytes more than once hold them
+ * themselves, briefly. [keys], [size] and [containsKey] never touch the data.
+ */
 open class LazyBytes(protected val loaders: LinkedHashMap<String, () -> ByteArray>) : AbstractMap<String, ByteArray>() {
     override val keys: Set<String> get() = loaders.keys
     override val size: Int get() = loaders.size

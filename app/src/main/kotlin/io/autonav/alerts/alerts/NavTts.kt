@@ -34,6 +34,22 @@ import kotlinx.coroutines.flow.StateFlow
  * one voice: ducks media, never pauses it. The policy lives in the core [SpeechScheduler]
  * (staleness by distance, PASSING never dropped, retry then fall back, a 50-entry record ring); this class is the Android side: the `TextToSpeech` engine, audio focus, the chime,
  * the watchdog timer and the `Tts …` lines in alert-debug. Everything runs on the main handler.
+ *
+ * Rules upheld here (AGENTS.md §3.2; DESIGN.md §9.4, §12.3): audio focus is
+ * `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` with `setWillPauseWhenDucked(false)`, so media is ducked,
+ * never paused; it is taken just before speaking and given back when nothing waits. Mute
+ * ([muteNow], [recordMuted]) silences speech only; the cards are the coordinator's and still
+ * show. The voice is the phone's default text-to-speech voice (owner, 2026-10-23); there is no
+ * voice setting. The watchdog's allowance (3000 + 120 × characters ms, capped at 15 s) is the
+ * scheduler's; [WATCHDOG_HARD_CAP_MS] is the cap applied here while the engine still says it is
+ * speaking. One engine failure is retried once, then the chime, the banner and a one-off toast
+ * (§12.3 Errors), so an alert is never silently lost.
+ *
+ * Lifecycle: a Hilt singleton. `NavSession` calls [warmUp] when the car connects and
+ * `DirectionsSpeaker` when guidance starts; the phone's Settings use [speak] for the test
+ * button; [shutdown] is for the phone app's exit. Callers may be on any thread: every public
+ * method posts to the main handler, and the engine's callbacks are posted there too, so the
+ * scheduler is only ever touched on the main thread.
  */
 @Singleton
 class NavTts @Inject constructor(
@@ -47,12 +63,15 @@ class NavTts @Inject constructor(
      */
     val healthy: StateFlow<Boolean> = _healthy
 
+    /** Audio focus and the tone generator's stream. */
     private val audio = context.getSystemService(AudioManager::class.java)
     private val main = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
     private var ready = false
     private var focus: AudioFocusRequest? = null
+    /** The pure queue policy (§12.3); driven on the main handler with `elapsedRealtime` as its clock. */
     private val scheduler = SpeechScheduler()
+    /** Utterance ids, unique for the process; the engine id is `autonav-<id>`. */
     private var nextId = 1L
     /** The utterance handed to the engine, by its engine id. */
     private var current: Utterance? = null
@@ -66,6 +85,7 @@ class NavTts @Inject constructor(
     private var initAttempts = 0
     /** Consecutive engine errors; two in a row restart the engine (a dead TTS service). */
     private var engineErrors = 0
+    /** One tone generator for the chime and the fallback beep, made on first use. */
     private var tone: ToneGenerator? = null
 
     private val _records = MutableStateFlow<List<Record>>(emptyList())
@@ -79,6 +99,8 @@ class NavTts @Inject constructor(
      */
     @Volatile var spokenCallback: ((poiId: Long, kind: AlertKind, spoken: Boolean, delayMs: Long?, outcome: String) -> Unit)? = null
 
+    // Navigation-guidance usage: on Android Auto this is the car's navigation audio stream, the one turn
+    // prompts use, so the car's own "navigation volume" applies (§12.3).
     private val attrs = AudioAttributes.Builder()
         .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -86,8 +108,14 @@ class NavTts @Inject constructor(
 
     private val pumpRunnable = Runnable { pump() }
     private val watchdogRunnable = Runnable { onWatchdog() }
+    /** Posted after a failed engine start, at [RETRY_INIT_MS] intervals. */
     private val retryInitRunnable = Runnable { warmUp() }
 
+    /**
+     * Starts the engine if it isn't up, so the first alert isn't delayed by engine start-up (§12.3).
+     * Idempotent. The init callback picks the voice, logs `Tts ready engine= lang= voice=` and pumps
+     * anything queued meanwhile; on failure it schedules a retry and chimes for what waits.
+     */
     fun warmUp() {
         if (tts != null) return
         main.removeCallbacks(retryInitRunnable)
@@ -122,6 +150,7 @@ class NavTts @Inject constructor(
         }
     }
 
+    /** The engine's default voice, or the fallbacks of §12.3; returns the language tag used, for the log. */
     private fun pickLanguage(engine: TextToSpeech): String {
         // The phone's default TTS voice, as set in Android's text-to-speech settings (owner, 2026-10-23;
         // DESIGN.md §12.3): nothing is changed unless its language has no voice data; then the phone's
@@ -141,6 +170,7 @@ class NavTts @Inject constructor(
         return "none"
     }
 
+    /** Releases the engine, the tone generator and audio focus. Nothing queued survives. Main thread. */
     fun shutdown() {
         main.removeCallbacks(pumpRunnable)
         main.removeCallbacks(watchdogRunnable)
@@ -160,6 +190,10 @@ class NavTts @Inject constructor(
      * same POI replaces a waiting one; a waiting FIRST/SECOND isn't spoken once the car is closer
      * than [staleBelowM]; PASSING is never dropped. The 4-argument form (a limit announcement, the
      * phone's test button) is a FIRST with no staleness.
+     *
+     * Parameters: [priority] is the queue order (PASSING ≥ 100 also gets the chime when it's on, §12.3;
+     * GUIDANCE 80; a limit change and FIRST/SECOND lower); [poiId] groups stages of one camera (directions
+     * are -2, limit changes -1); [distanceM] and [staleBelowM] in metres. Any thread.
      */
     fun speak(
         text: String, priority: Int, poiId: Long, chime: Boolean,
@@ -260,8 +294,10 @@ class NavTts @Inject constructor(
 
     }
 
+    /** The utterance an engine callback is about, or null for a stale callback from an earlier one. */
     private fun forEngineId(id: String?): Utterance? = if (id != null && id == currentEngineId) current else null
 
+    /** Nothing is being spoken any more: forget it and stop the watchdog. */
     private fun clearCurrent() {
         current = null
         currentEngineId = null
@@ -269,12 +305,17 @@ class NavTts @Inject constructor(
         main.removeCallbacks(watchdogRunnable)
     }
 
+    /** After any terminal outcome: write the records, drop focus if the queue is empty, start the next. */
     private fun afterTerminal() {
         syncRecords()
         if (scheduler.waiting.isEmpty()) abandonFocus()
         pump()
     }
 
+    /**
+     * Asks the scheduler what to do now and does it: start the next utterance, wait until its time
+     * (a bounded wait), or go idle and release focus. Re-entered from every callback and timer.
+     */
     private fun pump() {
         main.removeCallbacks(pumpRunnable)
         if (!ready) {
@@ -298,6 +339,11 @@ class NavTts @Inject constructor(
         syncRecords()
     }
 
+    /**
+     * Hands [u] to the engine: focus first (recorded either way), the chime when asked (180 ms, with
+     * 250 ms before the words so they don't overlap it), then `speak()` with QUEUE_FLUSH, since the
+     * scheduler is the only queue. [waitedMs] is how long it waited, for the log and the STAGE line.
+     */
     private fun start(u: Utterance, waitedMs: Long) {
         val engine = tts ?: return
         current = u
@@ -317,6 +363,11 @@ class NavTts @Inject constructor(
         scheduleWatchdog()
     }
 
+    /**
+     * A failed `speak()` or an `onError` for [u] (§12.3 Errors): the scheduler says retry once, then
+     * fall back to the chime; [healthy] goes false on the fallback, which hands the directions back
+     * to the SDK's voice (`GuidanceController`).
+     */
     private fun engineError(u: Utterance, code: Int) {
         clearCurrent()
         // Two errors in a row from a running engine: its service has most likely died. Start a new one.
@@ -345,12 +396,14 @@ class NavTts @Inject constructor(
         }
     }
 
+    /** Arms the stuck-speech timer at the scheduler's deadline for what is speaking (§12.3 watchdog). */
     private fun scheduleWatchdog() {
         main.removeCallbacks(watchdogRunnable)
         val deadline = scheduler.deadlineMs() ?: return
         main.postDelayed(watchdogRunnable, max(100L, deadline - now() + 50))
     }
 
+    /** The deadline passed: extend while the engine is audibly speaking (up to the hard cap), else cut it off as TTS_STUCK. */
     private fun onWatchdog() {
         // Still audibly speaking? Then it isn't stuck: give it longer (up to the cap) rather than cut
         // it off. On the bench every SECOND ("…, 148 yards") was killed mid-sentence (2026-10-13).
@@ -379,6 +432,7 @@ class NavTts @Inject constructor(
         _records.value = all
     }
 
+    /** One scheduler record: its `Tts …` line (where not logged at the event) and, if terminal, the coordinator's callback. */
     private fun onRecord(r: Record) {
         val u = r.utterance
         val terminal = when (r.outcome) {
@@ -415,11 +469,13 @@ class NavTts @Inject constructor(
         }
     }
 
+    /** Gives focus back so media comes up from the duck; only called when nothing waits. */
     private fun abandonFocus() {
         focus?.let { runCatching { audio.abandonAudioFocusRequest(it) } }
         focus = null
     }
 
+    /** A `Tts …` line in alert-debug (§15.5). */
     private fun log(msg: String) = eventLog.record(EventLog.Channel.ALERT, "Tts", msg)
 
     /** Monotonic: a clock change (NTP, GPS time, a time zone) must never stall or rush speech. */
@@ -433,7 +489,11 @@ class NavTts @Inject constructor(
         private const val WATCHDOG_HARD_CAP_MS = 15_000L
         /** Waits before trying a failed engine again: 5 s, 30 s, then every minute. */
         private val RETRY_INIT_MS = longArrayOf(5_000, 30_000, 60_000)
-        /** engineError code when there is no engine at all (init failed). */
+        /**
+         * engineError code when there is no engine at all (init failed).
+         *
+         * A code of our own, outside the engine's range, so the restart rule can tell it from a real engine error.
+         */
         private const val ERROR_NO_ENGINE = -100
 
         /** One line for a record: `KIND poi=… OUTCOME waited=…`. */

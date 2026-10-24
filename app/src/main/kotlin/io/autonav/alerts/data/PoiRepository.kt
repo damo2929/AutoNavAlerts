@@ -33,6 +33,12 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * The result of an import, shown on the phone and logged (DESIGN.md §5.1 "error report"). [setId] is the
+ * new ACTIVE set (the first one for a zip of several); [imported] and [skipped] are row counts;
+ * [errorSamples] the first 20 bad lines; [failed] true when nothing was stored (§5.1: over 20% bad rows,
+ * no good rows, or a file that couldn't be read).
+ */
 data class ImportOutcome(
     val setId: Long?,
     val imported: Int,
@@ -42,45 +48,74 @@ data class ImportOutcome(
     val message: String,
 )
 
+/** Stored stage columns → the core `AlertStage` the engine takes (§11.1). */
 fun StageCols.toStage() = AlertStage(enabled, mode, metres, seconds)
+/** Core `AlertStage` → stored columns; seconds are rounded to the integer column. */
 fun AlertStage.toCols() = StageCols(enabled, mode, metres, seconds?.let { kotlin.math.round(it).toInt() })
 
-/** POI storage, import pipeline with staging + atomic swap (DESIGN.md §4.4, §5). */
+/**
+ * POI storage and the import pipeline with staging and atomic swap (DESIGN.md §4.4, §5, §5.2). A Hilt
+ * singleton shared by the car service and the phone UI (§2); every method runs on Dispatchers.IO (Room, file
+ * copies). Callers: `PgwSyncWorker` (`importPgwZip`), the phone's import flow and set editor, `AlertCoordinator`
+ * (`poisInCells`, `sets`, `categories`, `changes`), `CameraReportRepository` (the "My reports" set, §8.5),
+ * `SettingsBackup` (§13.4) and `App` at startup (`cleanupStaging`, `purgeExpired`).
+ * Upholds hard rule 9 (AGENTS.md §3.1): every file in a PGW or zip download becomes its own set, never
+ * merged, named after its file with no prompt, with the zip's matching `.bmp`/`.png` as its icon.
+ * Memory rule (§1.3): big files are streamed from disk and parsed record by record, never held whole.
+ */
 @Singleton
 class PoiRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val db: AppDatabase,
     private val icons: IconRepository,
 ) {
+    // extraBufferCapacity = 1 so tryEmit from a non-suspending context never drops the signal while a collector is slow.
     private val _changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    /** Emits after any import, swap, delete or settings change, so caches reload. */
+    /** Emits after any import, swap, delete or settings change, so caches reload (§4.4 step 5 `setsChanged`): the alert cache and the marker layer collect it. */
     val changes: SharedFlow<Unit> = _changes
 
+    /** Live list of ACTIVE sets, ordered by name, for the phone's tabs and the car's layer screen. */
     val activeSets = db.poiSets().observeActive()
 
+    /** Pokes [changes]. Public so the phone can signal a change it made through another path. */
     fun notifyChanged() { _changes.tryEmit(Unit) }
 
+    /** Startup: drops any STAGING set an interrupted import left behind (§4.4 step 4). */
     suspend fun cleanupStaging() = db.poiSets().deleteStaging()
 
+    /**
+     * The alert cache's reload (§4.3): every visible POI in the given cells, from ACTIVE and enabled sets, not
+     * hidden by a report, not expired. Chunked at 900 cells because SQLite allows 999 bound variables per statement.
+     */
     suspend fun poisInCells(cells: List<Long>): List<PoiEntity> =
         if (cells.isEmpty()) emptyList() else cells.chunked(900).flatMap { db.pois().inCells(it, System.currentTimeMillis()) }
 
+    /** ACTIVE sets by id, for the icon and template resolution of §4.2 and for the backup. */
     suspend fun sets(): Map<Long, PoiSetEntity> = db.poiSets().active().associateBy { it.id }
+    /** Every category by id, for the resolution of §4.2. */
     suspend fun categories(): Map<Long, PoiCategoryEntity> = db.categories().all().associateBy { it.id }
 
+    // Set and category edits from the phone (and the backup restore); each one signals the caches.
     suspend fun updateSet(set: PoiSetEntity) { db.poiSets().update(set); notifyChanged() }
     suspend fun updateSets(sets: List<PoiSetEntity>) { db.poiSets().updateAll(sets); notifyChanged() }
     suspend fun updateCategory(c: PoiCategoryEntity) { db.categories().update(c); notifyChanged() }
+    /** Deletes a set and, by cascade, its categories and POIs (§4.1). */
     suspend fun deleteSet(id: Long) { db.poiSets().delete(id); notifyChanged() }
 
     // --- File import ---------------------------------------------------------------------------
 
+    /** The file name Android shows for a picked document (SAF gives opaque URIs), or a last-resort "import". */
     fun displayName(uri: Uri): String =
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
             if (c.moveToFirst()) c.getString(0) else null
         } ?: uri.lastPathSegment ?: "import"
 
-    /** Reads a picked file (zip files are opened and the first matching entry used). */
+    /**
+     * Imports a file the user picked on the phone (DESIGN.md §5): a single POI file becomes one set named after
+     * the file; a zip becomes one set per POI file inside it, never merged (hard rule 9). [format] overrides the
+     * sniffed format; [csvProfile] is the wizard's column mapping (§5.7) and is required for CSV; [replaceSetId]
+     * is the set a **Re-import** replaces, keeping its settings (§4.4). Runs on Dispatchers.IO.
+     */
     suspend fun importFile(
         uri: Uri,
         format: PoiFormat? = null,
@@ -121,9 +156,14 @@ class PoiRepository @Inject constructor(
         storeImport(result, setNameFor(entryName), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
     }
 
+    /** An outcome for a file that couldn't be read at all. */
     private fun fail(msg: String) = ImportOutcome(null, 0, 0, emptyList(), true, msg)
 
-    /** Parses from a fresh stream; OV2, iGO and CSV are read record by record. */
+    /**
+     * Parses from a fresh stream; OV2, iGO and CSV are read record by record (§1.3 Memory). KML and GPX are
+     * read as whole documents, which is why [importFile] caps them at [MAX_XML_BYTES]. Returns null only for a
+     * CSV with no column mapping. iGO is Latin-1: PGW's files are ASCII and a stray byte must not abort the import.
+     */
     private fun parse(fmt: PoiFormat, open: () -> java.io.InputStream, csv: CsvProfile?): ImportResult? = when (fmt) {
         PoiFormat.IGO_TXT -> open().bufferedReader(Charsets.ISO_8859_1).use { IgoTxtImporter().parse(it) }
         PoiFormat.KML -> open().use { KmlImporter().parse(it) }
@@ -132,26 +172,30 @@ class PoiRepository @Inject constructor(
         PoiFormat.CSV -> csv?.let { p -> open().bufferedReader(Charsets.UTF_8).use { CsvImporter(p).parse(it) } }
     }
 
-    /** First POI file in a picked zip (read via the central directory; see ZipEntries). */
-    /** POI files in a zip (by extension), leaving out licence/readme files. */
+    /**
+     * The POI files in a picked zip (by extension, leaving out licence and readme files), as a lazy map: each
+     * entry is inflated from the zip on disk only when read, and not kept (§5.2 "Never all in memory").
+     */
     private fun poiFilesIn(entries: Map<String, ByteArray>): Map<String, ByteArray> =
         io.autonav.alerts.core.poi.importers.LazyBytes(LinkedHashMap<String, () -> ByteArray>().apply {
             for (name in poiFileNames(entries.keys)) put(name) { entries.getValue(name) }
         })
 
+    /** Which zip entries count as POI files: a known extension, and not a licence, release or readme text file. */
     private fun poiFileNames(names: Collection<String>): List<String> = names.filter { name ->
         val lower = name.lowercase()
         listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } &&
             listOf("licence", "license", "release", "readme").none { lower.contains(it) }
     }
 
+    /** Streams a picked document to a temp file in the cache dir, so it can be parsed from disk (§1.3 Memory); null if it can't be opened. */
     private fun copyToTemp(uri: Uri, suffix: String = ".zip"): java.io.File? {
         val tmp = java.io.File.createTempFile("import", suffix, context.cacheDir)
         val ok = context.contentResolver.openInputStream(uri)?.use { i -> tmp.outputStream().use { i.copyTo(it) }; true } ?: false
         return if (ok) tmp else { tmp.delete(); null }
     }
 
-    /** Names of the POI files in a picked zip (for the import dialog). */
+    /** Names of the POI files in a picked zip, for the import dialog's list (§5.2: from the zip's directory alone). Empty for a non-zip. */
     suspend fun zipPoiFileNames(uri: Uri): List<String> = withContext(Dispatchers.IO) {
         if (!displayName(uri).endsWith(".zip", true)) return@withContext emptyList()
         // Only the zip's directory is read; no file in it is inflated.
@@ -159,12 +203,20 @@ class PoiRepository @Inject constructor(
         try { runCatching { poiFileNames(ZipEntries.names(tmp)) }.getOrDefault(emptyList()) } finally { tmp.delete() }
     }
 
-    /** "Croydon_Tramlink_Stop_PGPSW.ov2" → "Croydon Tramlink Stop". */
+    /**
+     * The set name from a file name, never asked for (§5, hard rule 9): "Croydon_Tramlink_Stop_PGPSW.ov2" →
+     * "Croydon Tramlink Stop". Drops the extension and a trailing "PGPSW" suffix, turns underscores into spaces.
+     */
     fun setNameFor(fileName: String): String =
         fileName.substringBeforeLast('.').replace(Regex("(?i)[_ -]?pgpsw$"), "").replace('_', ' ').trim()
             .ifEmpty { fileName }
 
-    /** One set per POI file in a zip; re-importing the same zip updates those sets instead of adding new ones. */
+    /**
+     * One set per POI file in a zip, never merged (§5, hard rule 9); re-importing the same zip updates those sets
+     * instead of adding new ones, matched by zip name and file name. A file whose stem matches a `.bmp`/`.png`
+     * in the zip gets that image as the set's icon (§5). Files that fail are listed in the message; the import
+     * counts as failed only when no set was made.
+     */
     private suspend fun importZipFiles(
         zipName: String,
         entries: Map<String, ByteArray>,
@@ -207,18 +259,21 @@ class PoiRepository @Inject constructor(
 
     // --- PGW import ----------------------------------------------------------------------------
 
-    /** Imports a downloaded PGW zip as two sets (main + pending mobiles). Returns the main outcome. */
     /**
-     * Imports a PGW zip. "Consolidated by type" (package 288) becomes one set per file (fixed,
-     * mobile, red light, average speed, pending mobile); a single-file package becomes one set.
-     * Sets are matched by file across syncs, so the user's icon/alert choices are kept, and PGW
-     * sets no longer in the download are removed (DESIGN.md §5.2).
+     * Imports a PocketGPSWorld download (DESIGN.md §5.2, §5.2a; called by `PgwSyncWorker` on Dispatchers.IO).
+     * Every file in the zip becomes its own set, never merged (hard rule 9): the OV2 package gives one per type
+     * and speed ("PGW fixed cameras · 30 mph"), the iGO package one per type file. Sets are matched by file
+     * across syncs, so the user's icon, alert and sound choices are kept, and PGW sets no longer in the download
+     * are removed. [version] is the release from `Release.txt` or the feed (§6.2a step 3), stored on each set.
+     * The zip is read through its central directory and inflated entry by entry (§5.2 "Reading the zip").
      */
     suspend fun importPgwZip(zip: File, version: String): ImportOutcome = withContext(Dispatchers.IO) {
         ZipEntries.read(zip).use { entries -> importPgwEntries(zip, entries, version) }
     }
 
+    /** The body of [importPgwZip] over the zip's lazy entry map. */
     private suspend fun importPgwEntries(zip: File, entries: Map<String, ByteArray>, version: String): ImportOutcome {
+        // Entry names only: no PGW data is logged (§6.4).
         android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.keys}")
         // TomTom OV2 (PGW's own naming carries direction, type, id and speed) or iGO TXT, one set per family.
         val ov2 = io.autonav.alerts.core.poi.importers.PgwOv2.files(entries)
@@ -229,6 +284,7 @@ class PoiRepository @Inject constructor(
             ZipEntries.pgwTypeFiles(entries).mapValues { (_, bytes) -> { IgoTxtImporter().parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1)) } }
         }
         val fileFormat = if (ov2.isNotEmpty()) PoiFormat.OV2.name else PoiFormat.IGO_TXT.name
+        // The _X2 icons' licence text travels with the download and must be kept beside the icons (§5.2a).
         entries.entries.firstOrNull { it.key.equals(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_LICENCE_FILE, true) }
             ?.let { icons.savePgwIconLicence(it.value) }
         if (files.isEmpty()) return ImportOutcome(null, 0, 0, emptyList(), true,
@@ -240,8 +296,10 @@ class PoiRepository @Inject constructor(
         val failures = ArrayList<String>()
         for ((stem, load) in files) {
             val info = PgwFile.of(stem, ov2 = ov2.isNotEmpty())
+            // The import key that matches this file to its set on the next sync (§5.2a "matched by file stem").
             val format = "$fileFormat:$stem"
             keptFormats += format
+            // Parsed now, one file at a time, so only one file's rows are in memory (§1.3).
             val result = load()
             val existing = db.poiSets().byFormat(format)
             // The icon shipped with this file, if any (OV2 downloads include one per file).
@@ -254,7 +312,8 @@ class PoiRepository @Inject constructor(
             )
             if (out.failed) failures += "${info.setName}: ${out.message}" else { total += out.imported; if (firstId == null) firstId = out.setId }
         }
-        // Remove PGW sets from an older package layout (e.g. the single combined set).
+        // Remove PGW sets from an older package layout (e.g. the single combined set), or the other package
+        // when the user switched between OV2 and iGO (§5.2 "PGW sets from an older layout are removed").
         db.poiSets().pgwSets().filter { it.format !in keptFormats }.forEach { db.poiSets().delete(it.id) }
         notifyChanged()
         return if (failures.size == files.size) ImportOutcome(null, 0, 0, failures, true, failures.joinToString("; "))
@@ -264,6 +323,14 @@ class PoiRepository @Inject constructor(
 
     // --- Shared storage ------------------------------------------------------------------------
 
+    /**
+     * The staging swap of DESIGN.md §4.4 for one parsed file: a STAGING set is inserted, the old set's
+     * categories are carried over by `sourceCode` (keeping the user's icon and template choices), the rows go
+     * in in batches of 2,000, then one transaction deletes the old set and marks the new one ACTIVE. On any
+     * failure the staging set is deleted and the old set is untouched. [replaceSetId] is the set this one
+     * replaces (null for a first import); [categoryNamer] turns a source code into a display name;
+     * [alertsDefault] and [defaultIcon] seed a new set; [version] is the PGW release.
+     */
     private suspend fun storeImport(
         result: ImportResult,
         setName: String,
@@ -278,6 +345,7 @@ class PoiRepository @Inject constructor(
         fileIcon: Boolean = false,
     ): ImportOutcome {
         val samples = result.errors.take(20).map { "Line ${it.lineNumber}: ${it.reason}" }
+        // The importer has already applied the 20% / no-good-rows rule (§5.1); nothing is stored for a failed file.
         if (result.failed) {
             return ImportOutcome(null, result.rows.size, result.errors.size, samples, true,
                 "Import failed: ${result.errors.size} bad rows out of ${result.totalConsidered}")
@@ -289,12 +357,14 @@ class PoiRepository @Inject constructor(
         val keepUserIcon = old != null && !(old.defaultIconId in IconRepository.BUILTIN || IconRepository.isSuppliedIcon(old.defaultIconId))
         val base = old?.let { o -> if (defaultIcon != null && !keepUserIcon) o.copy(defaultIconId = defaultIcon) else o }
             ?: defaultSet(setName, source, format, alertsDefault, now).let { d -> defaultIcon?.let { d.copy(defaultIconId = it) } ?: d }
+        // The old set's name is kept: the user may have renamed it (§5 "Sets can be renamed").
         val staging = base.copy(
             id = 0, name = old?.name ?: setName, format = format, state = SetState.STAGING, replacesSetId = old?.id,
             poiCount = result.rows.size, version = version, lastUpdated = now,
         )
         val stagingId = db.poiSets().insert(staging)
         try {
+            // §4.4 step 2: the old categories' customisations move to the new set, matched on sourceCode.
             val oldCats = old?.let { db.categories().forSet(it.id) }?.associateBy { it.sourceCode } ?: emptyMap()
             val catIds = HashMap<String, Long>()
             for (code in result.rows.mapNotNull { it.categoryCode }.distinct()) {
@@ -307,14 +377,17 @@ class PoiRepository @Inject constructor(
                 )).copy(id = 0, setId = stagingId)
                 catIds[code] = db.categories().insert(cat)
             }
+            // §4.4 step 1: rows in batches of 2,000, one transaction per batch, so memory stays flat.
             result.rows.chunked(2_000).forEach { chunk ->
                 db.withTransaction { db.pois().insertAll(chunk.map { it.toEntity(stagingId, catIds) }) }
             }
+            // §4.4 step 2: the swap itself, atomic. The old set's delete cascades to its POIs and categories.
             db.withTransaction {
                 if (old != null) db.poiSets().delete(old.id)
                 db.poiSets().update(staging.copy(id = stagingId, state = SetState.ACTIVE, replacesSetId = null))
             }
         } catch (t: Throwable) {
+            // §4.4 step 3: the staging set goes (cascading), the old set was never touched.
             db.poiSets().delete(stagingId)
             throw t
         }
@@ -323,13 +396,17 @@ class PoiRepository @Inject constructor(
             "Imported ${result.rows.size} POIs" + if (result.errors.isNotEmpty()) " (${result.errors.size} rows skipped)" else "")
     }
 
+    /** An importer's row → a stored POI: the grid cell is computed here (§4.3); the PGW camera id rides in `extra["pgwId"]` (§5.2a). */
     private fun ImportRow.toEntity(setId: Long, cats: Map<String, Long>) = PoiEntity(
         setId = setId, categoryId = categoryCode?.let { cats[it] }, lat = lat, lon = lon, name = name,
         speedLimit = speed, speedUnit = speedUnit, directionType = dirType, bearing = bearing,
         gridCell = Grid.cellOf(lat, lon), sourceId = extra["pgwId"],
     )
 
-    /** What each PGW file becomes (DESIGN.md §5.2). */
+    /**
+     * What each PGW file becomes (DESIGN.md §5.2 table, §5.2a): its set name, source (PGW or PGW_PENDING),
+     * built-in icon when the download has none, whether alerts start on, and how its codes are named.
+     */
     private data class PgwFile(
         val setName: String,
         val source: PoiSourceType,
@@ -338,6 +415,7 @@ class PoiRepository @Inject constructor(
         val categoryName: (String) -> String,
     ) {
         companion object {
+            /** OV2 stems are "<family>_<speed>" ("gatso_30", "specs_var"): the family picks the base and the speed part names the set (§5.2a). */
             fun of(stem: String, ov2: Boolean = false): PgwFile {
                 if (!ov2) return of(stem)
                 val (family, part) = io.autonav.alerts.core.poi.importers.PgwOv2.splitStem(stem)
@@ -349,6 +427,7 @@ class PoiRepository @Inject constructor(
                 )
             }
 
+            /** The iGO package's file stems (§5.2 table); "sc" is the older single-file package 61; anything else gets a generic name. */
             fun of(stem: String): PgwFile = when (stem) {
                 "gatso" -> PgwFile("PGW fixed cameras", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true) { c ->
                     if (c == "11") "Fixed camera (type 11)" else "Fixed camera"
@@ -356,6 +435,7 @@ class PoiRepository @Inject constructor(
                 "mobile" -> PgwFile("PGW mobile camera sites", PoiSourceType.PGW, IconRepository.CAMERA_MOBILE, true) { "Mobile camera site" }
                 "redlight" -> PgwFile("PGW red light cameras", PoiSourceType.PGW, IconRepository.CAMERA_REDLIGHT, true) { "Red light camera" }
                 "specs" -> PgwFile("PGW average speed cameras (SPECS)", PoiSourceType.PGW, IconRepository.CAMERA_AVERAGE, true) { "Average speed camera" }
+                // Pending sites alert by default (owner, 2026-10-23, §5.2) but stay a separate set so they can be turned off.
                 "pmobile" -> PgwFile("PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING, IconRepository.CAMERA_PENDING, true) { "Pending mobile site" }
                 "sc" -> PgwFile("PocketGPSWorld cameras (all)", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
                 else -> PgwFile("PGW ${stem.replaceFirstChar { it.uppercase() }}", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
@@ -363,6 +443,7 @@ class PoiRepository @Inject constructor(
         }
     }
 
+    /** A new set with the design defaults: the §7.2 templates, the §11.1 stages, pin icon for a hand import and a camera for the rest. */
     fun defaultSet(name: String, source: PoiSourceType, format: String, alerts: Boolean, now: Long) = PoiSetEntity(
         name = name, source = source, format = format,
         alertsEnabled = alerts,
@@ -377,6 +458,7 @@ class PoiRepository @Inject constructor(
 
     // --- "My reports" set (DESIGN.md §8.5) -------------------------------------------------------
 
+    /** The one local REPORT set, created on first use with a mobile-camera icon; its POIs are the markers reports put on the map. */
     suspend fun reportsSetId(): Long {
         db.poiSets().bySource(PoiSourceType.REPORT)?.let { return it.id }
         val now = System.currentTimeMillis()
@@ -388,15 +470,18 @@ class PoiRepository @Inject constructor(
         )
     }
 
+    // Single-POI changes for camera reports (§8.5); each one signals the caches so the map and engine see it.
     suspend fun addReportPoi(entity: PoiEntity): Long = db.pois().insert(entity).also { notifyChanged() }
     suspend fun updatePoi(p: PoiEntity) { db.pois().update(p); notifyChanged() }
     suspend fun deletePoi(id: Long) { db.pois().delete(id); notifyChanged() }
+    /** "Camera not there": hides an existing camera without deleting it (§8.5). */
     suspend fun setHidden(poiId: Long, hidden: Boolean) { db.pois().setHidden(poiId, hidden); notifyChanged() }
     suspend fun poi(id: Long) = db.pois().get(id)
+    /** Startup: drops reported mobile sites past their 24 h (§8.5). */
     suspend fun purgeExpired() = db.pois().deleteExpired(System.currentTimeMillis())
 
     private companion object {
-        /** KML and GPX are read as a whole document; above this a phone could run out of memory. */
+        /** KML and GPX are read as a whole document; above this a phone could run out of memory (§1.3 Memory: refused above 50 MB). */
         const val MAX_XML_BYTES = 50_000_000L
     }
 }

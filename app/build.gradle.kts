@@ -25,12 +25,15 @@ val sharedSigning: Properties? = (System.getenv("AUTONAV_SIGNING")
 android {
     namespace = "io.autonav.alerts"
     compileSdk = 37
+    // Only used to extract native debug symbols for the release bundle (DESIGN.md §13.3); `sdkmanager "ndk;29.0.14206865"`.
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "uk.damiendye.autonav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        // Google Play refuses a bundle whose versionCode it has already seen: bump this for every Play upload (DESIGN.md §13.3).
+        versionCode = 2
         // -PversionName=… stamps a build (e.g. 0.0.1-2026-10-24); the default is the development version.
         versionName = (project.findProperty("versionName") as String?) ?: "0.1.0"
         // The git commit the build came from, shown in Settings → About; "-dirty" when the tree had changes.
@@ -62,6 +65,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Native debug symbols (symbol tables of the Navigation SDK's .so files) go into the bundle, so Play
+            // can symbolicate native crashes and stops warning on upload (DESIGN.md §13.3). Needs the NDK.
+            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
         }
     }
 

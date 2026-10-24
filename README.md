@@ -55,6 +55,7 @@ The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, 
 - **Live incident reporting** on the car screen (crashes, congestion, police…). Google Maps has it, but Google's Navigation SDK doesn't offer it to apps on Android Auto yet. The app detects it automatically if a future SDK adds it. A quarterly GitHub Actions check opens an issue when that happens. Run it locally with `tools/check-nav-sdk-features.sh --latest`.
 
 ### Planned (designed, not built yet)
+- A public Google Play listing (store listing, content declarations, review). Today the app is on Play's internal testing track by invitation (docs/INSTALLATION.md)
 - Home Assistant people finder: navigate to family members' live locations, e.g. children or relatives living with dementia (DESIGN.md §17)
 - Google Maps history imports (§8.2)
 - EV chargers via Google Places and Open Charge Map, with a hand-off to Electroverse (§18)
@@ -91,10 +92,11 @@ You need a Google Maps Platform key with the **Navigation SDK** (access must be 
 Official builds are all signed with one shared key, so Google sign-in and restricted Maps keys work for every build. It's kept in a **private** repo, never here. Builds made without it are signed with your own debug key; they work, but a Maps key must list your SHA-1 (`apksigner verify --print-certs <apk>` shows it). See DESIGN.md §13.3.
 
 ### Install and set up
+0. **Testers don't build anything:** ask the maintainer to add your Google account to the Play tester list, then install from Google Play through the internal-testing link in [docs/INSTALLATION.md](docs/INSTALLATION.md). The steps below are the developer path.
 1. `adb install app/build/outputs/apk/debug/app-debug.apk`
    (for a phone you'll drive with, build and install the release: `./gradlew :app:assembleRelease` and `adb install -r -i com.android.vending app/build/outputs/apk/release/app-release.apk`; it's smaller and has no bench hooks. The `-i com.android.vending` records the Play Store as the installer, which Android Auto looks for)
 2. In the phone app's **Settings** tab (the app opens there until setup is done): add the Maps API key, press **Allow** (location, notifications, microphone and car speed), then **Allow all the time** (recommended), and accept Google's navigation terms (available once the key is saved).
-3. In Android Auto: tap the version number repeatedly to turn on developer mode, then enable **Unknown sources**. This app is sideloaded, so it won't stay in Android Auto's Customise Launcher list (Google's Unknown sources setting doesn't cover Car App Library apps); it still appears on the car. Pick AutoNavAlerts there as your navigation app. A Google Play internal-test release is planned to make it a normal install (ISSUES.md D5).
+3. In Android Auto (sideloaded builds only; a Play install needs none of this): tap the version number repeatedly to turn on developer mode, then enable **Unknown sources**. A sideloaded build won't stay in Android Auto's Customise Launcher list (Google's Unknown sources setting doesn't cover Car App Library apps); it still appears on the car. Pick AutoNavAlerts there as your navigation app.
 4. **Already have a settings backup?** Settings → Backup → **Restore from backup…** brings back your Maps key, PocketGPSWorld login and settings (accept the navigation terms again afterwards). **Save settings backup…** makes one; it's plain text with your key and password in it, so keep it private.
 5. Add cameras: either enter your PocketGPSWorld login on the **Cameras** tab and press **Sync now**, or import a POI file on the **POIs** tab.
 

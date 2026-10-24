@@ -28,9 +28,15 @@ import kotlinx.coroutines.launch
  * reads "Name" over "Home · 12 High St · 3.2 mi" (the distance once the address has been
  * located). Tapping a row locates the address and opens the route preview, like a contact row
  * in Search; several matches go to Search's "Which address?" list.
+ *
+ * Pushed by `SearchScreen`'s Contacts row (only when the optional contacts permission is
+ * granted, §8.3); popped by the host's Back. A `ListTemplate`, so the map stays behind it. All
+ * on the main thread: `ContactsSource` does its own reads off it. The template is re-sent only
+ * when the rows have loaded (hard rule 3): one `invalidate()` per resume.
  */
 class ContactsScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
+    /** Each contact address with its known distance in metres (null until the address has been located once). */
     private var rows: List<Pair<ContactAddress, Int?>>? = null
 
     init {
@@ -50,6 +56,7 @@ class ContactsScreen(carContext: CarContext, private val session: NavSession) : 
     /** The host's list limit, less the "Search contacts…" row. */
     private fun limit(): Int = CarUi.listLimit(carContext).coerceAtLeast(2) - 1
 
+    /** The list, or a loading template before the first load; the host shows its own spinner for that. */
     override fun onGetTemplate(): Template {
         val header = Header.Builder().setTitle(carContext.getString(R.string.car_contacts)).setStartHeaderAction(Action.BACK).build()
         val r = rows ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
@@ -73,6 +80,8 @@ class ContactsScreen(carContext: CarContext, private val session: NavSession) : 
         return ListTemplate.Builder().setHeader(header).setSingleList(list.build()).build()
     }
 
+    // Geocoding happens only now, for the one address picked (never the whole address book, §8.3):
+    // from the 90-day cache, else one Places Text Search billed to the user's own key.
     private fun pick(c: ContactAddress) {
         lifecycleScope.launch {
             when (val r = deps.contacts().locate(c, deps.location().lastLocation.value)) {

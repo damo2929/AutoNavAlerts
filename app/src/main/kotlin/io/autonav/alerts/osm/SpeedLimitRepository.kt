@@ -27,20 +27,31 @@ import javax.inject.Singleton
 import kotlin.math.cos
 
 /**
- * OpenStreetMap speed limits for the UK, from one bulk download of Geofabrik's extracts
- * (DESIGN.md §8.4a). Nothing is looked up online while driving: lookups read the file on the phone.
+ * OpenStreetMap speed limits for the UK, from one bulk download of Geofabrik's extracts (DESIGN.md §8.4a).
+ * The owner's rule (§8.4a, AGENTS.md §3.2): one bulk download, never live lookups. Nothing is looked up online
+ * while driving: lookups read `files/osm/osm_limits.bin` on the phone, a few tiles at a time. A Hilt singleton.
+ * Callers: `NavSession` once a second for the panel's limit ([limitAt]) and the next change ahead ([nextChange]);
+ * `AlertCoordinator` per reload for the road ahead in free drive ([roadAhead], §11 step 4); the phone's
+ * Settings → Speed limits card ([download], [cancel], [stats], [delete]); `SpeedLimitWorker` ([replaced], [report]);
+ * the debug `BenchReceiver` ([reader]). The lookups never block: they read the index already in memory and
+ * start a background load on `App.appScope` when the car nears a tile not loaded.
+ * OSM limits only ever feed the panel's grey-dot limit and the limit-change announcement, never an alert (§8.4a "Shown on").
  */
 @Singleton
 class SpeedLimitRepository @Inject constructor(@ApplicationContext private val context: Context) {
-    /** Download progress: which region and step, and compressed bytes done of the total. */
+    /** Download progress: which region and step, and compressed bytes done of the total. [finished] with no [error] is success. */
     data class Progress(val region: String, val step: String, val done: Long, val total: Long, val finished: Boolean, val error: String? = null)
+    /** What the Settings card shows (§8.4a): the Geofabrik data date, road and tile counts, the file size in bytes. */
     data class Stats(val dataDate: String, val roads: Long, val tiles: Int, val bytes: Long)
 
     private val dir get() = File(context.filesDir, "osm").apply { mkdirs() }
+    /** `files/osm/osm_limits.bin` (§8.4a "Result"): the `OsmLimitFile` the worker writes and the lookups read. */
     val file: File get() = File(dir, "osm_limits.bin")
 
     private val _progress = MutableStateFlow<Progress?>(null)
+    /** Live download progress for the Settings card; null when no download is running or shown. */
     val progress: StateFlow<Progress?> = _progress
+    /** The worker's progress updates. */
     internal fun report(p: Progress?) { _progress.value = p }
 
     @Volatile private var reader: OsmLimitFile.Reader? = null
@@ -65,12 +76,10 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
     }
 
     /**
-     * The next change of limit on the road the car is on (DESIGN.md §8.4a, "Limit changes ahead"),
-     * from the tiles already in memory: along [routeAhead] when there is one (first point at the
-     * car, at least two points), else along the road by connectivity. Null with no data, no
-     * heading or no change within 600 m. Called once a second by `NavSession`, never per fix.
+     * The road ahead of the car from the OSM pieces, up to [maxM] metres, for free drive's camera matching
+     * (DESIGN.md §11 step 4); null without data under the car. Follows joins like [nextChange] but carries on
+     * past forks by the straightest branch (§8.4a "The free-drive road ahead for cameras").
      */
-    /** The road ahead of the car from the OSM pieces, for free drive's camera matching (DESIGN.md §11 step 4); null without one. */
     fun roadAhead(lat: Double, lon: Double, headingDeg: Double, maxM: Double): List<LatLngLike>? {
         val idx = index
         ensureLoaded(idx, lat, lon)
@@ -80,6 +89,12 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
             .onFailure { Log.w(TAG, "roadAhead: ${it.message}") }.getOrNull()
     }
 
+    /**
+     * The next change of limit on the road the car is on (DESIGN.md §8.4a, "Limit changes ahead"),
+     * from the tiles already in memory: along [routeAhead] when there is one (first point at the
+     * car, at least two points), else along the road by connectivity, stopping at the first fork.
+     * Null with no data, no heading or no change within 600 m. Called once a second by `NavSession`, never per fix.
+     */
     fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>?): LimitLookahead.Change? {
         val idx = index
         ensureLoaded(idx, lat, lon)
@@ -89,12 +104,13 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
             .onFailure { Log.w(TAG, "lookahead: ${it.message}") }.getOrNull()
     }
 
-    /** Reads the tiles around the car in the background when they aren't in memory yet. */
+    /** Reads the tiles around the car in the background when they aren't in memory yet; one load at a time, none when there is no file. */
     private fun ensureLoaded(idx: LimitIndex, lat: Double, lon: Double) {
         if (noFile || covers(idx, lat, lon) || loading?.isActive == true) return
         loading = App.appScope.launch { load(lat, lon) }
     }
 
+    /** True when the tiles at all four points [NEAR_M] from the car are in [idx] (§8.4a: reload when within 60 m of a tile not in memory). */
     private fun covers(idx: LimitIndex, lat: Double, lon: Double): Boolean {
         val dLat = NEAR_M / 111_000.0
         val dLon = NEAR_M / (111_000.0 * cos(Math.toRadians(lat)))
@@ -104,6 +120,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
         return true
     }
 
+    /** Builds a fresh index of the tiles within [LOAD_M] of the car (§8.4a: usually one, up to four at a corner) and swaps it in, unless the file was replaced meanwhile. */
     private fun load(lat: Double, lon: Double) {
         val gen = generation
         val r = openReader() ?: run { index = LimitIndex.EMPTY; return }
@@ -117,6 +134,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
         synchronized(this) { if (gen == generation) index = built }
     }
 
+    /** The file's reader, opened once and kept; remembers "no file" so lookups don't stat the disk per fix. */
     @Synchronized
     private fun openReader(): OsmLimitFile.Reader? {
         reader?.let { return it }
@@ -125,7 +143,11 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
             ?.also { reader = it }
     }
 
-    /** Called by the download when a new file is in place. */
+    /**
+     * Called by the download before and after it renames the new file over the old one, and by [delete]: closes
+     * the reader, forgets "no file", empties the index and bumps the generation so a load in flight can't put
+     * the old file's tiles back. The next lookup reopens the file and reloads around the car.
+     */
     @Synchronized
     internal fun replaced() {
         generation++
@@ -137,7 +159,11 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
 
     // --- Download (runs in SpeedLimitWorker) -------------------------------------------------
 
-    /** Starts (or restarts) the UK download in the background: on Wi-Fi only, or any network. */
+    /**
+     * Starts (or restarts) the UK download as a WorkManager job (§8.4a "When"): Wi-Fi only (UNMETERED) by default,
+     * or any network when the user turned Wi-Fi only off. REPLACE so pressing Update restarts a stalled job.
+     * The old file keeps working until the new one is complete.
+     */
     fun download(wifiOnly: Boolean) {
         _progress.value = Progress("", if (wifiOnly) "Waiting for Wi-Fi" else "Waiting for a connection", 0, 0, false)
         val req = OneTimeWorkRequestBuilder<SpeedLimitWorker>()
@@ -146,6 +172,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
         WorkManager.getInstance(context).enqueueUniqueWork(WORK, ExistingWorkPolicy.REPLACE, req)
     }
 
+    /** The Cancel button and notification action (§8.4a: stops within a fraction of a second; the old file is kept). */
     fun cancel() {
         WorkManager.getInstance(context).cancelUniqueWork(WORK)
         _progress.value = null
@@ -154,8 +181,10 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
     /** The open file, for checks (debug bench). */
     fun reader(): OsmLimitFile.Reader? = openReader()
 
+    /** The Settings card's status line, or null with no file. */
     fun stats(): Stats? = openReader()?.let { Stats(it.dataDate, it.roads, it.tiles, file.length()) }
 
+    /** Settings → Delete: stops any download, drops the index and removes the file. */
     fun delete() {
         cancel()
         replaced()
@@ -164,6 +193,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
 
     companion object {
         private const val TAG = "OsmLimits"
+        /** Unique WorkManager name: one download at a time. */
         const val WORK = "osm-speed-limits"
 
         /** Tiles are reloaded when the car comes within this of one not in memory. */

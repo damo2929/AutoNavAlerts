@@ -19,13 +19,32 @@ import io.autonav.alerts.diag.EventLog
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Something that can show an alert on the car screen (set by the car session while visible). */
+/**
+ * Something that can show an alert on the car screen (set by the car session while visible):
+ * the banner on the map surface, or the host `Alert` while the surface isn't ready (DESIGN.md
+ * §12.1). `NavSession` sets [AlertDispatcher.carSink] on create and clears it on destroy.
+ */
 fun interface CarAlertSink {
-    /** Returns true if it was shown on the car screen. */
+    /**
+     * Returns true if it was shown on the car screen.
+     *
+     * Called on the alert collector; the sink posts the banner update to the main thread itself (§12.1 Threading).
+     */
     fun show(alert: ActiveAlert): Boolean
 }
 
-/** Routes each alert to the car Alert, a nav heads-up notification, and speech (DESIGN.md §12). */
+/**
+ * Routes each alert to the right outputs (DESIGN.md §12, the routing table): the car screen
+ * through [carSink] when our screen is up, else a navigation-category heads-up notification
+ * (§12.2) that Android Auto shows over another app and the phone shows without a car; and speech
+ * through [NavTts] (§12.3) whenever `speak` is true. The visual always goes out; only speech is
+ * subject to mute (§12.3 "Mute: stop speech only"). Events are never dropped here: every call
+ * reaches a visual and either the speech queue or a MUTED record.
+ *
+ * Lifecycle: a Hilt singleton. `App.onCreate` calls [ensureChannel]; `AlertCoordinator` calls
+ * [dispatch] on the alert collector for every engine event, so this class does no main-thread
+ * work itself (the sink and NavTts post to the main thread as they need).
+ */
 @Singleton
 class AlertDispatcher @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -33,8 +52,10 @@ class AlertDispatcher @Inject constructor(
     private val icons: IconRepository,
     private val eventLog: EventLog,
 ) {
+    /** The car screen's alert surface while a session is up; null means "not in the foreground" (§12). */
     @Volatile var carSink: CarAlertSink? = null
 
+    /** The `poi_alerts` channel (§12.2): high importance, no sound and no vibration, since the TTS does the speaking. */
     fun ensureChannel() {
         val nm = context.getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
@@ -80,6 +101,7 @@ class AlertDispatcher @Inject constructor(
             .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOnlyAlertOnce(false)
+            // 10 s: a little longer than the banner's 8 s, so the heads-up doesn't outlive the approach (§12.2).
             .setTimeoutAfter(10_000)
             .extend(
                 CarAppExtender.Builder()
@@ -89,11 +111,14 @@ class AlertDispatcher @Inject constructor(
                     .setContentTitle(alert.display)
                     .build(),
             )
+        // One id per POI, so a SECOND or PASSING updates the FIRST's notification instead of stacking (§12.2).
         return runCatching { CarNotificationManager.from(context).notify(NOTIFICATION_BASE + (alert.poiId % 10_000).toInt(), n) }.isSuccess
     }
 
     companion object {
+        /** The notification channel id of §12.2. */
         const val CHANNEL = "poi_alerts"
+        /** Keeps alert ids clear of the app's other notifications (the speed-limit download's progress, §8.4a). */
         private const val NOTIFICATION_BASE = 20_000
     }
 }

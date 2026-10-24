@@ -17,13 +17,22 @@ import java.io.BufferedReader
  *  - header matched case-insensitively; LF or CRLF
  *  - last row is a copyright/watermark row with a non-numeric Type → skipped silently
  *  - empty DirType/Direction → ANY; Direction 360 → 0; empty or 0 Speed → null
+ *
+ * Direction is the heading of the traffic the camera enforces (PGW's own form calls it "Direction
+ * of Travel"), which is exactly our `bearing` (§4.1): no inversion. A row with a Direction is
+ * ONE_WAY or BOTH, never ANY, so the direction rule (§11 step 3) can apply to it. No Android, no
+ * threads of its own: `PoiRepository`'s import pipeline calls [parse] on IO, one file
+ * per set (hard rule: files are never merged). Speeds are in [speedUnit] (mph for UK packages).
+ * The fixtures in the tests are made up; no PGW data is in the repo.
  */
 class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
 
+    /** Whether the first line is the iGO header (spaces and case ignored). */
     fun sniff(head: String): Boolean =
         head.lineSequence().firstOrNull()?.trim()?.replace(" ", "")
             ?.equals("X,Y,Type,Speed,DirType,Direction", ignoreCase = true) == true
 
+    /** Reads the whole file line by line; never throws on a bad row, which goes to the errors instead. */
     fun parse(reader: BufferedReader): ImportResult {
         val rows = ArrayList<ImportRow>()
         val errors = ArrayList<RowError>()
@@ -34,6 +43,7 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
         reader.lineSequence().forEach { raw ->
             lineNo++
             val line = raw.trimEnd('\r').trim()
+            // Blank lines and ";" comments are not rows.
             if (line.isEmpty() || line.startsWith(";")) return@forEach
             if (!headerSeen && sniff(line)) {
                 headerSeen = true
@@ -50,6 +60,7 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
                 silent++
                 return@forEach
             }
+            // X is longitude and Y latitude (§5.2 column table).
             val lon = f[0].trim().toDoubleOrNull()
             val lat = f[1].trim().toDoubleOrNull()
             if (lat == null || lon == null || !isPlausibleCoordinate(lat, lon)) {
@@ -61,6 +72,7 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
             val direction = f.getOrNull(5)?.trim()?.toFloatOrNull()?.let { if (it >= 360f) it - 360f else it }
                 ?.takeIf { it >= 0f && it < 360f }
 
+            // DirType 1 → ONE_WAY, 2 → BOTH; empty or 0 → ANY; and no Direction forces ANY whatever DirType says.
             val dirType = when {
                 direction == null -> DirectionType.ANY
                 dirTypeCode == 1 -> DirectionType.ONE_WAY

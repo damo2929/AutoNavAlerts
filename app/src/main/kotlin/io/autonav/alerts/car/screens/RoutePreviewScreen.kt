@@ -42,6 +42,16 @@ import kotlinx.coroutines.withContext
  * preview up) reaches `onDestroy`, which abandons the preview unless Go was pressed: the
  * destination and its route are cleared, or while guiding the guided route is put back (§8). While the screen is on screen `MapSurface.previewShowing`
  * is set, so the follow watchdog leaves the route overview alone (§8, §16 row 22).
+ *
+ * Pushed by Search, Recents, Contacts, the place detail and a navigate intent (§9.1), always with
+ * a resolved [destination]; it pops to the root on Go. With the EV option on (§8.3a) the rows are
+ * the fastest and the energy-efficient route with their traffic, the Go button names the selected
+ * one, and selecting a row sets that route in the SDK so the map draws it. Main thread
+ * (`lifecycleScope`); `GuidanceController` does the routing and the Routes API call off it.
+ *
+ * `previewShowing` also lifts the zoom lock while the overview is up (§8 "One view with and
+ * without a route"). Hard rule 2: the one Go is the host's navigate action; there is no Stop here
+ * either. The template is re-sent on load, on a selection and on error only (hard rule 3).
  */
 @Suppress("DEPRECATION")
 class RoutePreviewScreen(
@@ -50,13 +60,18 @@ class RoutePreviewScreen(
     private val destination: Destination,
 ) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
+    /** The SDK's route (time, distance, traffic delay), or null when none was found. */
     private var route: RouteOption? = null
+    /** Why the destination couldn't be set, shown in place of the preview. */
     private var error: String? = null
     private var loading = true
+    /** Go was pressed: the preview must not be abandoned in `onDestroy`. */
     private var started = false
 
     init {
         lifecycle.addObserver(this)
+        // The route is asked for at once, while the host shows the loading preview; Back during this
+        // still reaches onDestroy, which clears a route that finishes afterwards (§8, code review 2026-10-23).
         lifecycleScope.launch {
             error = deps.guidance().setDestination(destination)
             route = deps.guidance().currentRoute()
@@ -65,16 +80,19 @@ class RoutePreviewScreen(
         }
     }
 
+    /** On screen: the watchdog and the zoom lock stand down for the SDK's route overview (§8). */
     override fun onStart(owner: LifecycleOwner) {
         session.surface.previewShowing = true
         showing = this
     }
 
+    /** Hidden (another screen over it, or leaving): the watchdog and the lock come back. */
     override fun onStop(owner: LifecycleOwner) {
         session.surface.previewShowing = false
         if (showing === this) showing = null
     }
 
+    /** Leaving for good: without Go, the preview is abandoned (the route goes, or the guided one is put back). */
     override fun onDestroy(owner: LifecycleOwner) {
         session.surface.previewShowing = false
         if (showing === this) showing = null
@@ -83,6 +101,10 @@ class RoutePreviewScreen(
         if (!started) deps.guidance().abandonPreview()
     }
 
+    /**
+     * The error message, the loading preview, "Couldn't find a route there", or the preview with
+     * one row (the SDK's route) or the fastest / energy-efficient pair (§8.3a) and Go.
+     */
     override fun onGetTemplate(): Template {
         error?.let { msg ->
             return MessageTemplate.Builder(msg)
@@ -100,6 +122,8 @@ class RoutePreviewScreen(
         val items = ItemList.Builder()
         val choices = deps.guidance().choices.value
         if (choices.isEmpty()) {
+            // One SDK route. The note says why there's no energy-efficient one when that was asked for
+            // ("Fastest route (energy-efficient routing isn't available: …)", §8.3a "never a dead end").
             val note = deps.guidance().routeNote.value?.let { " · $it" }.orEmpty()
             items.addItem(routeRow(r.seconds, r.meters, trafficText(r.delaySeverity) + note))
             items.setOnSelectedListener { }
@@ -133,6 +157,7 @@ class RoutePreviewScreen(
         b.setNavigateAction(
             Action.Builder().setTitle(goTitle()).setOnClickListener { start(simulate = false) }.build(),
         )
+        // Debug builds only: the bench's simulated drive along the route (AGENTS.md §4). Never in a release.
         if (BuildConfig.DEBUG) {
             b.setActionStrip(ActionStrip.Builder().addAction(CarUi.textAction("Simulate") { start(simulate = true) }).build())
         }
@@ -143,6 +168,8 @@ class RoutePreviewScreen(
     private fun routeRow(
         seconds: Int, meters: Int, extra: String, icon: androidx.car.app.model.CarIcon? = null, title: String = "", second: String? = null,
     ): Row {
+        // The spans replace the first character with the host's own formatted duration / distance,
+        // so the time and distance render in the car's style and units.
         val title = SpannableString("  $title").apply { setSpan(DurationSpan.create(seconds.toLong()), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE) }
         val text = SpannableString("  $extra").apply {
             setSpan(DistanceSpan.create(io.autonav.alerts.car.TripMapper(carContext, session.imperial).distance(meters)), 0, 1, Spanned.SPAN_INCLUSIVE_INCLUSIVE)
@@ -197,6 +224,7 @@ class RoutePreviewScreen(
         return "Queue in ${CarUi.formatDistance(m, session.imperial)} · ~$mins min"
     }
 
+    // The single SDK route keeps the SDK's own traffic level (§8.3a); only heavy and medium are worth a word.
     private fun trafficText(severity: Int): String = when (severity) {
         com.google.android.libraries.navigation.TimeAndDistance.DELAY_HEAVY -> " · heavy traffic"
         com.google.android.libraries.navigation.TimeAndDistance.DELAY_MEDIUM -> " · some traffic"

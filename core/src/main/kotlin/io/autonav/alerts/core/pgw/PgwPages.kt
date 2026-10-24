@@ -9,6 +9,10 @@ import org.jsoup.Jsoup
 /**
  * Everything about PocketGPSWorld's pages lives here (DESIGN.md §6.1 "PgwConfig"), so a site change
  * is a one-file fix. Values checked against the live site on 2026-10-11.
+ *
+ * Plain constants and pure functions; the app's `PgwClient` (OkHttp, on IO) sends what these
+ * build, and `PgwWorkers` schedules it (§6.2). No credentials, cookies or downloaded data are
+ * ever held here or in the repo (§6.4): each user logs in with their own account.
  */
 object PgwConfig {
     const val BASE = "https://www.pocketgpsworld.com/"
@@ -24,20 +28,25 @@ object PgwConfig {
     const val PACKAGE_UK_OV2_SPEED_ZONED = 1
 
     /** Kept for callers that want the default package id. */
+    // The name is historical: the default download is the OV2 package (§5.2a), not iGO.
     const val PACKAGE_UK_IGO = PACKAGE_UK_OV2_SPEED_ZONED
 
+    /** The PHP-Nuke login form fields (§6.1 step 2.1): no CSRF token, no captcha; the hidden fields are empty constants. */
     fun loginForm(user: String, password: String) = listOf(
         "username" to user, "user_password" to password, "op" to "login",
         "redirect" to "", "mode" to "", "f" to "", "t" to "",
     )
 
+    /** The "Download Same Format" form fields (§6.1 step 2.2); [pendingMobiles] adds the pMobile file. */
     fun downloadForm(idPackage: Int = PACKAGE_UK_IGO, pendingMobiles: Boolean = true) = listOf(
         "op" to "DownloadPackage", "idPackage" to idPackage.toString(),
         "getPmob" to if (pendingMobiles) "yes" else "no", "getFrance" to "no", "getSwiss" to "no",
     )
 
+    /** The generated zip's temp URL in the download page; the bracketed part is the version (§6.1 step 2.3). */
     val ZIP_LINK = Regex("""(?:https?://www\.pocketgpsworld\.com)?/?temp/users/pgpsw-speed-cams-[A-Za-z0-9]+-\(\d+-\d+\)\.zip""")
 
+    /** The file in each download that states the version, the installed-version source of truth (§5.2). */
     const val RELEASE_FILE = "Release.txt"
 }
 
@@ -62,9 +71,15 @@ enum class PgwDownload(val idPackage: Int, val system: String, val label: String
     }
 }
 
+/**
+ * Reads PocketGPSWorld's HTML pages (DESIGN.md §6.1 "Login", §8.5 "PgwReportSubmitter"). Pure
+ * functions over page text, called by the app's `PgwClient` on IO. Nothing is logged from a page.
+ */
 object PgwPages {
+    /** What a page says about the session. */
     enum class LoginState { LOGGED_IN, LOGGED_OUT }
 
+    /** Logged in when the page has no password field and mentions logging out (§6.1 step 2.1). */
     fun loginState(html: String): LoginState {
         val doc = Jsoup.parse(html)
         val hasPasswordField = doc.select("input[name=user_password]").isNotEmpty()
@@ -93,27 +108,35 @@ object PgwPages {
         130 to "13", 140 to "19", 160 to "20",
     )
 
+    /** The form's code for a limit in mph; "0" (unknown) for null or a value the form has no code for. */
     fun speedCode(speed: Int?): String = speed?.let { SPEED_CODES[it] } ?: "0"
 
+    /** The form's `Direction`: 2 reversible (both ways), else 0 single direction (§8.5). */
     fun directionCode(dir: DirectionType): String = if (dir == DirectionType.BOTH) "2" else "0"
 }
 
 /** A camera report as sent to PGW's "Send Entry" (DESIGN.md §8.5). */
+// Built by the app's `CameraReportRepository` from a reviewed report, sent by `PgwClient`: only
+// from the phone, after the driver has reviewed it, never from the car (§8.5, hard rule).
 data class PgwSubmission(
     /** 1 add, 2 change, 3 remove, 4 mobile seen again. */
     val action: Int,
     val idCam: String?,
+    /** Position saved when Report was tapped, degrees; sent to 5 decimal places. */
     val lat: Double,
     val lon: Double,
     /** PGW form type code (0 not sure, 2 mobile, 4 specs, 5 red light, 10 RedSpeed...). */
     val type: Int,
+    /** Limit in mph (the form takes a code, see [PgwPages.speedCode]); null for unknown. */
     val speed: Int?,
+    /** Direction of travel, whole degrees true. */
     val heading: Int?,
     val directionType: DirectionType,
     val comments: String,
     /** 0 United Kingdom, 1 Ireland. */
     val countryCode: Int = 0,
 ) {
+    /** The multipart fields of the "Send Entry" POST, in the table order of §8.5; the per-user hidden fields are added by the caller. */
     fun formFields(): List<Pair<String, String>> = listOf(
         "Action" to action.toString(),
         "idCam" to (idCam ?: ""),

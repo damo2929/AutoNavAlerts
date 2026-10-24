@@ -16,10 +16,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import javax.xml.parsers.DocumentBuilderFactory
 
+/** The file formats the importers read (DESIGN.md §5); the set's `format` column (§4.1). */
 enum class PoiFormat { IGO_TXT, KML, GPX, OV2, CSV }
 
 /** Guesses a format from the file name and first bytes (DESIGN.md §5). */
 object FormatSniffer {
+    /** The format from the name's extension or the first bytes ([head], a few hundred bytes), or null. */
     fun detect(fileName: String, head: ByteArray): PoiFormat? {
         val name = fileName.lowercase()
         val text = String(head, Charsets.ISO_8859_1)
@@ -40,6 +42,7 @@ object FormatSniffer {
  */
 private val SPEED_IN_TEXT = Regex("""(?<![A-Za-z\d])(\d{2,3})(?!\d)\s*(mph|km/?h|kph)?""", RegexOption.IGNORE_CASE)
 
+/** The limit in a name or description per [SPEED_IN_TEXT], 5–200 only, with its unit when one was written (§5.6). */
 internal fun speedFromText(text: String?): Pair<Int, SpeedUnit?>? {
     if (text.isNullOrBlank()) return null
     val all = SPEED_IN_TEXT.findAll(text).filter { it.groupValues[1].toInt() in 5..200 }.toList()
@@ -53,6 +56,7 @@ internal fun speedFromText(text: String?): Pair<Int, SpeedUnit?>? {
     return v to unit
 }
 
+// XML from a user's file: no DTDs or external entities, so a crafted file can't read the phone.
 private fun secureFactory() = DocumentBuilderFactory.newInstance().apply {
     isNamespaceAware = false
     runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
@@ -67,8 +71,16 @@ private fun Element.child(tag: String): Element? {
 
 private fun Element.childText(tag: String): String? = child(tag)?.textContent?.trim()?.takeIf { it.isNotEmpty() }
 
-/** KML Placemarks with Points (DESIGN.md §5.4). */
+/**
+ * KML Placemarks with Points (DESIGN.md §5.4). Lines and polygons are ignored. The category is
+ * the enclosing Folder's name, else the styleUrl; a bearing comes from ExtendedData
+ * heading/bearing/direction or IconStyle/heading and makes the POI ONE_WAY (BOTH with dirtype 2
+ * or "both" in the description); the speed from ExtendedData speed or the name/description text.
+ * Called by `PoiRepository` on Dispatchers.IO. The whole document is parsed with DOM, so this is
+ * for hand-picked files, not country-sized ones. Bearings degrees true.
+ */
 class KmlImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
+    /** Every Placemark with a Point; a bad coordinate is a row error, not a failure. */
     fun parse(input: InputStream): ImportResult {
         val doc = secureFactory().newDocumentBuilder().parse(input)
         val placemarks = doc.getElementsByTagName("Placemark")
@@ -112,7 +124,12 @@ class KmlImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
     }
 }
 
-/** GPX waypoints (DESIGN.md §5.5). */
+/**
+ * GPX waypoints (DESIGN.md §5.5): each `<wpt lat lon>` is a POI, named by `<name>`, categorised by
+ * `<type>` else `<sym>`; a bearing from `<course>` (GPX 1.0) or an extension named heading or
+ * bearing makes it ONE_WAY; the speed is found in the name or `<desc>` text. Called by the app's
+ * `PoiRepository` on Dispatchers.IO; DOM-parsed, so for hand-picked files. Bearings degrees true.
+ */
 class GpxImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
     fun parse(input: InputStream): ImportResult {
         val doc = secureFactory().newDocumentBuilder().parse(input)
@@ -142,10 +159,19 @@ class GpxImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
     }
 }
 
-/** TomTom OV2 binary (DESIGN.md §5.6). No direction information. Read as a stream, one record at a time. */
+/**
+ * TomTom OV2 binary (DESIGN.md §5.6). No direction information, so every POI is ANY; the speed
+ * is found in the name ("[SPECS] 50", never a road number). Read as a stream, one record at a
+ * time, so a big file never sits in memory. Little-endian: a type byte, then an int32 record
+ * length that includes those 5 bytes; type 2 (and 3) hold `lon×100000, lat×100000, name\0`, type 1
+ * is a skipper block and type 0 a deleted record. [PgwOv2] builds on this for PGW's download.
+ * Called by `PoiRepository` on Dispatchers.IO.
+ */
 class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
+    /** Convenience for small files and tests; the stream form below is what the app uses. */
     fun parse(bytes: ByteArray): ImportResult = parse(bytes.inputStream())
 
+    /** Reads records until the end of the stream; a corrupt length ends the file with one row error. */
     fun parse(input: InputStream): ImportResult {
         val inp = java.io.DataInputStream(input.buffered())
         fun leInt(): Int? {
@@ -169,6 +195,7 @@ class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
             val type = inp.read().takeIf { it >= 0 } ?: break
             record++
             val len = leInt() ?: break
+            // A length under the 5-byte header, or over 1 MiB, means the stream is not OV2 any more: stop.
             if (len < 5 || len > MAX_RECORD) {
                 errors += RowError(record, "type $type", "bad record length $len"); break
             }
@@ -199,10 +226,15 @@ class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
         return ImportResult(rows, errors, 0)
     }
 
+    /** 1 MiB: far above any real record, a guard against reading a bad length as a size. */
     private companion object { const val MAX_RECORD = 1 shl 20 }
 }
 
-/** A saved CSV column mapping (DESIGN.md §5.7). Column indexes are 0-based. */
+/**
+ * A saved CSV column mapping (DESIGN.md §5.7), as the phone wizard builds it and stores it as a
+ * `CsvMappingProfile` (§4.1). Column indexes are 0-based; [dirTypeMap] maps the file's own
+ * direction values (presets `0/1/2`, `any/one/both`, `A/O/B`, matched lower case) to ours.
+ */
 data class CsvProfile(
     val delimiter: Char = ',',
     val hasHeader: Boolean = true,
@@ -221,7 +253,14 @@ data class CsvProfile(
     val speedUnit: SpeedUnit = SpeedUnit.MPH,
 )
 
+/**
+ * Generic delimited text through a [CsvProfile] (DESIGN.md §5.7). With a bearing column and no
+ * direction-type column the POI is ONE_WAY; with neither it is ANY; a direction type without a
+ * bearing is still ANY (a direction needs a bearing to be judged, §11 step 3). Called by the app's
+ * `PoiRepository` on Dispatchers.IO, line by line. Bearings degrees true; speeds in the profile's unit.
+ */
 class CsvImporter(private val profile: CsvProfile) {
+    /** Every data line; the header (if the profile says there is one) and blank lines are skipped. */
     fun parse(reader: BufferedReader): ImportResult {
         val rows = ArrayList<ImportRow>()
         val errors = ArrayList<RowError>()
@@ -252,6 +291,7 @@ class CsvImporter(private val profile: CsvProfile) {
     }
 
     companion object {
+        /** The delimiter among `, ; tab |` that appears most in the first 5 lines (wizard step 2). */
         fun detectDelimiter(sample: String): Char =
             listOf(',', ';', '\t', '|').maxBy { d -> sample.lineSequence().take(5).sumOf { l -> l.count { it == d } } }
 

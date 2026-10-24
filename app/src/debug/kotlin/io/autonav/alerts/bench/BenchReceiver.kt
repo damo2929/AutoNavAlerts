@@ -20,8 +20,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Debug builds only (TESTING.md §3): drives the car screen from adb, because the DHU's window
- * can't be clicked from a script. Sends the same navigate intent Assistant would.
+ * Debug builds only (TESTING.md §3 step 5a, §15; DESIGN.md §15.5): a `BroadcastReceiver` that
+ * drives the car screen and a few app internals from adb, because the DHU's window can't be
+ * clicked from a script and its dpad commands don't reach the app's screens. Lives in
+ * `app/src/debug`, so release builds don't have it; declared in the debug manifest behind the
+ * `android.permission.DUMP` permission, which only adb's shell holds, so nothing else on the
+ * phone can send these. Sends the same navigate intent Assistant would.
+ *
+ * Called by Android on the main thread for every `io.autonav.alerts.BENCH` broadcast, a new
+ * instance each time, so it keeps no state. Work that must leave the main thread goes to
+ * [App.appScope] (with `goAsync()` where the receiver has to outlive `onReceive`); anything on
+ * the Car App Library or the map is posted to the main looper (DESIGN.md §2 threads).
+ *
+ * Commands, one per broadcast (the first matching extra wins, in `onReceive`'s order):
  *
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es q "Mum"        # Search with "Mum" typed in
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es geo "53.38,-1.47"  # route preview there
@@ -39,10 +50,21 @@ import kotlinx.coroutines.launch
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez ev true --ez tolls true  # route options
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez diag true  # last 100 lines of each debug log to logcat
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez go true    # Go on the route preview that's showing
- *   (add -p io.autonav.alerts: Android only delivers explicit broadcasts to manifest receivers)
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez engine true  # the alert engine's snapshot to alert-debug and logcat
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --es import f.gpx  # import files/bench/f.gpx as a set (see the import branch)
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez follow false  # stop the map following (true: like recenter)
+ *   (add -p uk.damiendye.autonav, the application ID: Android only delivers explicit broadcasts to manifest receivers)
  *   Every command lands in debug-nav.log as a `Bench` line (DESIGN.md §15.5).
+ *
+ * The commands up to `engine` work with no car session; the rest need the DHU connected and
+ * log "No car session" otherwise.
  */
 class BenchReceiver : BroadcastReceiver() {
+    /**
+     * Hilt entry point for the singletons a receiver can't have injected (a `BroadcastReceiver` isn't
+     * a Hilt component). The car-side ones (`pois()`, `alerts()`, `guidance()`) come through
+     * `CarDeps.from(context)` instead.
+     */
     @dagger.hilt.EntryPoint
     @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
     interface Deps {
@@ -51,6 +73,10 @@ class BenchReceiver : BroadcastReceiver() {
         fun eventLog(): io.autonav.alerts.diag.EventLog
     }
 
+    /**
+     * Dispatches one command. Every broadcast is logged first, so a drive's log shows what the bench
+     * did and when. Each branch returns; a broadcast with no known extra ends with a logcat hint.
+     */
     override fun onReceive(context: Context, intent: Intent) {
         val eventLog = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).eventLog()
         eventLog.record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Bench", describe(intent))
@@ -64,6 +90,7 @@ class BenchReceiver : BroadcastReceiver() {
             }
             return
         }
+        // Route options (DESIGN.md §8.3a), written through SettingsStore like the phone's switches, so the next preview sees them.
         if (intent.hasExtra("ev") || intent.hasExtra("tolls")) {
             val store = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).settings()
             App.appScope.launch {
@@ -84,6 +111,7 @@ class BenchReceiver : BroadcastReceiver() {
             // and a few positions to drive to.
             val n = intent.getIntExtra("osmcheck", 500)
             val repo = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).speedLimits()
+            // The whole check reads the limits file, so it runs on IO, never on the main thread the receiver was called on.
             App.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 val r = repo.reader() ?: run { Log.w(TAG, "OSM check: no limits file"); return@launch }
                 val rnd = java.util.Random(intent.getLongExtra("seed", 1L))
@@ -101,6 +129,7 @@ class BenchReceiver : BroadcastReceiver() {
                     val idx = io.autonav.alerts.core.osm.LimitIndex.build(r, io.autonav.alerts.core.osm.OsmSpeedLimits.around(lat, lon))
                     tried++
                     val a1 = idx.limitAt(lat, lon, h)?.toInt(); val a2 = idx.limitAt(lat, lon, h + 180)?.toInt(); val a3 = idx.limitAt(lat, lon, null)?.toInt()
+                    // At most 15 misses and the first 12 samples are logged: enough to drive to, without flooding logcat.
                     if (a1 == sg[4]) along++ else if (wrong.size < 15) wrong += "%.5f,%.5f h%.0f want %d got %s".format(lat, lon, h, sg[4], a1)
                     if (a2 == sg[4]) reverse++
                     if (a3 == sg[4]) still++
@@ -111,6 +140,7 @@ class BenchReceiver : BroadcastReceiver() {
             }
             return
         }
+        // The OpenStreetMap limits download (DESIGN.md §8.4a); download-any ignores the Wi-Fi-only setting for the bench.
         intent.getStringExtra("osm")?.let { cmd ->
             val repo = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).speedLimits()
             when (cmd) {
@@ -125,7 +155,7 @@ class BenchReceiver : BroadcastReceiver() {
         }
         intent.getStringExtra("import")?.let { name ->
             // Import a POI file from the app's own files/bench/ folder (put there with
-            //   adb push f /data/local/tmp/f && adb shell run-as io.autonav.alerts sh -c 'mkdir -p files/bench && cp /data/local/tmp/f files/bench/'
+            //   adb push f /data/local/tmp/f && adb shell run-as uk.damiendye.autonav sh -c 'mkdir -p files/bench && cp /data/local/tmp/f files/bench/'
             // because a debug app can't read /sdcard/Download without a storage grant). A .csv uses the
             // scenario layout lat,lon,name,speed,heading,dir (0-based columns; override with --es csvcols "0,1,2,3,4,5").
             // Re-importing the same file name replaces that set (TESTING.md §3 step 5, scenarios).
@@ -136,10 +166,12 @@ class BenchReceiver : BroadcastReceiver() {
                 latCol = cols[0], lonCol = cols[1], nameCol = cols.getOrNull(2), speedCol = cols.getOrNull(3),
                 bearingCol = cols.getOrNull(4), dirTypeCol = cols.getOrNull(5),
             ) else null
+            // The import outlives onReceive, so the receiver is kept alive until it finishes (or fails).
             val pending = goAsync()
             io.autonav.alerts.App.appScope.launch {
                 try {
                     val pois = io.autonav.alerts.car.CarDeps.from(context).pois()
+                    // Set names come from the file name (DESIGN.md §5), so the same file name means the same set: replace, don't duplicate.
                     val existing = pois.sets().values.firstOrNull { it.name == file.nameWithoutExtension || it.name == file.name }
                     val out = pois.importFile(android.net.Uri.fromFile(file), csvProfile = profile, replaceSetId = existing?.id)
                     val msg = "Import $name: ${if (out.failed) "FAILED " else ""}${out.imported} imported, ${out.skipped} skipped, set=${out.setId} ${out.message}"
@@ -162,6 +194,7 @@ class BenchReceiver : BroadcastReceiver() {
             eventLog.flush("bench")
             return
         }
+        // Everything below acts on the car screen, so it needs a live session (the DHU connected).
         val session = NavSession.active
         if (session == null) { Log.w(TAG, "No car session"); return }
         if (intent.getBooleanExtra("go", false)) {
@@ -178,6 +211,7 @@ class BenchReceiver : BroadcastReceiver() {
             }
             return
         }
+        // Makes the route preview show two rows for one route, to check the layout of the EV choice (DESIGN.md §8.3a).
         if (intent.hasExtra("tworoutes")) {
             session.deps.guidance().debugTwoChoices = intent.getBooleanExtra("tworoutes", false)
             Log.i(TAG, "Two route rows: ${session.deps.guidance().debugTwoChoices}")
@@ -221,6 +255,7 @@ class BenchReceiver : BroadcastReceiver() {
             }
             return
         }
+        // The More screen (DESIGN.md §8), for screenshots and the no-shake check (TESTING.md U2).
         if (intent.getBooleanExtra("more", false)) {
             push(session) { io.autonav.alerts.car.screens.MoreScreen(session.carContext, session) }
             return
@@ -236,12 +271,14 @@ class BenchReceiver : BroadcastReceiver() {
             return
         }
         intent.getStringExtra("contact")?.let { pickContact(session, it); return }
+        // Like tapping the zoom pill (DESIGN.md §8, zoom capped at 17); the zoom is read back after the map's animation.
         intent.getStringExtra("zoom")?.toFloatOrNull()?.let { z ->
             val h = Handler(Looper.getMainLooper())
             h.post { session.surface.zoom(z) }
             h.postDelayed({ Log.i(TAG, "Zoom now ${session.surface.map.value?.cameraPosition?.zoom}") }, 1_500)
             return
         }
+        // The same ACTION_NAVIGATE intent Assistant and other apps send (DESIGN.md §9): geo:lat,lon previews a route; geo:0,0?q= opens Search with the text.
         val uri = intent.getStringExtra("geo")?.let { Uri.parse("geo:$it") }
             ?: intent.getStringExtra("q")?.let { Uri.parse("geo:0,0?q=" + Uri.encode(it)) }
         if (uri == null) { Log.w(TAG, "Nothing to do: give --es q <text> or --es geo <lat,lon>"); return }
@@ -249,14 +286,19 @@ class BenchReceiver : BroadcastReceiver() {
         Handler(Looper.getMainLooper()).post { session.onNewIntent(Intent(CarContext.ACTION_NAVIGATE, uri)) }
     }
 
-    /** Same as tapping the first matching contact row in Search (DESIGN.md §8.3). */
-    /** Pushes a car screen on the main thread (for screenshots). */
+    /** Pushes a car screen on the main thread (for screenshots); the Car App Library is main-thread only (DESIGN.md §2). */
     private fun push(session: NavSession, screen: () -> androidx.car.app.Screen) {
         Handler(Looper.getMainLooper()).post {
             session.carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(screen())
         }
     }
 
+    /**
+     * Same as tapping the first matching contact row in Search (DESIGN.md §8.3): find the contact's
+     * address, locate it (cached geocode, biased near the car's last fix) and push the route preview.
+     * `goAsync()` keeps the receiver alive while the lookup runs; the whole thing runs on Main because
+     * the push must, and the lookups are suspend calls that switch to IO themselves.
+     */
     private fun pickContact(session: NavSession, name: String) {
         val pending = goAsync()
         App.appScope.launch(Dispatchers.Main) {
@@ -283,5 +325,6 @@ class BenchReceiver : BroadcastReceiver() {
         return b.keySet().sorted().joinToString(" ") { k -> "$k=${b.get(k)}" }.ifEmpty { "(no extras)" }
     }
 
+    /** logcat tag: the bench scripts and TESTING.md grep for `Bench:` lines. */
     private companion object { const val TAG = "Bench" }
 }

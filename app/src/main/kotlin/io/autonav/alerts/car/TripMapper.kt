@@ -20,9 +20,25 @@ import io.autonav.alerts.R
 import java.util.TimeZone
 import com.google.android.libraries.mapsplatform.turnbyturn.model.Maneuver as Sdk
 
-/** Navigation SDK turn-by-turn → Car App Library RoutingInfo / TravelEstimate / Trip (DESIGN.md §8). */
+/**
+ * Navigation SDK turn-by-turn → Car App Library `RoutingInfo` / `TravelEstimate` / `Trip`
+ * (DESIGN.md §8 "Navigating", §12.4). Pure mapping, no state: `HomeScreen` makes one per
+ * template for the host's turn card and travel-estimate card, `TripPublisher` one per update for
+ * the cluster trip, and `RoutePreviewScreen` one for its distance spans. All on the main thread,
+ * though nothing here needs it. A new instance is cheap, so none is kept.
+ *
+ * The turn card's text is the road only, as Google Maps shows it ("Main Rd / A61"), and the full
+ * instruction only when the step has no road (§8 "Looking like Google Maps"); the spoken
+ * directions keep the full instruction (§12.3).
+ *
+ * @param imperial miles and yards when true, kilometres and metres otherwise (§13 units).
+ */
 class TripMapper(private val carContext: CarContext, private val imperial: Boolean) {
 
+    /**
+     * The host's turn card for [info]: the current step with the distance to it, and the next
+     * step when the SDK has one. Null when there is no current step (before the first update).
+     */
     fun routingInfo(info: NavInfo): RoutingInfo? {
         val current = info.currentStep ?: return null
         val b = RoutingInfo.Builder()
@@ -37,10 +53,13 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
      * on its X). Distances as displayed, time in whole minutes, arrival to the minute.
      */
     fun displayKey(info: NavInfo): String {
+        // Compare the distance as the host will display it (rounded by `distance`), not the raw metres,
+        // so a metre of GPS drift doesn't count as a change (hard rule 3, no shake).
         fun shown(m: Int?) = m?.let { distance(it).let { d -> "${d.displayDistance}${d.displayUnit}" } } ?: "-"
         val cur = info.currentStep
         val next = info.remainingSteps?.firstOrNull()
         val secs = info.timeToFinalDestinationSeconds
+        // The arrival time to the minute: the card shows "HH:MM", so a second's change is no change.
         val arrivalMin = secs?.let { (System.currentTimeMillis() / 1000 + it) / 60 }
         return listOf(
             info.navState, cur?.maneuver, cur?.let { step(it).cue }, shown(info.distanceToCurrentStepMeters),
@@ -48,6 +67,11 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
         ).joinToString("|")
     }
 
+    /**
+     * The trip's remaining distance, time and arrival for the host's travel-estimate card (the one
+     * with Google's X, §8). Null until the SDK knows both the distance and the time to the
+     * destination. The arrival is wall-clock time in the phone's zone.
+     */
     fun travelEstimate(info: NavInfo): TravelEstimate? {
         val meters = info.distanceToFinalDestinationMeters ?: return null
         val seconds = info.timeToFinalDestinationSeconds ?: return null
@@ -66,6 +90,7 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
         val toStepM = info.distanceToCurrentStepMeters ?: 0
         val toStepS = info.timeToCurrentStepSeconds ?: 0
         val b = Trip.Builder().addStep(step(current), stepEstimate(toStepM, toStepS))
+        // The next step's estimate is measured from the car, so it is the current step's plus the leg between them.
         info.remainingSteps?.firstOrNull()?.let { next ->
             b.addStep(step(next), stepEstimate(toStepM + (next.distanceFromPrevStepMeters ?: 0), toStepS + (next.timeFromPrevStepSeconds ?: 0)))
         }
@@ -79,17 +104,26 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
         DateTimeWithZone.create(System.currentTimeMillis() + seconds.coerceAtLeast(0) * 1000L, TimeZone.getDefault()),
     ).setRemainingTimeSeconds(seconds.coerceAtLeast(0).toLong()).build()
 
+    // One host `Step` from one SDK step: the SDK's own manoeuvre bitmap when it gives one (so the
+    // car's arrow matches the SDK's), else our generic navigate icon; the host's manoeuvre type for
+    // clusters that draw their own arrows.
     private fun step(s: StepInfo): Step {
         val icon = s.maneuverBitmap?.let { CarIcon.Builder(IconCompat.createWithBitmap(it)).build() }
             ?: CarIcon.Builder(IconCompat.createWithResource(carContext, R.drawable.ic_action_navigate)).build()
         val type = maneuverType(s.maneuver)
         val m = Maneuver.Builder(type).setIcon(icon)
+        // The host requires an exit number on the enter-and-exit roundabout types and rejects 0.
         if (type in ROUNDABOUT_WITH_EXIT) m.setRoundaboutExitNumber((s.roundaboutTurnNumber ?: 1).coerceAtLeast(1))
         // The road only, as Google Maps shows it ("Main Rd / A61"); the full instruction when there's no road (DESIGN.md §8).
         val cue = s.simpleRoadName?.takeIf { it.isNotBlank() }?.let(::spacedRoad) ?: s.fullInstructionText ?: ""
         return Step.Builder(cue).setManeuver(m.build()).apply { s.simpleRoadName?.let { setRoad(it) } }.build()
     }
 
+    /**
+     * [meters] as the host displays it: whole miles from 10 mi, tenths of a mile from 0.2 mi, else
+     * yards to the nearest 10; metric the same way with kilometres and metres to the nearest 10.
+     * The host formats the number and unit itself from the `Distance`.
+     */
     fun distance(meters: Int): Distance = if (imperial) {
         val miles = meters / 1609.344
         when {
@@ -111,6 +145,13 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
 
         private val ROUNDABOUT_WITH_EXIT = setOf(Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CW, Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CCW)
 
+        /**
+         * The Car App Library manoeuvre type for a Navigation SDK manoeuvre code [m]. The host's set
+         * is smaller than the SDK's, so the sharp and U-turn off-ramps fold into the plain off-ramp
+         * of their side, and every roundabout entry folds into enter-and-exit for its direction (the
+         * exit number carries the detail). Anything unmapped is `TYPE_UNKNOWN`, which the host
+         * still draws with the SDK's bitmap.
+         */
         fun maneuverType(m: Int): Int = when (m) {
             Sdk.DEPART -> Maneuver.TYPE_DEPART
             Sdk.DESTINATION -> Maneuver.TYPE_DESTINATION

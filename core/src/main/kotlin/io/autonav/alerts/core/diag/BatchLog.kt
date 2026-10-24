@@ -27,8 +27,14 @@ data class FixSummary(
  * The buffer is bounded: past [maxLines] the oldest lines go and the block says `…dropped N`.
  * Files are capped at [maxBytes] with one rotation (`<name>.1.log`). Pure JVM; the Android side
  * (`EventLog`) owns the thread and the clock.
+ *
+ * Who calls it: `EventLog` keeps one per channel (`debug-nav`, `alert-debug`). [record] and [fix]
+ * come from any thread (they are synchronised and cheap); [appendBlock] runs on the `diag`
+ * `HandlerThread` every 15 s and on the forced flushes of §15.5. Times are epoch milliseconds
+ * (wall clock, formatted in [zone]); speeds m/s and headings degrees in the header.
  */
 class BatchLog(
+    /** Lines kept between flushes; beyond it the oldest go (the block then says how many). */
     private val maxLines: Int = 400,
     private val maxBytes: Long = DEFAULT_MAX_BYTES,
     private val zone: ZoneId = ZoneId.systemDefault(),
@@ -106,6 +112,7 @@ class BatchLog(
         return sb.toString()
     }
 
+    // Called on the diag thread only; the synchronised [buildBlock] is the only part that meets other threads.
     /**
      * Builds the block for [fromMs, toMs] and appends it to [file] in one write, rotating the file
      * to `<name>.1.log` first if it would pass [maxBytes]. A fresh file, and the first block of a
@@ -124,6 +131,7 @@ class BatchLog(
     }
 
     companion object {
+        /** 1 MB per file, with one rotation, so the two logs stay small however long the phone runs (§15.5). */
         const val DEFAULT_MAX_BYTES = 1_048_576L
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
         private val DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")

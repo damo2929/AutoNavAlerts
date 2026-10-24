@@ -28,7 +28,7 @@
 - Full navigation UI on the phone. The phone is for settings and import only.
 - Android Automotive OS (built-in car systems, as opposed to phone projection). The design doesn't rule it out but isn't aimed at it.
 - Offline maps or routing. Map tiles and routing come from the Navigation SDK and need a connection, though POIs work offline.
-- Google Play publication. The app is sideloaded.
+- Public Google Play publication (store listing, review, open or production tracks). Distribution is Play's **internal testing track** since 2026-10-24 (§1.3 Distribution, §13.3 "Google Play"); the ADB sideload is the developer path.
 - Sharing POI data between users. Each user brings their own data, as PGW licensing requires.
 
 ### 1.3 Decisions made
@@ -41,7 +41,7 @@
 | Map/routing/search | Google Navigation SDK + Places API (New) | Closest to the real Google Maps; supports Android Auto directly |
 | POI data | Generic framework. **PGW is the only automatic source** (RSS-triggered sync). **Free and other POI files are loaded by hand only**, with no automatic fetching or URL subscriptions. | Not limited to speed cameras; you decide when third-party data changes |
 | PGW format | iGO TXT as the main format | Carries direction type and bearing |
-| Distribution | **Today:** sideload by ADB with the Play Store recorded as the installer (`adb install -r -i com.android.vending`) and Android Auto developer mode. **Planned (owner's decision pending, 2026-10-24):** Google Play **internal testing track** with Play App Signing using the shared key, so the app is a normal Play-trusted car app. | Google's testing guide: Android Auto's "Unknown sources" setting "doesn't apply to apps built using the Android for Cars App Library"; such apps "must install from a trusted source such as Google Play", and the internal test track or internal app sharing do that "without going through the Google Play review process" (developer.android.com/training/cars/testing). On the owner's phone the sideloaded app runs on a head unit but is never kept in Android Auto's Customise Launcher list across a reboot (§16 row 10). |
+| Distribution | **Google Play internal testing track** (owner, 2026-10-24; live since 22:10 that day; current release 2 = `0.0.2-2026-10-24`, version code 2, published 22:28 with native debug symbols and no Console warning). Play App Signing with the **shared key** as the app signing key, so the SHA-1 is unchanged and the users' Maps keys, the OAuth client and existing installs stay valid. Testers join by the opt-in link in docs/INSTALLATION.md once their Google account is on the tester list; no Play review. The ADB sideload (`adb install -r -i com.android.vending`, Android Auto developer mode) stays as the **developer and bench path**. Rules in §13.3 "Google Play". | Google's testing guide: Android Auto's "Unknown sources" setting "doesn't apply to apps built using the Android for Cars App Library"; such apps "must install from a trusted source such as Google Play", and the internal test track or internal app sharing do that "without going through the Google Play review process" (developer.android.com/training/cars/testing). On the owner's phone the sideloaded app runs on a head unit but is never kept in Android Auto's Customise Launcher list across a reboot (§16 row 10). |
 | Phone UI | Settings, import and editing only | All driving use happens on the car screen |
 | People finder | Home Assistant REST + WebSocket API, `person.*` / `device_tracker.*` entities, long-lived access token (v1) | HA already brings together the family's phone, tracker-tag and companion-app locations; no new tracking setup needed |
 | GPS rate | Phone: **the rate the phone offers, never forced** (asked at 1 Hz, any faster fix it delivers accepted; owner, 2026-10-24, §10.2; was always 10 Hz from 2026-10-12). Car speed and car GPS: **the fastest rate the car can provide** (`UPDATE_RATE_FASTEST`, §10.6–10.7; owner, 2026-10-12) | Alerts fire at accurate distances and the map is always fresh; costs more battery when slow |
@@ -69,7 +69,7 @@
    - **Changing the key:** saving or removing it calls `NavigatorHolder.keyChanged()`, which forgets the applied key and cleans up the Navigator, so the next use re-applies the new one.
    - **Who pays:** Maps use is billed to the Cloud project that owns the key. Each user's key is in their own project (§13.1), so the maintainer is never billed for anyone else. The app's own registration project (§13.3) has no billing at all.
 2. An active PocketGPSWorld subscription.
-3. A phone with Android Auto developer mode and "Unknown sources" enabled, and/or the Desktop Head Unit (DHU) on the dev machine.
+3. A phone on the Play internal-testing list (§13.3 "Google Play"). For developer builds: a phone with Android Auto developer mode and "Unknown sources" enabled, and/or the Desktop Head Unit (DHU) on the dev machine.
 4. *(People finder, optional)* A Home Assistant instance the phone can reach away from home (Nabu Casa Cloud, or your own HTTPS domain or VPN), with the people to find set up as `person` entities fed by the HA Companion app or another tracker. You create a long-lived access token for a HA user who can read those entities.
 5. Dev machine (set up in phase 1):
    - Android SDK at `~/Android/Sdk`: platform **37.0** (compileSdk), build-tools 37, platform-tools, and the DHU (`extras/google/auto`).
@@ -80,64 +80,92 @@
 
 ## 2. System architecture
 
-```
-┌──────────────────────────── Phone (single APK, one process) ────────────────────────────┐
-│                                                                                          │
-│  Phone UI (Compose)            Background                                                │
-│  ┌──────────────────┐          ┌────────────────────┐     ┌───────────────────────────┐  │
-│  │ Onboarding/T&Cs  │          │ PgwSyncWorker      │     │ NavForegroundService      │  │
-│  │ POI sets / import│──import─▶│ (WorkManager)      │     │ (type=location)           │  │
-│  │ Icon / template  │          └─────────┬──────────┘     │ keeps Navigator, location │  │
-│  │ PGW account      │                    │ zip            │ and alert engine running  │  │
-│  │ Settings         │                    ▼                └────────────┬──────────────┘  │
-│  └────────┬─────────┘          ┌────────────────────┐                  │                 │
-│           │ SAF file           │ Importers          │                  │                 │
-│           └───────────────────▶│ iGO/RD/KML/GPX/    │                  │                 │
-│                                │ OV2/CSV            │                  │                 │
-│                                └─────────┬──────────┘                  │                 │
-│                                          ▼ staging → atomic swap       │                 │
-│                                ┌────────────────────┐                  │                 │
-│                                │ Room DB            │                  │                 │
-│                                │ PoiSet/Category/Poi│                  │                 │
-│                                └─────────┬──────────┘                  │                 │
-│                                          ▼                             │                 │
-│                                ┌────────────────────┐   fixes   ┌──────┴─────────────┐   │
-│                                │ PoiGridCache       │◀──────────│ AdaptiveLocation   │   │
-│                                │ (in-memory cells)  │           │ Controller (FLP,   │   │
-│                                └─────────┬──────────┘           │ 1 Hz+)             │   │
-│                                          ▼                      └────────────────────┘   │
-│                                ┌────────────────────┐                                    │
-│                                │ PoiAlertEngine     │──AlertEvent──┐                     │
-│                                └────────────────────┘              ▼                     │
-│                                                       ┌────────────────────────┐         │
-│  Google Navigation SDK                                │ AlertDispatcher        │         │
-│  ┌──────────────────────────────┐                     │  • car Alert (fg)      │         │
-│  │ Navigator (routing/guidance) │──TurnByTurn───┐     │  • nav HUN (bg)        │         │
-│  │ RoadSnappedLocationProvider  │               │     │  • TTS (nav audio)     │         │
-│  │ NavigationViewForAuto (map)  │               │     │  • cluster/trip msg    │         │
-│  │ Voice guidance               │               │     └───────────┬────────────┘         │
-│  └──────────────┬───────────────┘               │                 │                      │
-│                 │ VirtualDisplay/Presentation   ▼                 │                      │
-│  Car App Library (androidx.car.app)                               │                      │
-│  ┌────────────────────────────────────────────────────────────────┴─────────────────┐   │
-│  │ NavCarAppService → NavSession → Screens (NavigationTemplate family)              │   │
-│  │ AutoMapRenderer (SurfaceCallback) · PoiMarkerLayer · NavigationManager · AppMgr  │   │
-│  └───────────────────────────────────────────┬──────────────────────────────────────┘   │
-└──────────────────────────────────────────────┼──────────────────────────────────────────┘
-                                               │ Android Auto projection protocol
-                                  ┌────────────▼─────────────┐
-                                  │ Head unit (Android Auto) │
-                                  │ map surface, templates,  │
-                                  │ split screen with media, │
-                                  │ heads-up, cluster        │
-                                  └──────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph phoneui["Phone UI, Compose: MainActivity, PhoneScreens (§13)"]
+    PS["Settings, POI sets, Cameras, Reports"]
+  end
+  subgraph work["WorkManager jobs"]
+    FC["PgwFeedCheckWorker (daily RSS)"] --> SW["PgwSyncWorker (login, download, import)"]
+    SLW["SpeedLimitWorker (Geofabrik, once)"]
+    RSW["ReportSubmitWorker (phone Send only)"]
+  end
+  PS -- "file picked or shared" --> PR["PoiRepository: importers in :core, staging, atomic swap (§4.4, §5)"]
+  SW -- "zip, one set per file" --> PR
+  PR --> DB[("Room: AppDatabase (§4.1)")]
+  SLW --> OLF[("osm_limits file (§8.4a)")]
+  OLF --> SLR["SpeedLimitRepository: LimitIndex, LimitLookahead (:core)"]
+  subgraph loc["Location (§10)"]
+    FLP["FusedLocationProvider, 1 Hz asked"] --> ALS["AdaptiveLocationSource"]
+    CDS["CarDataSource: car speed and GPS, fastest rate"] --> ALS
+    ALS -- "FixEstimator (:core): speed, heading" --> FIX["Fix"]
+  end
+  FIX --> AC["AlertCoordinator: 5×5 cell cache, stage resolution, RouteMatcher"]
+  DB --> AC
+  SLR -- "roadAhead, limitAt" --> AC
+  GC["GuidanceController: destination, preview, guidance, GuidanceState (:core)"] -- "route points ahead (RoutePolyline)" --> AC
+  AC -- "AlertEngine (:core, §11)" --> AD["AlertDispatcher (§12)"]
+  AD -- "CarAlertSink" --> NS
+  AD -- "heads-up notification" --> NOTIF["Notification (CarAppExtender)"]
+  AD --> TTS["NavTts + SpeechScheduler (:core, §12.3)"]
+  DS["DirectionsSpeaker + GuidancePrompter (:core)"] --> TTS
+  TTS --> ENG["TextToSpeech on the navigation audio channel"]
+  subgraph sdk["Google Navigation SDK"]
+    NH["NavigatorHolder: Navigator, Places; applyApiKey() first (§1.4)"] --> NAV["Navigator"]
+    NAV -- "turn-by-turn" --> NUS["NavUpdatesService"]
+    NVA["NavigationViewForAuto (map)"]
+  end
+  NUS --> GC
+  GC --> DS
+  GC --> TP["TripPublisher + TripMapper (§9.3, §12.4)"]
+  subgraph carlib["Car App Library (androidx.car.app)"]
+    CAS["NavCarAppService (navigation category)"] --> NS["NavSession"]
+    NS --> SCR["Screens: HomeScreen, SearchScreen, RoutePreviewScreen, RecentsScreen, ContactsScreen, MoreScreen… (§8)"]
+    NS --> MS["MapSurface: VirtualDisplay, Presentation"]
+    MS --> NVA
+    MS --> OV["Overlays: SpeedPanelView, AlertBannerView, MapTypeButtonView, ZoomPillView, MapButtonView, LimitChangeMarker"]
+    NS --> PML["PoiMarkerLayer (§8.1)"]
+    TP -- "NavigationManager.updateTrip" --> HOST["Host: cluster, rail, travel-estimate card"]
+  end
+  carlib -- "Android Auto projection" --> HU["Head unit"]
+  EL["EventLog, DriveRecorder (§15.5)"] -.-> AC
+  EL -.-> NS
 ```
 
-**Process model:** one APK and one process. The car service and phone UI share the same Hilt singletons: `NavigatorHolder`, `PoiRepository`, `AdaptiveLocationSource`, `PoiAlertEngine`, `AlertDispatcher` and `EventLog`. The foreground service owns how long guidance and alerts live, so they survive the car screen being hidden behind media.
+*Class names are the real ones in the source tree (§3). Dotted lines are diagnostics.*
+
+**One fix, one alert, one sentence spoken** (the path every camera alert takes; threads in §2 "Threads"):
+
+```mermaid
+sequenceDiagram
+  participant SRC as FusedLocationProvider or CarDataSource
+  participant ALS as AdaptiveLocationSource
+  participant FE as FixEstimator (core)
+  participant AC as AlertCoordinator (alert thread)
+  participant AE as AlertEngine (core)
+  participant AD as AlertDispatcher
+  participant NS as NavSession and AlertBannerView (main thread)
+  participant TTS as NavTts and SpeechScheduler (core)
+  SRC->>ALS: Location (phone at its own rate, car at the fastest rate)
+  ALS->>FE: onFix(FixInput)
+  FE-->>ALS: Estimate (speed, heading, accuracy, sources)
+  ALS-->>AC: fixes flow emits Fix (conflated)
+  AC->>AC: candidates from the cell cache, RouteMatcher (route or road ahead)
+  AC->>AE: onFix(fix, candidates, matcher)
+  AE-->>AC: AlertEvent FIRST, SECOND, PASSING, ZONE_ENTER, ZONE_EXIT or OVERSPEED
+  AC->>AD: dispatch(alert, event, speak, chime)
+  AD->>NS: carSink.show(alert): banner on the map, else a heads-up notification
+  AD->>TTS: speak(text, priority, poiId, kind, distance)
+  TTS->>TTS: offer then next: QUEUED, REPLACED, SPOKEN, DROPPED stale, MUTED
+  TTS-->>NS: records shown in More, Alerts and alert-debug.log
+```
+
+
+**Process model:** one APK and one process. The car service and phone UI share the same Hilt singletons (`NavigatorHolder`, `PoiRepository`, `AdaptiveLocationSource`, `CarDataSource`, `AlertCoordinator`, `AlertDispatcher`, `NavTts`, `GuidanceController`, `SettingsStore`, `EventLog`, `DriveRecorder`, …; the car side reaches them through `CarDeps`, since the host constructs sessions and screens). **As built (2026-10-24): there is no foreground service of our own.** `NavCarAppService` is declared with `foregroundServiceType="location"` (the navigation category needs it) and the Android Auto host keeps it bound for as long as the car is connected, which is what keeps location and alerts alive while the car screen is hidden behind media: `NavSession.onCreate` starts `CarDataSource`, `AlertCoordinator` (and with it `AdaptiveLocationSource`) and the drive recorder, and `onDestroy` stops them. `NavUpdatesService` is a plain bound service the Navigation SDK sends the turn-by-turn feed to. Alerts with no car connected (phone only) are not built (README "Planned").
 
 **Threads:** all work uses coroutines.
 - `Dispatchers.IO` for Room and network.
-- One `alertScope` thread for the engine, so there's no contention and processing stays in order.
+- The engine runs on the app scope (`App.appScope`, `Dispatchers.Default`), not a dedicated thread (as built): `AlertCoordinator` collects the location source's `fixes` flow **conflated**, so fixes are handled one at a time in order and a slow fix drops the ones behind it, and the engine is guarded by one lock. The design's "one alert thread" is met by serialisation, not by a thread of its own.
 - The main thread only for the Car App Library and map calls.
 
 ---
@@ -145,94 +173,126 @@
 ## 3. Package layout and each class's job
 
 **Two Gradle modules**:
-- **`:core`**: plain Kotlin/JVM with no Android dependencies. It holds the logic that has to be right and is easy to unit-test on the JVM: geo maths, the grid, importers, the adaptive GPS rate, the PGW feed parser, alert maths and template rendering.
+- **`:core`**: plain Kotlin/JVM with no Android dependencies. It holds the logic that has to be right and is easy to unit-test on the JVM: geo maths, the grid, importers, the location estimator, the PGW feed and page parsers, the alert maths, the speech policy, the guidance prompts and the OpenStreetMap limit file.
 - **`:app`**: the Android parts (Car App Library, Navigation SDK, Room, WorkManager, Compose), which call into `:core`.
 
-The package names below are unchanged; classes marked as pure logic live in `:core` under `io.autonav.alerts.core.*`.
+The tree below is the source tree as it is (regenerated from the code on 2026-10-24; the namespace stays `io.autonav.alerts`, the application ID is `uk.damiendye.autonav`, §13.3). Each line is the class's job and the section that specifies it. Every class carries the same in its KDoc.
 
 ```
 app/src/main/kotlin/io/autonav/alerts/
-  App.kt                         Hilt application; creates notification channels
-  car/
-    NavCarAppService.kt          CarAppService; host validator (allow-all in debug, known hosts in release)
-    NavSession.kt                Session; creates the first screen; handles ACTION_NAVIGATE / geo: intents
-    screens/HomeScreen.kt        NavigationTemplate in browse/free-drive mode
-    screens/SearchScreen.kt      SearchTemplate + Places autocomplete
-    screens/PlaceListScreen.kt   PlaceListNavigationTemplate of results
-    screens/RoutePreviewScreen.kt RoutePreviewNavigationTemplate with alternatives
-    screens/NavigatingScreen.kt  NavigationTemplate with RoutingInfo + TravelEstimate
-    screens/PoiLayersScreen.kt   ListTemplate of set toggles (map / alerts)
-    CarIconFactory.kt            Icon id → CarIcon (cached)
-  nav/
-    NavigatorHolder.kt           Lazy NavigationApi.getNavigator; T&Cs state; Simulator in debug
-    GuidanceController.kt        Set destinations, choose a route, start/stop guidance, reroute events
-    DirectionsSpeaker.kt         Speaks the turn-by-turn directions through NavTts while the SDK's voice is off (§12.3)
-    TurnByTurnMapper.kt          NavInfo → RoutingInfo/Step/Maneuver/Lane, TravelEstimate
-    TripPublisher.kt             Session-level NavigationManager.navigationStarted/updateTrip/navigationEnded (§9.3, §12.4); today HomeScreen.publishTrip() + car/TripMapper.kt
-    AdaptiveLocationSource.kt    Fused location at the phone's own rate + car GPS/speed merge; heading and speed via the core estimators (§10)
-    RouteGeometry.kt             Current route polyline for route matching (§11; segment search in core `RoutePolyline`)
-    NavForegroundService.kt      Foreground service (type=location); ongoing notification
-  map/
-    AutoMapRenderer.kt           SurfaceCallback → VirtualDisplay → Presentation → NavigationViewForAuto
-    ZoomPillView.kt              Zoom in over zoom out in one pill (§8)
-    SpeedPanelView.kt            Current speed + road speed limit, one white pill (§8.4)
-    LimitChangeMarker.kt         The next limit change on the map: the number on a light-grey square (§8.4a)
-    PoiMarkerLayer.kt            Redraws on every GPS fix: cache + viewport → marker diff → GoogleMap markers (§8.1)
-  diag/
-    EventLog.kt                  The two 15-second-batched debug logs (§15.5)
-    DriveRecorder.kt             Opt-in CSV of every fix and car report for replay (§15.5)
-  poi/
-    model/ (PoiSet, PoiCategory, Poi, DirectionType, AlertDistanceMode, CsvMappingProfile)
-    db/ (AppDatabase, PoiSetDao, PoiCategoryDao, PoiDao, Converters)
-    Grid.kt                      Grid-cell maths (§4.3)
-    PoiRepository.kt             CRUD, viewport query, staging + swap
-    PoiGridCache.kt              In-memory cells around the vehicle
-    importers/ (PoiImporter, IgoTxtImporter, RadarDroidTxtImporter, NokiaTxtImporter,
-                KmlImporter, GpxImporter, Ov2Importer, CsvImporter, ZipUnpacker, ImportRunner)
-    sources/PgwClient.kt         Login + download (§6)
-    sources/PgwUpdateFeed.kt     speed-camera-rss.php reader → PgwRelease (version, date, summary)
-    sources/PgwFeedCheckWorker.kt Daily conditional GET of the feed; queues PgwSyncWorker on a new version
-    sources/PgwSyncWorker.kt     WorkManager job: login + download + import
-    reports/CameraReportRepository.kt  Queue of camera reports (Room) + local "My reports" POI set (§8.5)
-    reports/PgwReportSubmitter.kt      Logged-in POST to PGW's Submit Speed Cameras form
-    reports/ReportSubmitWorker.kt      Sends queued reports (after the drive, or right away if set)
-    sources/CredentialStore.kt   Keystore-encrypted credentials
-  places/
-    PlaceRepository.kt           Recents + favourites (Room); merge, dedupe, delete, hide (§8.2)
-    GoogleMapsImporter.kt        Takeout / on-device Timeline / Saved Places files → places
-    DataPortabilitySync.kt       Optional: Google Data Portability API (myactivity.maps, saved places)
-    ContactsSource.kt            ContactsContract postal addresses → geocoded places, with a cache (§8.3)
-    MapsShareReceiver.kt         Captures places shared from Google Maps (share sheet / maps links)
-  ha/
-    HaServerStore.kt             HA base URL + Keystore-encrypted long-lived token(s); several servers supported
-    HaClient.kt                  REST (/api/states, /api/services) + WebSocket (auth, subscribe_entities)
-    TrackedPeopleRepository.kt   Live StateFlow<List<TrackedPerson>> from the chosen entities
-    LiveTargetController.kt      Navigating to a moving person: re-route rules, freshness, location-update requests (§17.4)
+  App.kt                      Hilt application; the app-wide coroutine scope
   alerts/
-    AlertTemplateRenderer.kt     Template + POI + context → text (§7)
-    PoiAlertEngine.kt            The maths (§11)
-    AlertDispatcher.kt           Routes events to the right output (§12)
-    NavTts.kt                    TextToSpeech + audio focus; drives the core SpeechScheduler (§12.3)
-    AlertNotificationBuilder.kt  Nav-category heads-up with CarAppExtender
-  icons/
-    IconRepository.kt            Built-in + user icons; bitmap cache in two sizes
+    AlertCoordinator.kt       Runs AlertEngine on every fix; 5×5 cell cache; resolves each set's stages (lead-time slider); ActiveAlert for the UI; AlertTraceLog → alert-debug.log (§10–12, §11.1, §15.5)
+    AlertDispatcher.kt        Routes an AlertEvent: the car banner via CarAlertSink, else a navigation heads-up notification; speech via NavTts (§12, §12.1, §12.2)
+    NavTts.kt                 TextToSpeech on the navigation audio channel, audio focus (duck, never pause), drives the core SpeechScheduler; alerts and directions in one voice (§12.3)
+  car/
+    NavCarAppService.kt       The CarAppService Android Auto binds to; navigation category; host validator; geo:/NAVIGATE intents (§9.1)
+    NavSession.kt             One car session: creates MapSurface, PoiMarkerLayer, TripPublisher; starts/stops CarDataSource, AlertCoordinator and the recorder; CarAlertSink → banner (§8, §9)
+    CarDeps.kt                The car side's handle on the Hilt singletons (sessions and screens are built by the host) (§2)
+    TripMapper.kt             NavInfo → RoutingInfo, TravelEstimate, Trip; displayKey so a template is re-sent only on change (§8, §12.4)
+    TripPublisher.kt          NavigationManager.navigationStarted / updateTrip / navigationEnded from the session, whichever screen is on top (§9.3, §12.4)
+    screens/HomeScreen.kt     The map: free drive or guidance; action strip Search · Report · Recents · More; one-tap Report (§8, §8.5)
+    screens/SearchScreen.kt   SearchTemplate: Places autocomplete, recents in the empty state, contacts above the results (§8, §8.2, §8.3)
+    screens/RoutePreviewScreen.kt  Route alternatives, Go; Back abandons the preview (§8, §8.3a)
+    screens/ContactsScreen.kt Contacts with a postal address, recent first (§8.3)
+    screens/VoiceCommentScreen.kt  Step 2 of a report: the spoken comment from the car mic; no review or Send in the car (§8.5)
+    screens/ListScreens.kt    MoreScreen (live GPS/Alerts rows, re-sent only on change), RouteOptionsScreen, PoiLayersScreen, AlertsRecordsScreen, RecentsScreen, PlaceDetailScreen, ConfirmScreen (§8, §8.2, §8.3a, §12.3)
+    screens/CarUi.kt          Small helpers shared by the car screens
+  contacts/ContactsSource.kt  Contacts' postal addresses, geocoded on pick and cached (§8.3)
+  data/
+    AppDatabase.kt            Room database, migrations, DatabaseModule (§4.1, §11.1 MIGRATION_6_7)
+    Entities.kt               PoiSetEntity, PoiCategoryEntity, PoiEntity, PlaceEntity, CameraReportEntity, ContactGeocodeEntity and their enums (§4.1)
+    Daos.kt                   The DAOs for the above
+    PoiRepository.kt          Import pipeline (file, zip, PGW zip), staging and atomic swap, cell queries, `changes` flow (§4.4, §5)
+    IconRepository.kt         Built-in and user icons as cached bitmaps (§7.1)
+    StageRules.kt             The §11.1 stage checks shared by the set editor and the backup restore
+  diag/
+    EventLog.kt               The two always-on 15 s-batched logs, debug-nav.log and alert-debug.log (§15.5)
+    DriveRecorder.kt          Opt-in CSV of every fix and car report, for replay (§15.5)
+    DiagFiles.kt              Save/Share of the logs through the FileProvider; DiagnosticsSnapshot (§15.5)
+  map/
+    MapSurface.kt             SurfaceCallback → VirtualDisplay → Presentation → NavigationViewForAuto; overlays; visible/stable areas; gestures; traffic always on; zoom cap 17; FollowWatchdog (§8)
+    AlertBannerView.kt        The alert banner at the bottom of the map (§12.1)
+    SpeedPanelView.kt         Speed and limit in one white pill, bottom right (§8.4)
+    MapTypeButtonView.kt      The satellite toggle, top right (§8)
+    ZoomPillView.kt           + over − in one pill, right column (§8)
+    MapButtonView.kt          The round recenter button, right column; MapButtonColors (§8)
+    LimitChangeMarker.kt      The next limit change on the map (§8.4a)
+    PoiMarkerLayer.kt         Markers redrawn per fix as a diff; dimmed facing-away cameras; verdicts from the engine (§8.1)
+    IncidentReporting.kt      Google's incident reporting: detected when a future SDK offers it on Android Auto (§16 #21)
+  nav/
+    NavigatorHolder.kt        The Navigator and Places client, created only after applyApiKey() (§1.4, §9)
+    GuidanceController.kt     Destination, preview, routes, start/stop guidance (StopReason), route points ahead; GuidanceState in core (§8, §8.3a, §9.3)
+    NavUpdatesService.kt      The service the Navigation SDK sends the turn-by-turn feed to (§9.3)
+    DirectionsSpeaker.kt      Speaks the directions via NavTts while the SDK's voice is off; falls back to the SDK's voice (§12.3)
+    EcoRoutes.kt              Energy-efficient route token from the Routes API, on the user's own key (§8.3a)
+    LimitAnnouncer.kt         When to announce a limit change ahead (§8.4a)
+    AdaptiveLocationSource.kt The phone's fused location at its own rate, the car's GPS while fresh, the simulator on the bench → Fix via FixEstimator; EstimateMapper; LocationStats for More → GPS (§10)
+    CarDataSource.kt          Car speed and car GPS from CarHardwareManager at UPDATE_RATE_FASTEST (§10.6, §10.7)
+  osm/
+    SpeedLimitRepository.kt   The on-phone limit file: limitAt, roadAhead; LimitIndex and LimitLookahead from core (§8.4a)
+    SpeedLimitWorker.kt       The one-off Geofabrik download, streamed, as a foreground WorkManager job (§8.4a)
+    RemoteZip.kt              Reads one entry of a remote zip with HTTP range requests (§8.4a)
+  pgw/
+    PgwClient.kt              PocketGPSWorld login, feed check, download, report submission over HTTPS (§6, §8.5)
+    PgwWorkers.kt             PgwScheduler (daily), PgwFeedCheckWorker, PgwSyncWorker (never while guiding), ReportSubmitWorker (phone Send only) (§6.2, §6.2a, §8.5)
   phone/
-    MainActivity.kt + Compose screens (§13)
+    MainActivity.kt           The phone UI host; PhoneDeps (§13)
+    PhoneScreens.kt           The Compose screens: Settings (setup, key creation, backup, diagnostics), POIs, Cameras, Reports (§13, docs/SETTINGS.md)
+  places/PlacesSearch.kt      Places autocomplete with session tokens and location bias; recents (§8, §8.2)
+  reports/
+    CameraReportRepository.kt Reports captured in one tap, drafts, review and Send on the phone, "My reports" set (§8.5)
+    DrivingState.kt           "Never while driving" guard for sending (§8.5)
+    VoiceComment.kt           CarVoiceRecorder (car mic, 15 s) and Transcriber (on the phone) (§8.5)
   settings/
-    SettingsStore.kt             DataStore (units, voice, thresholds, map and PGW options)
+    SettingsStore.kt          DataStore of every setting; AppSettings, PgwState, SpeedSource (docs/SETTINGS.md)
+    SecretBox.kt              AES-GCM with an Android Keystore key, for the Maps key, PGW login and cookies (§6.1, §13)
+    MapsKeyCreator.kt         Creates the user's own Maps key in their Google Cloud account (§13.1)
+    SettingsBackup.kt         The settings backup file (§13.4)
+app/src/debug/kotlin/io/autonav/alerts/bench/BenchReceiver.kt   Debug-only adb broadcast hooks for the bench (TESTING.md §3)
 
-core/src/main/kotlin/io/autonav/alerts/core/   (pure JVM; only the files added 2026-10-12 are listed here)
-  diag/DriveLog.kt               Parses the drive recorder's CSV for replay (§15.5)
-  location/FixEstimator.kt       One class with the heading maths (adaptive chord + circular EMA + GPS-bearing blend, with an
-                                 accuracy estimate; §10.6a) and the speed maths (median of 3; displacement only without
-                                 hasSpeed(); §10.2). The text calls the two halves HeadingEstimator and SpeedEstimator.
-  nav/GuidancePrompter.kt        When and what to say for each direction: prepare / now / continue, spoken distances (§12.3)
-  alerts/SpeechScheduler.kt      Pure speech queue policy: replacement, staleness, record ring (§12.3)
-  nav/FollowWatchdog.kt          Pure decision: None(reason) / Refollow / Rebuild (§8)
-  nav/EcoReaskPolicy.kt          Pure decision: Skip(reason) / Ask for the EV re-ask (§8.3a)
-  nav/RoutePolyline.kt           Route segments ahead of the car for route matching (§11 step 4)
-  osm/LimitLookahead.kt          Next speed-limit change on this road or along the route (§8.4a)
+core/src/main/kotlin/io/autonav/alerts/core/
+  alerts/
+    AlertEngine.kt            The alert maths: Fix, AlertPoi, AlertStage, AlertEvent, RouteMatcher; the direction hard rule, stages, ratchet, zones (§11, §11.1)
+    AlertTrace.kt             Verdict and ClearReason enums; the engine's optional diagnostic hook (§11 step 10, §8.1)
+    AlertTemplateRenderer.kt  {category} {speed} {units} {distance} {direction} templates (§7.2)
+    SpeechScheduler.kt        The speech queue policy: replace, stale, never drop PASSING, record ring (§12.3)
+  contacts/ContactMatch.kt    Name matching, postcodes, geocode cache key (§8.3)
+  diag/
+    BatchLog.kt               One log channel's 15 s batches with a fix summary per block (§15.5)
+    DriveLog.kt               The drive recorder's CSV format, read for replay (§15.5)
+  geo/
+    Geo.kt                    Haversine, bearings, angle differences
+    LatLngLike.kt             A position type the app's map types can satisfy
+  location/FixEstimator.kt    Speed (median of 3; displacement only without hasSpeed) and heading (adaptive chord, circular EMA, GPS-bearing blend, stale guard, none when still) (§10.2, §10.6a)
+  nav/
+    GuidanceState.kt          Everything a route must not pass to the next; reset by stopGuidance (§9.3)
+    GuidancePrompter.kt       When and what to say for a direction: prepare, now, continue (§12.3)
+    RoutePolyline.kt          Route segments ahead of the car; cross-track distance (§11 step 4)
+    FollowWatchdog.kt         None / Refollow / Rebuild decision for the map camera (§8)
+    EcoReaskPolicy.kt         When to ask for an energy-efficient route again (§8.3a)
+  osm/
+    OsmSpeedLimits.kt         LimitSegment; maxspeed parsing, tiles, road matching (§8.4a)
+    OsmLimitFile.kt           The compact on-phone limit file: writer and reader (§8.4a)
+    LimitIndex.kt             A few tiles around the car in plain arrays; the nearest road's limit (§8.4a)
+    LimitLookahead.kt         The next limit change along the road or route; roadAhead (§8.4a)
+    LimitSnap.kt              Google's derived limit snapped to a real one (§8.4)
+    RoadAheadMatcher.kt       Free drive's RouteMatcher over the road ahead (§11 step 4)
+    ShapefileRoads.kt         Streaming readers for Geofabrik's roads shapefile (§8.4a)
+    NorthernIreland.kt        The border polygon used to keep Northern Ireland's roads (§8.4a)
+  pgw/
+    PgwPages.kt               PgwConfig (every URL, field and selector), page parsing, PgwDownload, PgwSubmission (§6.1, §8.5)
+    PgwUpdateFeed.kt          speed-camera-rss.php → PgwRelease; version comparison (§6.2)
+  poi/
+    PoiModel.kt               DirectionType, SpeedUnit, ZoneRole, ImportRow, RowError, ImportResult (§4.1, §5.1)
+    Grid.kt                   0.01° grid cells and neighbourhoods (§4.3)
+    importers/IgoTxtImporter.kt   iGO TXT, checked against PGW v24.101 (§5.2)
+    importers/PgwOv2.kt           PGW's OV2 download: direction and limit from each entry's name (§5.2a)
+    importers/OtherImporters.kt   FormatSniffer, KmlImporter, GpxImporter, Ov2Importer, CsvImporter, CsvProfile (§5.3–5.7)
+    importers/ZipEntries.kt       Zip reading via the central directory; LazyBytes (§5.8)
 ```
+
+Not in the code (designed only, §17–18 and README "Planned"): the Home Assistant people finder, EV chargers, Google Maps history imports, a phone "Send to car" target, phone-only background alerts.
 
 ---
 
@@ -240,121 +300,197 @@ core/src/main/kotlin/io/autonav/alerts/core/   (pure JVM; only the files added 2
 
 ### 4.1 Room entities
 
+```mermaid
+erDiagram
+  PoiSetEntity ||--o{ PoiCategoryEntity : "has"
+  PoiSetEntity ||--o{ PoiEntity : "has, cascade delete"
+  PoiCategoryEntity |o--o{ PoiEntity : "classifies"
+  CameraReportEntity }o--o| PoiEntity : "relatedPoiId hides, localPoiId is the My reports copy"
+  PoiSetEntity {
+    long id PK
+    string name
+    enum source "PGW, PGW_PENDING, REPORT, FILE"
+    string format
+    bool showOnMap
+    bool alertsEnabled
+    bool soundEnabled
+    string defaultIconId
+    string firstTemplate
+    string secondTemplate
+    string passingTemplate
+    StageCols first "enabled, mode, metres, seconds"
+    StageCols second
+    enum state "ACTIVE or STAGING"
+    long replacesSetId "the set this staging set replaces"
+    string version
+  }
+  PoiCategoryEntity {
+    long id PK
+    long setId FK
+    string sourceCode "e.g. iGO Type, OV2 name code"
+    string iconId "override, nullable"
+    string templates "per-stage overrides, nullable"
+    bool alertsEnabled
+    enum zoneRole "NONE, START, END, POINT"
+  }
+  PoiEntity {
+    long id PK
+    long setId FK
+    long categoryId FK
+    double lat
+    double lon
+    int speedLimit "in speedUnit"
+    enum directionType "ANY, ONE_WAY, BOTH"
+    float bearing "degrees true, nullable"
+    long gridCell "0.01 degree cell"
+    bool hiddenByReport
+  }
+  PlaceEntity {
+    long id PK
+    string placeId
+    enum kind "RECENT or FAVOURITE"
+    long lastUsedAt
+  }
+  CameraReportEntity {
+    long id PK
+    enum kind
+    double lat
+    double lon
+    float heading
+    int speedLimit
+    enum status "DRAFT, QUEUED, SENT, FAILED"
+    string audioPath
+    string transcription
+  }
+  ContactGeocodeEntity {
+    string addressHash PK
+    double lat
+    double lon
+    long updatedAt
+  }
+```
+
+*Columns from `data/Entities.kt`; the per-stage settings (`StageCols`) and the meaning of `bearing` are in the tables below.*
+
 ```kotlin
+// The Room entities exactly as declared in app/src/main/kotlin/io/autonav/alerts/data/Entities.kt (comments stripped; regenerated 2026-10-24).
+// Column meanings, units and which importer fills each one are in that file's KDoc.
+enum class PoiSourceType { PGW, PGW_PENDING, FILE, REPORT }
+enum class SetState { ACTIVE, STAGING }
+data class StageCols(
+    val enabled: Boolean,
+    val mode: DistanceMode,
+    val metres: Int,
+    val seconds: Int?,
+)
 @Entity(tableName = "poi_set")
-data class PoiSet(
-  @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val name: String,
-  val source: PoiSource,                 // PGW | FILE | REPORT ("My reports", §8.5)
-  val format: PoiFormat,                 // IGO_TXT | RADARDROID_TXT | NOKIA_TXT | KML | GPX | OV2 | CSV
-  val csvProfileId: Long?,               // when format == CSV
-  val enabled: Boolean = true,
-  val showOnMap: Boolean = true,
-  val alertsEnabled: Boolean = true,
-  val defaultIconId: String,             // "builtin:camera_fixed" | "user:<uuid>"
-  val defaultAlertTemplate: String,      // 1st alert, e.g. "{category} ahead, {speed} limit"
-  val secondAlertTemplate: String,       // e.g. "{category}, {distance}"
-  val passingAlertTemplate: String,      // e.g. "{category} now"
-  val soundEnabled: Boolean = true,      // spoken alerts for this set; turning it on makes the passing alert compulsory
-  @Embedded(prefix = "a1_") val firstAlert: AlertStage,   // §11.1
-  @Embedded(prefix = "a2_") val secondAlert: AlertStage,  // §11.1
-  val minZoom: Float = 11f,
-  val state: SetState = SetState.ACTIVE, // ACTIVE | STAGING
-  val replacesSetId: Long? = null,       // for staging sets
-  val poiCount: Int = 0,
-  val lastUpdated: Long
+data class PoiSetEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val source: PoiSourceType,
+    val format: String,
+    val enabled: Boolean = true,
+    val showOnMap: Boolean = true,
+    val alertsEnabled: Boolean = true,
+    val soundEnabled: Boolean = true,
+    val defaultIconId: String,
+    val firstTemplate: String,
+    val secondTemplate: String,
+    val passingTemplate: String,
+    @Embedded(prefix = "a1_") val firstAlert: StageCols,
+    @Embedded(prefix = "a2_") val secondAlert: StageCols,
+    val minZoom: Float = 11f,
+    val state: SetState = SetState.ACTIVE,
+    val replacesSetId: Long? = null,
+    val poiCount: Int = 0,
+    val version: String? = null,
+    val lastUpdated: Long,
 )
-
-@Entity(tableName = "poi_category",
-  foreignKeys = [ForeignKey(PoiSet::class, ["id"], ["setId"], onDelete = CASCADE)],
-  indices = [Index("setId"), Index(value = ["setId", "sourceCode"], unique = true)])
-data class PoiCategory(
-  @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val setId: Long,
-  val sourceCode: String,                // e.g. iGO TYPE "1", or KML folder name
-  val name: String,                      // "Fixed camera"
-  val iconId: String?,                   // null = use set default
-  val alertTemplate: String?,            // null = use set default (1st alert)
-  val secondAlertTemplate: String?,      // null = use set default
-  val passingAlertTemplate: String?,     // null = use set default
-  val alertsEnabled: Boolean = true,
-  val soundEnabled: Boolean? = null,     // null = use set's setting
-  @Embedded(prefix = "a1_") val firstAlert: AlertStage?,  // null = use set's setting
-  @Embedded(prefix = "a2_") val secondAlert: AlertStage?, // null = use set's setting
-  val zoneRole: ZoneRole = ZoneRole.NONE // NONE | ZONE_START | ZONE_END (average speed)
+@Entity(
+    tableName = "poi_category",
+    foreignKeys = [ForeignKey(entity = PoiSetEntity::class, parentColumns = ["id"], childColumns = ["setId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("setId"), Index(value = ["setId", "sourceCode"], unique = true)],
 )
-
-@Entity(tableName = "poi",
-  foreignKeys = [ForeignKey(PoiSet::class, ["id"], ["setId"], onDelete = CASCADE)],
-  indices = [Index(value = ["setId", "gridCell"]), Index("gridCell")])
-data class Poi(
-  @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val setId: Long,
-  val categoryId: Long?,
-  val lat: Double,
-  val lon: Double,
-  val name: String?,
-  val speedLimit: Int?,                  // in the source's units, see speedUnit
-  val speedUnit: SpeedUnit?,             // MPH | KMH
-  val directionType: DirectionType,      // ANY | ONE_WAY | BOTH
-  val bearing: Float?,                   // degrees true, 0–359.x, the direction of travel the POI applies to
-  val iconOverride: String?,
-  val alertOverride: String?,
-  val extra: String?,                    // JSON of unmapped source fields
-  val gridCell: Long,                    // §4.3
-  val hiddenByReport: Boolean = false    // "Camera not there" reported; cleared when the next PGW release still has it (§8.5)
+data class PoiCategoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val setId: Long,
+    val sourceCode: String,
+    val name: String,
+    val iconId: String? = null,
+    val firstTemplate: String? = null,
+    val secondTemplate: String? = null,
+    val passingTemplate: String? = null,
+    val alertsEnabled: Boolean = true,
+    val soundEnabled: Boolean? = null,
+    val zoneRole: ZoneRole = ZoneRole.NONE,
 )
-
-/** Settings for one configurable alert stage. Distances are stored in metres and edited in the user's units (yards/miles or metres/km). */
-data class AlertStage(
-  val enabled: Boolean,                  // 1st: always true; 2nd: can be turned off
-  val mode: AlertDistanceMode,           // FIXED | TIME
-  val metres: Int,                       // FIXED distance, or the minimum distance for TIME
-  val seconds: Int?                      // TIME: seconds ahead at current speed
+@Entity(
+    tableName = "poi",
+    foreignKeys = [ForeignKey(entity = PoiSetEntity::class, parentColumns = ["id"], childColumns = ["setId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index(value = ["setId", "gridCell"]), Index("gridCell"), Index("categoryId")],
 )
-
-@Entity(tableName = "place",
-  indices = [Index(value = ["placeId"], unique = true), Index("lastUsedAt")])
-data class Place(
-  @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val placeId: String?,                  // Google Place ID when known (used to dedupe)
-  val name: String, val address: String?,
-  val lat: Double, val lon: Double,
-  val kind: PlaceKind,                   // RECENT | FAVOURITE | HOME | WORK
-  val origin: PlaceOrigin,               // APP | GMAPS_TAKEOUT | GMAPS_TIMELINE | GMAPS_SAVED | GMAPS_PORTABILITY | GMAPS_SHARE
-  val lastUsedAt: Long, val useCount: Int = 1
+data class PoiEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val setId: Long,
+    val categoryId: Long?,
+    val lat: Double,
+    val lon: Double,
+    val name: String?,
+    val speedLimit: Int?,
+    val speedUnit: SpeedUnit?,
+    val directionType: DirectionType,
+    val bearing: Float?,
+    val gridCell: Long,
+    val hiddenByReport: Boolean = false,
+    @ColumnInfo(defaultValue = "NULL") val expiresAt: Long? = null,
+    @ColumnInfo(defaultValue = "NULL") val sourceId: String? = null,
 )
-
-/** Tombstone: a Google Maps entry the user deleted. Stops re-imports from bringing it back. */
-@Entity(tableName = "place_hidden", primaryKeys = ["key"])
-data class HiddenPlace(val key: String /* placeId, or "lat5,lon5,name" hash */, val hiddenAt: Long)
-
+enum class PlaceKind { RECENT, FAVOURITE }
+@Entity(tableName = "place", indices = [Index("lastUsedAt")])
+data class PlaceEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val placeId: String?,
+    val name: String,
+    val address: String?,
+    val lat: Double,
+    val lon: Double,
+    val kind: PlaceKind = PlaceKind.RECENT,
+    val lastUsedAt: Long,
+    val useCount: Int = 1,
+)
+enum class ReportKind { UNSPECIFIED, MOBILE_SEEN, NEW_FIXED, NEW_AVERAGE, NEW_RED_LIGHT, NEW_RED_LIGHT_SPEED, CAMERA_GONE, WRONG_LIMIT, WRONG_DIRECTION, WRONG_TYPE }
+enum class LimitSource { GOOGLE, CAMERA, NONE, USER }
+enum class ReportStatus { DRAFT, QUEUED, SENDING, SENT, FAILED, DISCARDED }
 @Entity(tableName = "camera_report", indices = [Index("status")])
-data class CameraReport(
-  @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val kind: ReportKind,          // MOBILE_SEEN | NEW_FIXED | NEW_AVERAGE | NEW_RED_LIGHT | NEW_RED_LIGHT_SPEED |
-                                 // CAMERA_GONE | WRONG_LIMIT | WRONG_DIRECTION | WRONG_TYPE
-  val lat: Double, val lon: Double,    // snapshot taken the moment Report was tapped
-  val heading: Float?, val speedMps: Float?, val accuracyM: Float?,
-  val road: String?,                   // Navigation SDK road name, if known
-  val speedLimit: Int?, val speedUnit: SpeedUnit?,
-  val directionType: DirectionType,    // default ONE_WAY using `heading`
-  val relatedPoiId: Long?,             // for CAMERA_GONE / WRONG_* reports about an existing camera
-  val comment: String?,                // added on the phone only
-  val createdAt: Long,
-  val status: ReportStatus,            // DRAFT | QUEUED | SENDING | SENT | FAILED | DISCARDED
-  val lastError: String?
+data class CameraReportEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val kind: ReportKind,
+    val lat: Double,
+    val lon: Double,
+    val heading: Float?,
+    val speedMps: Float?,
+    val accuracyM: Float?,
+    val road: String?,
+    val speedLimit: Int?,
+    val directionType: DirectionType,
+    val relatedPoiId: Long?,
+    val comment: String?,
+    val createdAt: Long,
+    val status: ReportStatus,
+    val lastError: String? = null,
+    val audioPath: String? = null,
+    val limitSource: LimitSource = LimitSource.NONE,
+    val localPoiId: Long? = null,
+    val transcription: String? = null,
 )
-
-@Entity(tableName = "csv_profile")
-data class CsvMappingProfile(
-  @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val name: String,
-  val delimiter: Char, val hasHeader: Boolean, val charset: String,
-  val latCol: Int, val lonCol: Int, val nameCol: Int?, val speedCol: Int?,
-  val bearingCol: Int?, val dirTypeCol: Int?, val categoryCol: Int?,
-  val dirTypeMap: String?,               // JSON: source value → DirectionType
-  val speedUnit: SpeedUnit
+@Entity(tableName = "contact_geocode")
+data class ContactGeocodeEntity(
+    @PrimaryKey val key: String,
+    val placeId: String?,
+    val lat: Double,
+    val lon: Double,
+    val formattedAddress: String?,
+    val updatedAt: Long,
 )
 ```
 
@@ -389,7 +525,19 @@ passing  = soundOn          // passing alert 1 s ahead (≥ 20 yd): compulsory w
    - Mark the new set ACTIVE.
 3. On failure the staging set is deleted, and the old set is never touched.
 4. At startup, any leftover STAGING sets are deleted.
-5. After the swap, `PoiRepository` emits a `setsChanged` Flow. `PoiGridCache` and `PoiMarkerLayer` reload.
+5. After the swap, `PoiRepository.changes` emits; `AlertCoordinator` drops its cell cache and `PoiMarkerLayer` reloads.
+
+```mermaid
+flowchart LR
+  A["Importer rows (ImportResult)"] --> B["PoiSetEntity state STAGING, replacesSetId = old set"]
+  B --> C["Rows in chunks of 2,000, one transaction each"]
+  C --> D{"ImportResult.failed? (over 20% bad rows, or none good)"}
+  D -- yes --> E["Delete the staging set. The old set is never touched"]
+  D -- no --> F["One transaction: copy icon and template choices by sourceCode, delete the old set (cascade), mark the new set ACTIVE"]
+  F --> G["PoiRepository.changes emits"]
+  G --> H["AlertCoordinator cache invalidated; PoiMarkerLayer reloads"]
+```
+
 
 ---
 
@@ -398,6 +546,20 @@ passing  = soundOn          // passing alert 1 s ahead (≥ 20 yd): compulsory w
 **No set name is asked for on import.** Names come from what's loaded: a single file is named after the file, and a **zip becomes one set per POI file inside it (never merged)**, each named after its file and using the zip's matching `.bmp`/`.png` as its icon. Re-importing a zip updates its sets, matched by **zip name and file name** (2026-10-13; by file name alone, a second zip with a file of the same name replaced the first zip's set). Two files with the same name in different folders of one zip both become sets (the later keeps its folder path), and a PGW download with two regions keeps each region's file of a type apart. Sets can be renamed in the set editor.
 
 **Free and third-party POI files are loaded by hand only.** You pick a file on the phone, through the Storage Access Framework or by sharing a file to the app. There's **no automatic download, scheduled refresh or URL subscription** for any source other than PGW (§6). Updating a free set means re-importing it by hand (§13 → set detail → **Re-import**), which keeps your icon, template and alert settings (§4.4).
+
+```mermaid
+flowchart TB
+  U["Phone: file picked (SAF) or shared to the app"] --> IF["PoiRepository.importFile"]
+  W["PgwSyncWorker: the downloaded zip"] --> IP["PoiRepository.importPgwZip"]
+  IF --> Q{"zip?"}
+  Q -- yes --> ZE["ZipEntries.read (central directory): every POI file inside becomes its own set, never merged; a matching .bmp or .png is its icon"]
+  Q -- no --> SN
+  IP --> ZE
+  ZE --> SN["FormatSniffer.detect(name, first bytes)"]
+  SN --> IM["IgoTxtImporter, PgwOv2, Ov2Importer, KmlImporter, GpxImporter or CsvImporter (CsvProfile)"]
+  IM --> IR["ImportResult: rows, errors, failed"]
+  IR --> ST["Staging set, chunks of 2,000, atomic swap (§4.4)"]
+```
 
 ### 5.1 Common interface
 ```kotlin
@@ -437,7 +599,7 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
 >
 > The single-file notes below still describe the file format, which is identical in every file.
  — **checked against real download v24.101 (07 Oct 26)**
-**What's in the package**: `idPackage=61`, "UK - Single file with all cameras", with "Include pMobile files" ticked. The zip contains:
+**What's in the package** (`idPackage=61`, "UK - Single file with all cameras", with "Include pMobile files" ticked: the iGO package the format notes below were checked against. **As built the downloads offered are `PgwDownload.OV2` = `idPackage=1`, the default, §5.2a, and `PgwDownload.IGO` = `idPackage=288`, "consolidated by type"; `PgwConfig.PACKAGE_UK_IGO` is an alias of the OV2 package.) The zip contains:
 
 | File | Contents |
 |---|---|
@@ -493,14 +655,14 @@ The user chooses **TomTom OV2** (default) or **iGO** on the Cameras tab (`PgwDow
   - **compass** (N, NE, … NW) is the direction of travel. It's within 22.5° of iGO's exact degrees for 98% of cameras. It's missing for 49 entries, mostly pending mobiles, which are treated as ANY.
   - **`R-`** means reversible (BOTH). It matches iGO DirType 2 for 3,955 of 3,958 cameras.
   - **`t`** means a temporary (roadworks) camera.
-  - **TYPE** is one of GATSO, MONITRON, TRUVELO, **REDSPEED** (316 entries: this is iGO type 11, so red light + speed), REDLIGHT, SPECS, MOBILE, pMOBILE.
+  - **TYPE** is one of GATSO, MONITRON, TRUVELO, **REDSPEED** (316 entries: this is iGO type 11, so red light + speed; as built both the OV2 REDSPEED entries and iGO type 11 get the red-light+speed icon, while the iGO category keeps the name "Fixed camera (type 11)": ISSUES N4), REDLIGHT, SPECS, MOBILE, pMOBILE.
   - **pgwId** is stored as `poi.sourceId` and sent as `idCam` when reporting a known camera (Action 2/3/4, §8.5).
   - **@mph**: `@0` means variable; a missing speed means it's still to be confirmed.
   - The copyright watermark entry in each file is skipped.
 - Verified on v24.101: **19,826 cameras**, identical to iGO.
 - The parser is `PgwOv2.kt` in `:core`, with tests and an optional `PGW_OV2_ZIP` real-file check.
 
-### 5.3 RadarDroid TXT / Nokia SpeedCam TXT
+### 5.3 RadarDroid TXT / Nokia SpeedCam TXT (designed, not built: no importer and no `PoiFormat` value exist as of 2026-10-24; Appendix B)
 - Similar layouts, with the exact columns confirmed from a sample file. Both get their own importer with a column table, sharing code with iGO through `DelimitedCameraImporter(columns: ColumnSpec)`.
 
 ### 5.4 KML (NDrive or generic)
@@ -535,7 +697,7 @@ The user chooses **TomTom OV2** (default) or **iGO** on the Cameras tab (`PgwDow
 - With a bearing column and no direction-type column, the direction type defaults to ONE_WAY. With neither, it's ANY.
 
 ### 5.8 Zip handling
-- `ZipUnpacker` lists the entries. If exactly one entry matches the chosen format, it's used. If several match, the user ticks which to import: one set each, or all merged into one set.
+- As built, `ZipEntries` (core) reads the zip through its central directory and **every POI file inside becomes its own set, never merged** (hard rule 9; §5 above). There is no picker and no merge option.
 - For PGW, the expected file name pattern lives in `PgwConfig`.
 - Zip-slip protection: entries are never written outside a temp directory. Total unpacked size is capped at 200 MB.
 
@@ -544,6 +706,28 @@ The user chooses **TomTom OV2** (default) or **iGO** on the Cameras tab (`PgwDow
 ## 6. PGW sync
 
 ### 6.1 Flow
+```mermaid
+sequenceDiagram
+  participant SCH as PgwScheduler (daily)
+  participant FCW as PgwFeedCheckWorker
+  participant CL as PgwClient
+  participant SW as PgwSyncWorker
+  participant GC as GuidanceController
+  participant PR as PoiRepository
+  SCH->>FCW: daily, conditional GET
+  FCW->>CL: checkFeed(etag, lastModified)
+  CL-->>FCW: PgwUpdateFeed.newest, a PgwRelease
+  alt newer than installedVersion, or Sync now / Force re-download
+    FCW->>SW: enqueue (any network, battery not low, KEEP)
+    SW->>GC: guiding?
+    GC-->>SW: yes, Result.retry (never a swap mid-journey, §6.2)
+    SW->>CL: login only if PgwPages.loginState says the session is gone
+    SW->>CL: download(PgwDownload): POST DownloadPackage, PgwPages.findZipLink, GET the zip to cacheDir
+    SW->>PR: importPgwZip(zip, version): one set per file, staging, swap (§4.4, §5.2a)
+    SW->>SW: save installedVersion, lastSyncAt and the result, post a quiet notification, delete the zip
+  end
+```
+
 0. **Update check (RSS)**: `PgwUpdateFeed` reads `https://www.pocketgpsworld.com/speed-camera-rss.php` (§6.2). The download in steps 1–4 only runs when the feed shows a **newer database version** than the one installed, or when you press **Sync now** or **Force re-download**.
 1. `CredentialStore`: the username and password are encrypted with AES-GCM, using a key in the Android Keystore with no user authentication required, so it works in the background. The encrypted data is kept in DataStore.
 2. `PgwClient`, using OkHttp with an in-memory cookie jar, a 30 s timeout and a User-Agent naming the app:
@@ -553,12 +737,12 @@ The user chooses **TomTom OV2** (default) or **iGO** on the Cameras tab (`PgwDow
       - A login counts as successful if a session cookie is set and the response contains "logout" / "My Account" and **not** the `user_password` field.
       - The session cookie's name and how long it lasts are recorded in phase 1. The cookie jar is persisted in encrypted storage so a weekly sync can usually skip logging in. If any request gets the login form back, the app logs in again once and retries.
    2. **Generate the download**: POST to `modules.php?name=Cameras` with
-      `op=DownloadPackage&idPackage=61&getPmob=yes&getFrance=no&getSwiss=no`
+      `op=DownloadPackage&idPackage=<package>&getPmob=yes&getFrance=no&getSwiss=no` (as built `idPackage` is 1 for the default OV2 download or 288 for iGO by type, §5.2; 61 was the original iGO single file)
       - These are the same fields the site's own **"Download Same Format (Current Version)"** button sends.
       - `System=iGO` and `voicePack=noVoice` are only used on the page to fill the package list. They're sent anyway to match the browser.
       - Other regions use the `idPackage` values found: EUR 155, AUS/NZ 156, AFRICA 157, USA 158, ASIA 159, CANADA 193, plus the "consolidated by type" variants 288–294. A region picker in the phone app is left to v2.
    3. **Find the link**: the response contains a link matching `/temp/users/pgpsw-speed-cams-[A-Za-z0-9]+-\((\d+)-(\d+)\)\.zip`, which includes the version, for example `pgpsw-speed-cams-tETDF-(24-101).zip`. The version in the file name is checked against the RSS release.
-   4. **Download**: GET the temp URL. **No cookie is needed**: it was fetched without authentication and returned `200 application/zip`, 216 KB. It's streamed to `cacheDir/pgw/<version>.zip` with checks on Content-Type `application/zip`, a size over 50 KB, and that the expected entries are inside. The zip is **deleted after import**.
+   4. **Download**: GET the temp URL. **No cookie is needed**: it was fetched without authentication and returned `200 application/zip`, 216 KB. It's streamed to `cacheDir/pgw-<millis>.zip` (as built) with checks on Content-Type `application/zip`, a size over 50 KB, and that the expected entries are inside. The zip is **deleted after import**.
 3. `ImportRunner` runs the iGO importer into staging and swaps it in (§4.4). On a re-sync, existing categories keep the user's icon and template choices.
 4. Save `lastSyncAt`, `lastSyncResult`, `poiCount` and **`installedVersion`** (from the feed item that triggered the sync). Post a quiet notification with the result, including the feed's own summary, for example "PGW database updated to 24.101: 20 static and mobile cameras added/removed/modified across the databases (12,345 cameras)".
 
@@ -589,7 +773,7 @@ All URLs, form field names and selectors live in **`PgwConfig`** (a single Kotli
 - **Backoff**: the feed check retries with backoff on network errors, capped at the next periodic run. The download uses exponential backoff from 1 h, up to 3 attempts. After that `pendingRelease` is kept and retried on the next feed check.
 - **Sync now** checks the feed and, if a newer version exists, downloads it. **Force re-download** downloads without checking the version. Both only need a network connection.
 - The phone's PGW screen shows: the installed version and date, the latest version in the feed with its summary, the last feed check, and the last download result.
-- **While driving**: the download and import into staging go ahead in the background (one small request, no effect on the car screen). Only the **swap** into the live set is held back until guidance ends or the car disconnects, so the cameras don't change mid-journey. If nothing is being guided, the swap happens straight away.
+- **While driving** (as built): `PgwSyncWorker` returns `Result.retry()` at the start while guidance is running, so the whole job, download included, waits for guidance to end; the design's finer split (download and staging in the background, only the **swap** held back until guidance ends or the car disconnects, so the cameras don't change mid-journey. If nothing is being guided, the swap happens straight away.
 
 ### 6.2a Fully automatic update (no user action)
 When the feed shows a new release, the app does the whole update **by itself**, with no prompt, no tap and no browser:
@@ -600,7 +784,7 @@ PgwFeedCheckWorker (daily, conditional GET)
        └─ PgwSyncWorker (queued at once, any network)
             1. Load the saved cookie jar → GET Cameras page; still logged in?
                └─ no → log in with the saved credentials (Keystore, §6.1 step 1), once
-            2. POST op=DownloadPackage (idPackage=61, getPmob=yes) → find the temp zip link
+            2. POST op=DownloadPackage (idPackage=1 OV2 or 288 iGO, getPmob=yes) → find the temp zip link
             3. GET the zip (no cookie needed) → check it → Release.txt version == feed version?
             4. Import into staging (sc + pMobile sets) → swap now, or after the drive
             5. installedVersion = new version; quiet notification with the release summary
@@ -614,7 +798,7 @@ PgwFeedCheckWorker (daily, conditional GET)
 | Failure | Behaviour |
 |---|---|
 | Wrong credentials | Mark `AUTH_FAILED` and stop scheduling until the credentials are re-entered; notify once |
-| Site layout changed (selectors miss) | `PARSE_FAILED`; keep the old data; notify the user to use manual import |
+| Site layout changed (selectors miss) | `PARSE_FAILED`; keep the old data; as built the status line on the Cameras tab says so (no notification yet, and the AUTH_FAILED / subscription notifications have no "Fix" action) |
 | Captcha / 2FA detected | Same as above, plus a "Log in via browser" hint |
 | Network/timeout | Retry with backoff |
 | RSS feed unreachable / changed format | The feed check fails quietly. The 14-day safety net still syncs. Diagnostics show "Update feed: last OK N days ago" |
@@ -651,19 +835,19 @@ The user accepts this risk for personal use.
 ## 7. Icons and alert templates
 
 ### 7.1 Icons
-- **Built-in pack** (vector drawables): `camera_fixed`, `camera_mobile`, `camera_average`, `camera_redlight`, `camera_redlight_speed`, `camera_variable`, `school`, `hazard`, `fuel`, `ev_charge`, `parking`, `toilet`, `pin_red/blue/green/yellow`, `star`.
-- **User icons**: a PNG or SVG picked through the Storage Access Framework. It's copied to `filesDir/icons/<uuid>.png` (SVG is drawn once to a 256 px PNG) and its id is `user:<uuid>`.
+- **Built-in pack** (vector drawables, as built in `IconRepository.BUILTIN`): `camera_fixed`, `camera_mobile`, `camera_average`, `camera_redlight`, `camera_redlight_speed`, `camera_pending`, `pin`, `hazard`, `school`, `fuel`, `ev`, `star`. (The designed `camera_variable`, `ev_charge`, `parking`, `toilet` and coloured pins were not built.)
+- **User icons**: a bitmap image (PNG, BMP, JPEG, anything `BitmapFactory` decodes; SVG is not supported as built) picked through the Storage Access Framework or found in a POI zip. It's scaled to 256 px wide, saved under `filesDir/icons/` and its id is `user:<uuid>`.
 - **Rendering**: `IconRepository` makes and caches two bitmaps per icon:
   - **map marker**: 48 dp. **A camera is drawn with its icon alone, never with a speed-limit badge**, at the usual icon size (80% of the marker: drawn larger, at 95%, it covered the head of the flat direction arrow under it on the tilted map, which hard rule 1 needs; bench, 2026-10-23, owner: "speed camera have lost the directional maker"): the PocketGPSWorld download icon (`user:pgw_…`, which shows the limit itself) or, where there's none, the built-in camera icon (`builtin:camera_…`, e.g. My reports) (owner, 2026-10-23: "only use the large icon if 2 icons are presented for a POI", "am getting the icon and a little speed limit in the bottom corner on the map icon", "would prefer you to use the supplied icon only for the camera POIs"). Other POIs with a speed limit get the badge (red circle with the number), cached per (icon, speed). `IconRepository.isCameraIcon` decides.
   - **CarIcon**: 64 dp, for alerts, list rows and the notification.
-- Cache: an LRU of 64 entries.
+- Cache: an LRU of 96 bitmaps (as built).
 
 ### 7.2 Template placeholders
 | Placeholder | Value |
 |---|---|
 | `{category}` | Category name, or the set name if the POI has no category |
 | `{speed}` | Speed limit converted to the user's units (number only) |
-| `{units}` | "mph" / "kilometres per hour" (spoken form) |
+| `{units}` | On screen "mph" / "km/h"; spoken "miles per hour" / "kilometres per hour" (as built, `AlertTemplateRenderer`) |
 | `{distance}` | Distance spoken in the user's units, rounded: "400 yards", "a quarter of a mile", "300 metres" |
 | `{direction}` | "ahead" / "on your left" / "on your right", from the bearing to the POI relative to your heading |
 
@@ -687,17 +871,40 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 |---|---|---|
 | Home / free-drive | `NavigationTemplate` (no RoutingInfo) | Map, speed panel (§8.4), the map buttons. No message card for the next camera: the alert banner (§12.1) is the only alert surface on the map (one element per job, the hard rule below; 2026-10-13) |
 | Search | `SearchTemplate` | Places autocomplete (debounced 300 ms, biased to your location); favourites and recents (including Google Maps imports) when the box is empty (§8.2). **Voice** (2026-10-12): the host delivers spoken input through `onSearchSubmitted` (Assistant's "navigate to …" arrives as the navigate intent, §9.1); both paths are handled and logged to `debug-nav` (`Search textChanged/submitted/voice len=`, `Places textSearch n= ms= status=`, `NavigateIntent`). `submit()` shows "Searching…", then the results or "No results for …", never a silent empty list; a contacts-only submit searches contacts and Places |
-| Recents | `PlaceListNavigationTemplate` | Recents and favourites with markers; delete action on each row, plus Clear all (§8.2) |
-| Place detail | `MapWithContentTemplate` / `PaneTemplate` | Navigate · Favourite · Remove from recents |
+| Recents | `ListTemplate` (as built; designed as `PlaceListNavigationTemplate` with markers) | Recents and favourites as name and address rows; delete action on each row, plus Clear all (§8.2) |
+| Place detail | `MessageTemplate` (as built, older hosts only; designed as `MapWithContentTemplate` / `PaneTemplate`) | Navigate · Remove from recents (Favourite: designed, not built) |
 | Contacts | `ListTemplate` (`ContactsScreen`) | Contacts with a postal address to pick from, recently used first; one row per contact ("Home · 12 High St", with the known distance); a last "Search contacts…" row opens the typed search (§8.3) |
-| Results | `PlaceListNavigationTemplate` | Up to 6 places with distance and a marker on the map |
+| Results | rows of the `SearchTemplate` (as built; a separate `PlaceListNavigationTemplate` with map markers was designed, not built) | Up to 6 places with their address |
 | Route preview | `RoutePreviewNavigationTemplate` | Up to 3 alternative routes (ETA, distance, traffic delay); "Go". **Back** clears the destination (`abandonPreview()`) (2026-10-12; before, the route stayed drawn with no Stop action), also while the route is still loading: a route the SDK finishes after Back is cleared, never left drawn (code review, 2026-10-23). **A preview while guiding** (owner, 2026-10-13): the new destination's route is drawn in place of the guided one; **Go** switches guidance to it; **Back** re-routes to the destination being guided (its route token when it had one, else the SDK's route with the tolls option), restores its route choices and note, and logs `preview abandoned (restored guided route)`. Before, Back left the preview's route as the live one. **Go** first remembers the destination in Recents from the app scope (`NonCancellable`, awaited before the screen pops: a `lifecycleScope` insert was cancelled by `popToRoot()`, so Recents stayed empty after a real drive, 2026-10-12; logged `Places remember "<title>"`); Search and Recents reload their lists on resume |
 | Navigating | `NavigationTemplate` + `RoutingInfo` + `TravelEstimate` | Maneuver icon, distance, road, lanes, next step; ETA, remaining time and distance |
 | Arrival | `CarToast` | **Arrival ends guidance at once** (owner, 2026-10-13): on the final destination's arrival event, while guiding, `stopGuidance(ARRIVED)` runs and a toast says "You have arrived at <title>"; the host's card goes, the strip goes back to Search · Report · Recents · More, and the camera-reports reminder fires (§8.5). Before, an arrived card stayed up and the host's card (with the only X) had gone, so nothing could clear it. An arrival event while not guiding is ignored and logged |
-| POI layers | `ListTemplate` (pushed; map stays behind) | Per set: toggle map, toggle alerts; global "Mute alerts for 30 min" |
+| POI layers | `ListTemplate` (pushed; map stays behind) | Per set: one on/off toggle (`enabled`), with its alerts state shown as text (as built; a separate alerts toggle was designed). Mute is on More |
 | **People** | `PlaceListNavigationTemplate` | Tracked HA people with live markers, distance, "updated 2 min ago", and accuracy; tap → Find (§17.3) |
 | **Report** (one tap) | `MessageTemplate` "Listening…" with Done / Skip | One tap saves the report, then an optional spoken comment from the car mic; Undo alert (§8.5). No review or Send on the car. |
-| More | `ListTemplate` | Recents · POI layers · Mute alerts 30 min · Satellite map · Route options (avoid tolls, energy-efficient EV routes) · Diagnostics (debug) |
+| More | `ListTemplate` | Recents · POI layers · Mute alerts 30 min · Satellite map · Route options (avoid tolls, energy-efficient EV routes) · **Alerts** (the speech records) · **GPS** (feeds and rates), both live rows in every build (as built; a debug-only Diagnostics row was the original design) |
+
+```mermaid
+flowchart LR
+  Home["HomeScreen (NavigationTemplate)"] -- "Search" --> Search["SearchScreen"]
+  Home -- "Recents" --> Recents["RecentsScreen"]
+  Home -- "More" --> More["MoreScreen"]
+  Home -- "Report, one tap: saved at once" --> Voice["VoiceCommentScreen"]
+  Search -- "pick a place" --> Preview["RoutePreviewScreen"]
+  Search -- "contacts row" --> Contacts["ContactsScreen"]
+  Contacts --> Preview
+  Recents --> Preview
+  Recents -- "older hosts" --> Detail["PlaceDetailScreen"]
+  Recents -- "Clear all" --> Confirm["ConfirmScreen"]
+  More --> Layers["PoiLayersScreen"]
+  More --> Options["RouteOptionsScreen"]
+  More --> Records["AlertsRecordsScreen"]
+  More --> Recents
+  Preview -- "Go: startGuidance" --> Home
+  Preview -- "Back: abandonPreview" --> Home
+  Host["Host X on the travel-estimate card"] -- "onStopNavigation: stopGuidance(HOST)" --> Home
+```
+
+*The screen graph as pushed by `ScreenManager` in `car/screens/*.kt`. There is no separate "navigating" screen: `HomeScreen` shows the turn card while guiding.*
 
 **Action strip** (up to 4): Search · **Report** · Recents · More (owner, 2026-10-12). **There is no stop action of ours** (owner, 2026-10-13: "we just need one, the Google provided one"): the host draws its own **travel-estimate card** at the bottom-left from the `Trip` we publish (§9.3), with Google's **X** on it, and that X is the one cancel on the car screen. It reaches us as `NavigationManagerCallback.onStopNavigation` → `stopGuidance(HOST)`; arrival ends guidance by itself (Arrival row above). The card stays through a reroute: the last travel estimate is sent again while the SDK reroutes or before its next update, so the X never blinks out mid-route (code review, 2026-10-23). While a route is set, Recents leaves the strip to keep the screen estate (it stays in More and in Search's empty state), so the strip reads Search · Report · More. A "Stop navigation" / "Done" text action was tried (2026-10-12/13) and dropped: it was the second cancel next to Google's. Mute is in More ("Mute alerts for 30 min"); the alert banner on the map has no buttons (§12.1). People (§17, not built) will live in More. **All its actions are persistent** (`Action.FLAG_IS_PERSISTENT`), so the host never fades them out: the user wants the four top-right buttons always on screen.
 **Hard rule: nothing is shown on the car screen that doesn't work, and nothing is shown twice** (owner, 2026-10-13): no touch reaches the SDK view, so every SDK-drawn control is dead on Android Auto and is turned off and hidden (step 6 above); our own views only exist where they take a tap or show live data (speed panel, banner, buttons). **One element per job, to keep the screen estate**: the host's turn card is the only turn card (no SDK header), Google's X on the host's travel-estimate card is the only stop (no stop action of ours; the SDK's own ETA card stays off), our column's recenter is the only recenter, our speed panel the only speed and limit, the banner the only alert surface on the map (no message card for it). A UI change isn't done until a DHU screenshot during guidance shows nothing dead and nothing duplicated (TESTING.md §6.2, U1).
@@ -711,9 +918,23 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 - **Day and night follow the car**, as Google Maps does: the map is set with the inner `NavigationView.setForceNightMode(FORCE_DAY / FORCE_NIGHT)` from `CarContext.isDarkMode` (before, the SDK chose night from its own clock, so our map was dark while the car, and Google's map, were in day), and our buttons are white with dark icons by day and dark grey with white icons by night. Re-applied on `onCarConfigurationChanged`; redrawn only when it changes. Same for the satellite toggle and the zoom pill.
 - Not ours, so left as the host or the SDK draws them: the travel-estimate card, the route line colour, the current-road chip.
 
+```mermaid
+flowchart TB
+  SC["Host SurfaceContainer (SurfaceCallback)"] --> VD["VirtualDisplay (own content only)"]
+  VD --> PR["Presentation"]
+  PR --> FL["FrameLayout"]
+  FL --> NV["NavigationViewForAuto: the SDK map; its own ETA card, header, recenter, speedometer, trip bar and limit icon turned off (hard rule 2)"]
+  FL --> SP["SpeedPanelView, bottom right (§8.4)"]
+  FL --> AB["AlertBannerView, bottom centre (§12.1)"]
+  FL --> COL["Right-hand column (hard rule 4): MapTypeButtonView, ZoomPillView, MapButtonView recenter"]
+  NV --> MK["PoiMarkerLayer and LimitChangeMarker: GoogleMap markers (§8.1, §8.4a)"]
+  WD["FollowWatchdog (core)"] -. "SDK road-snapped fixes" .-> NV
+  TAP["onClick from the host"] -. "hit-test: banner, toggle, pill, recenter, marker" .-> FL
+```
+
 **Visible and stable areas**: `MapSurface` hears `onVisibleAreaChanged` and `onStableAreaChanged`. The **visible** area places our overlays (speed pill, banner, buttons) clear of the host's cards. **The host only reports a change** (bench, 2026-10-23, twice: after our app was restarted under a connected head unit, no visible area arrived until the media panel was toggled, so the car sat at the centre of the whole surface and the buttons and speed panel were laid out under the host's panel; owner: "you should be dynamically doing the controls"). The host keeps its own idea of what it last told us and that outlives our process, so **the last visible and stable areas, and the map panel, are kept per surface size** (`map_surface` preferences, key `w×h`) and **restored when the surface comes back** before any callback (logged `visible restored …`); a later callback replaces them. A report narrower or shorter than 200 px (a screen without the map, or nothing) changes nothing and is not kept (review, 2026-10-24); the areas belong to the surface they were reported for, so a surface of another size starts from its own saved areas, and a report that came before the surface existed is saved once it does. They're only ever read for the same surface size, so a different head unit starts from the whole surface as before. The map's **camera padding no longer follows either area** (owner, 2026-10-23, below): it is fixed, so the car never moves when the host's cards come and go.
 
-**Where the car sits** (owner, 2026-10-23: "have our nav car in the middle about 2 cm up", "the camera alert should be able to display without overlaying the car", then "Bottom centre, car higher" when asked where the banner goes, and "the nav view and free drive should have the car arrow in the same place consistently"): **the same spot in free drive and in guidance**, **centred across the map the host shows**, **just above the camera alert banner**, which stays bottom centre (§12.1). The centre is worked out from the host's visible area each time it changes (owner, 2026-10-23: "you should be working out the centre position dynamically", after the host split the screen for a media panel and the car, centred on the whole 1816 px surface, sat off to the right of the 1283 px map): left and right padding are the visible area's left inset and right inset (12 px each on the full-screen DHU; 424 and 636 px with the host's media panel up; 1216 and 12 px when our map is the host's narrow right-hand panel, so neither inset is capped at half the width: a first version capped them and put the car left of that panel's middle, bench 2026-10-23), keeping a padded map at least 200 px wide, top the action strip's clearance (`ACTION_STRIP_CLEAR_DP`). **The host's cards never push the car** (owner, 2026-10-23, with a route preview up beside the media panel: "still not in the center", "under navigation it doesn't work so you're not using a common code base for it": the host's visible area counts its own route-preview card as a 440 px left inset, as it does the turn card in guidance, so the car sat at the visible area's middle, 894 px on the screen, not the 1192 px map panel's, 688): the car is centred across the **map panel**, the part of the surface the host shows our map in (full width, or the left or right panel beside the host's media panel), and the host's cards over the map (route-preview card, turn card, travel-estimate card, message card, all on the left, §8 driver side) float over it. The panel is worked out from the host's own reports: a visible area reported **while our template carries no left card** is the panel; a report while a card is up keeps the panel and measures the card's inset (its left minus the panel's left); if such a report moves the right edge by more than 32 px the host has re-laid out with the card up, so the panel's right edge is the new one and its left is the report's left less the last card inset measured. Whether a left card is up is ours to know (`MapSurface.hostCard`, set by `HomeScreen` when its template carries navigation info, a travel estimate or the set-up message, and by `RoutePreviewScreen` while it shows), never guessed from pixel sizes. Until a panel is known the visible area is used. The overlays (speed panel, buttons, banner) keep placing themselves from the visible and stable areas, clear of the cards; only the car's horizontal centre uses the panel. Logged `panel Rect(…) card= inset=` when the panel changes, bottom the banner's height plus its 16 px margin and an 8 dp gap. The top and bottom are fixed, not from the visible area, because its top changes between free drive and guidance. Before this, it followed the stable area, whose top and left change between free drive and guidance (28 vs 92 px on the DHU), so the car jumped when a route started; and the turn card's inset pushed the car right of centre. A first try that also lifted it 2 cm was too high (owner). **The SDK's navigation camera from the start** (owner, 2026-10-23: "why is the car where it is on the screen, that's not to the design spec"): after a fresh start, before any route, the SDK's `followMyLocation(TILTED)` gave a flat map with the car centred and ignored our padding; once a route had run, free drive was tilted with the car in its place. The inner `NavigationView`'s navigation UI is switched on with the SDK controls (`setNavigationUiEnabled(true)` when `isNavigationUiEnabled` is false, logged as `navUi=`), **and the padding is set and the car followed again right after** (bench, 2026-10-23: after a reinstall in free drive the follow had been sent while it was still off, so the car stayed centred, flat, as a dot; and switching it on drops the padding, so the car then sat mid-screen), and its own controls stay off (§8 step 6). **Free drive matches guidance** (owner, 2026-10-23: "free drive and route should have the car in the same place"): with the same padding the SDK centres the car in free drive but puts it near the bottom when guiding (91.7% of the padded height from its top, measured on the DHU, `GUIDED_CAR_FRACTION`). So in free drive the top padding is raised until the padded area's centre is that same point; `MapSurface` re-applies the padding when guidance starts or stops. Bench check: a free-drive and a guidance screenshot have the car arrow at the same pixel (±10 px).
+**Where the car sits** (owner, 2026-10-23: "have our nav car in the middle about 2 cm up", "the camera alert should be able to display without overlaying the car", then "Bottom centre, car higher" when asked where the banner goes, and "the nav view and free drive should have the car arrow in the same place consistently"): **the same spot in free drive and in guidance**, **centred across the map the host shows**, **just above the camera alert banner**, which stays bottom centre (§12.1). The centre is worked out from the host's visible area each time it changes (owner, 2026-10-23: "you should be working out the centre position dynamically", after the host split the screen for a media panel and the car, centred on the whole 1816 px surface, sat off to the right of the 1283 px map): left and right padding are the visible area's left inset and right inset (12 px each on the full-screen DHU; 424 and 636 px with the host's media panel up; 1216 and 12 px when our map is the host's narrow right-hand panel, so neither inset is capped at half the width: a first version capped them and put the car left of that panel's middle, bench 2026-10-23), keeping a padded map at least 200 px wide, top the action strip's clearance (`ACTION_STRIP_CLEAR_DP`). **The host's cards never push the car** (owner, 2026-10-23, with a route preview up beside the media panel: "still not in the center", "under navigation it doesn't work so you're not using a common code base for it": the host's visible area counts its own route-preview card as a 440 px left inset, as it does the turn card in guidance, so the car sat at the visible area's middle, 894 px on the screen, not the 1192 px map panel's, 688): the car is centred across the **map panel**, the part of the surface the host shows our map in (full width, or the left or right panel beside the host's media panel), and the host's cards over the map (route-preview card, turn card, travel-estimate card, message card, all on the left, §8 driver side) float over it. The panel is worked out from the host's own reports: a visible area reported **while our template carries no left card** is the panel; a report while a card is up keeps the panel and measures the card's inset (its left minus the panel's left); if such a report moves the right edge by more than 32 px the host has re-laid out with the card up, so the panel's right edge is the new one and its left is the report's left less the last card inset measured. Whether a left card is up is ours to know (`MapSurface.homeCard` as built, set by `HomeScreen` when its template carries navigation info; the derived `hostCard` is preview-or-home, a travel estimate or the set-up message, and by `RoutePreviewScreen` while it shows), never guessed from pixel sizes. Until a panel is known the visible area is used. The overlays (speed panel, buttons, banner) keep placing themselves from the visible and stable areas, clear of the cards; only the car's horizontal centre uses the panel. Logged `panel Rect(…) card= inset=` when the panel changes, bottom the banner's height plus its 16 px margin and an 8 dp gap. The top and bottom are fixed, not from the visible area, because its top changes between free drive and guidance. Before this, it followed the stable area, whose top and left change between free drive and guidance (28 vs 92 px on the DHU), so the car jumped when a route started; and the turn card's inset pushed the car right of centre. A first try that also lifted it 2 cm was too high (owner). **The SDK's navigation camera from the start** (owner, 2026-10-23: "why is the car where it is on the screen, that's not to the design spec"): after a fresh start, before any route, the SDK's `followMyLocation(TILTED)` gave a flat map with the car centred and ignored our padding; once a route had run, free drive was tilted with the car in its place. The inner `NavigationView`'s navigation UI is switched on with the SDK controls (`setNavigationUiEnabled(true)` when `isNavigationUiEnabled` is false, logged as `navUi=`), **and the padding is set and the car followed again right after** (bench, 2026-10-23: after a reinstall in free drive the follow had been sent while it was still off, so the car stayed centred, flat, as a dot; and switching it on drops the padding, so the car then sat mid-screen), and its own controls stay off (§8 step 6). **Free drive matches guidance** (owner, 2026-10-23: "free drive and route should have the car in the same place"): with the same padding the SDK centres the car in free drive but puts it near the bottom when guiding (91.7% of the padded height from its top, measured on the DHU, `GUIDED_CAR_FRACTION`). So in free drive the top padding is raised until the padded area's centre is that same point; `MapSurface` re-applies the padding when guidance starts or stops. Bench check: a free-drive and a guidance screenshot have the car arrow at the same pixel (±10 px).
 
 **Map surface set-up** (`MapSurface`, created by `NavSession.onCreateScreen` with `applyKey = { deps.navigator().applyApiKey() }`):
 - **Order of events:**
@@ -742,10 +963,10 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 - `onClick` on the satellite toggle switches the map type; on the alert banner it dismisses the alert; on a marker it shows the POI's details in a short-lived `Message`.
 - **One view with and without a route, hard set and enforced** (owner, 2026-10-24: "we need to fix the view so its the same with and without a route set and it need to be hard set and enforced", after the SDK's guidance camera zoomed the Banbury drive out to about 15 on the motorway while free drive sat at 17): the car view is **the same camera in free drive and in guidance**: tilted, heading up, at `followZoom` (17 unless the user chose another with + / −), the car at its one spot ("Where the car sits"), on both map types. **Hard set**: while the map follows the car (and the route preview isn't up) the map's minimum and maximum zoom preferences are both `followZoom` (`MapSurface.applyZoomLock`, part of `applyView`), so nothing the SDK's camera does on its own (its guidance auto-zoom for speed or an approaching turn) can change the zoom; the SDK's `setZoomLevel` alone did not hold it. The lock is lifted (3–17) while the user has panned, so pinch and + / − zoom freely there, and while the route preview shows its overview; it comes back on recenter and when the preview closes (`previewShowing`'s setter goes through `applyView`). **Enforced**: on every SDK fix the follow watchdog counts the car as in place only when its position projects inside the padded map **and** the camera's zoom is within 0.25 of `followZoom` (`carInPlace`); otherwise it follows again, in guidance and free drive alike. Logged in the `view` line as `zoom=17.0!` while locked.
 - **Zooming keeps your zoom**: while the map follows the car, + / − (and a pinch) keep following but at the zoom you chose (`followMyLocation(TILTED, FollowMyLocationOptions.setZoomLevel(z))`, `z` between 3 and 17), so the SDK's own follow zoom can't pull it back in while you look along the route. Zoom from a panned map just zooms. The follow watchdog re-follows at your zoom too. **The zoom you chose lasts the whole car session, route or no route** (owner, 2026-10-24: "when I set + or - that zoom should be persistent for the whole session regardless of route or not"): `followZoom` is kept by `MapSurface` for the session; a route starting or ending, the preview closing, a surface rebuild, the watchdog and **recenter** all follow at that zoom (recenter used to reset it to 17; now it only puts the car back). It starts at 17 when the car session opens.
-- Recenter turns camera-follow back on and hands the zoom back to the SDK (its automatic follow zoom).
+- Recenter turns camera-follow back on **at the zoom you chose** (`followZoom`; owner, 2026-10-24 "Zooming keeps your zoom"), never the SDK's automatic follow zoom.
 
 **Traffic**: Google's live traffic layer is **always on** (the user's rule). It's turned on when the map is created and when the map type changes, and checked on every SDK fix (alongside the follow watchdog), so if guidance, a rebuild or the SDK ever turns it off it's back within one fix. There's no setting to turn it off.
-- **Zoom cap 17** (`MapSurface.MAX_ZOOM`, `setMaxZoomPreference`): the road map (`MAP_TYPE_NORMAL`) **stops drawing traffic when zoomed in closer than 17**, while satellite/hybrid keeps it, and the follow camera's default zoom is 18, so the road map showed no traffic at all while following. Found on the bench, 2026-10-12, by stepping the zoom: 18 → none anywhere; 17.5 → none in towns (Banbury: no colour at 17.5, a red queue on Hennef Way at 17), only thin green on some motorways; 17, 16.5, 16 → traffic everywhere. It isn't the 3D buildings (turning them off changed nothing) or the SDK's map style (an empty style changed nothing). With the cap, the follow camera and the + button stop at 17, and traffic looks the same on both map types. The map **always follows at an explicit zoom** (17 until the user picks another; recenter goes back to 17): left to itself, the SDK's follow camera drew closer than the cap (it reported 17 but showed no traffic in Banbury), and with `setZoomLevel(17)` the same spot showed amber and red on Hennef Way.
+- **Zoom cap 17** (`MapSurface.MAX_ZOOM`, `setMaxZoomPreference`): the road map (`MAP_TYPE_NORMAL`) **stops drawing traffic when zoomed in closer than 17**, while satellite/hybrid keeps it, and the follow camera's default zoom is 18, so the road map showed no traffic at all while following. Found on the bench, 2026-10-12, by stepping the zoom: 18 → none anywhere; 17.5 → none in towns (Banbury: no colour at 17.5, a red queue on Hennef Way at 17), only thin green on some motorways; 17, 16.5, 16 → traffic everywhere. It isn't the 3D buildings (turning them off changed nothing) or the SDK's map style (an empty style changed nothing). With the cap, the follow camera and the + button stop at 17, and traffic looks the same on both map types. The map **always follows at an explicit zoom** (17 until the user picks another; recenter keeps the chosen zoom): left to itself, the SDK's follow camera drew closer than the cap (it reported 17 but showed no traffic in Banbury), and with `setZoomLevel(17)` the same spot showed amber and red on Hennef Way.
 
 **Satellite view** (`satelliteMap` setting, default off):
 - A toggle sits in the **top-right corner of the map**, 16 px inside the visible area's top-right corner. The action strip is **persistent** (`Action.FLAG_IS_PERSISTENT` on all its actions), so it's always on screen and the column always sits **below** it: its top is the largest of the visible area's top, the stable area's top and 88 dp, plus 16 px. (The host sometimes reports a visible area that ignores the strip, right after the map starts; going by that alone put the toggle under the strip.) Each change is logged ("Visible area Rect(…)"). On the 1080p bench with the strips hidden the visible area is `Rect(12, 12 - 1180, 1044)`. It's a dark pill (150 × 52 dp) with the layers icon and the type a tap switches to: "Satellite" on the road map, "Map" on satellite.
@@ -753,10 +974,10 @@ All screens use **NavigationTemplate-family** templates, so the map always stays
 - The host decides where its map action strip goes (bottom right), so the toggle and the zoom/recenter column are our own views on the surface and their taps come through `onClick` (each tap is logged: "Tap at x,y"). For rotary-only cars, and in case a host doesn't pass taps through, the same switch is a **Satellite map** toggle row in More, and "Satellite map in the car" on the phone's Settings → Car screen. All three write the one setting, and the map follows the setting, so they always agree. **Ending (or starting) a route keeps the view** (owner, 2026-10-23: "on exiting the route we change view", "and we shouldn't"): on Google's X the SDK moved its camera away (909 m from the car 0.8 s later, until the watchdog re-followed), so when guidance starts or stops the padding is set and the car followed again, at the chosen zoom and map type, while following: at once and again at 0.3, 0.7, 1.2 and 2 s, because the SDK moves its camera a moment after `stopGuidance` returns (a follow that is already in place changes nothing on screen). **One view for both map types** (owner, 2026-10-23: "going forward all view information should apply to map and sat views there should be no separate pathways"): the road map and satellite are the same map with a different `mapType`; padding, follow, zoom, tilt, the car's place, markers, buttons, banner and every rule in this section apply to both through the same code, and nothing may branch on the map type except the `mapType` value itself (and traffic, which is on for both). **One frame function** (owner, 2026-10-23: "review the code and look for cleaner ways to implement the same logic so that sat and map views share a common code path"): `MapSurface.applyView(reason, settle)` is the only place the camera frame is set (our overlays, the map padding, then the follow while following; `settle` adds the re-follows over 2 s), and every event that can move the camera or change the frame goes through it: map ready, map type change, navigation UI switched on, guidance start/stop (settled), visible or stable area change, zoom, recenter, the watchdog's re-follow. `setMapType` is the only place the map type is set. One `view <reason>` line in `debug-nav` per event. The follow itself is sent only when the frame (padding or follow zoom) changed or the SDK's camera was moved or dropped (map ready, map type, navigation UI on, recenter, the watchdog, guidance start/stop and its settle re-follows), never for a host area report that left the padding as it was (review, 2026-10-24: a `stable` report a few ms after `visible` sent a second camera request for nothing); the overlays are laid out again only when the areas or the surface changed, and the saved areas are written only when they differ from what was saved. **Switching the map type keeps the car followed** (owner, 2026-10-23: "changing to sat view stops the car being followed"): setting `mapType` drops the SDK's follow camera, and the car drove off the top of the screen (the watchdog only acts past 500 m), so after a change the padding is set and the car followed again at the chosen zoom when it was following.
 
 ### 8.1 POI marker redraw (on every GPS update)
-`PoiMarkerLayer` redraws on **every fix** (cheaply: the on-screen POIs are picked without allocating, a distance sort runs only when more than 200 are on screen, and each marker image is handed to the map once and reused) from `AdaptiveLocationSource`, so it runs at up to the 10 Hz GPS rate. It also redraws on camera idle (the user panned or zoomed) and on `setsChanged`.
+`PoiMarkerLayer` redraws on **every fix** (cheaply: the on-screen POIs are picked without allocating, a distance sort runs only when more than 100 are on screen (`MAX_MARKERS / 2`, as built), and each marker image is handed to the map once and reused) from `AdaptiveLocationSource`, so it runs at up to the 10 Hz GPS rate. It also redraws on camera idle (the user panned or zoomed) and on `setsChanged`.
 
 Each redraw:
-1. **Pick the POIs to show**: POIs from `PoiGridCache` (in-memory, with no Room access per fix) in sets with `showOnMap`, inside the current visible bounds **plus a 10% margin** (implemented 2026-10-12; before, markers at the edge dropped out), where the visible bounds are **the whole car screen**: its four corners projected onto the map (`Projection.fromScreenLocation`), never `visibleRegion`, which is only the padded area, **clipped to 3 km around the car** (review, 2026-10-24: on the tilted follow camera the top corners sit near the horizon and the bounds would span tens of km², so every redraw would rank far more POIs than can be drawn; nothing beyond 3 km is legible at those zooms) (owner, 2026-10-23: "they should be on the map as soon as the placement is on screen"; in free drive the top padding that keeps the car low covered most of the screen, so a camera was drawn only once it reached the lower part, about 20 s after it came into view at motorway speed), and at or above each set's `minZoom`. **Cameras on our road that point the other way are drawn dimmed, never hidden** (owner, 2026-10-12): the engine's `classify(fix, pois, route)` gives each nearby POI a `Verdict` (`AHEAD_OK`, `WRONG_DIRECTION` (shown dimmed, "facing away"), `OFF_ROAD`, `BEHIND`, `OUT_OF_RANGE`, `NOT_MOVING`, `NO_HEADING`; the same enum the trace writes, §11 step 10) and the layer uses it: one source of truth, so the layer no longer has its own 30° "ahead" test. `WRONG_DIRECTION` (shown dimmed, "facing away") needs a **confident mismatch**: the camera's bearing against our heading exceeds 45° + `headingAccuracyDeg` (§10.6a, clamped 5–20°, 10° when unknown), the car is moving, and the POI is on our road (on the route, or within the side allowance of our line: 40 m, 100 m for mobile sites) and ahead or behind within 45°, within 3 km; with **hysteresis**, a dimmed camera goes back to full colour only once the mismatch drops below 40°. These cameras never alert (§11 step 3), so they're dimmed with their arrow visible, which shows at a glance that a silent camera faces the other way; nothing is dimmed before the heading is known; cameras on other roads are drawn as before. (Found on the bench: a pending mobile site for westbound traffic on our eastbound road, silent as it should be. The first fix hid such cameras altogether, which in the real car looked like cameras vanishing on approach whenever the heading or the 8-point compass bearing in the data was a little off.) While the user is panning, the bounds come from the camera, and a Room viewport query fills in cells outside the cache once the camera goes idle.
+1. **Pick the POIs to show**: POIs from `PoiGridCache` (in-memory, with no Room access per fix) in sets with `showOnMap`, inside the current visible bounds **plus a 10% margin** (implemented 2026-10-12; before, markers at the edge dropped out), where the visible bounds are **the whole car screen**: its four corners projected onto the map (`Projection.fromScreenLocation`), never `visibleRegion`, which is only the padded area, **clipped to 3 km around the car** (review, 2026-10-24: on the tilted follow camera the top corners sit near the horizon and the bounds would span tens of km², so every redraw would rank far more POIs than can be drawn; nothing beyond 3 km is legible at those zooms) (owner, 2026-10-23: "they should be on the map as soon as the placement is on screen"; in free drive the top padding that keeps the car low covered most of the screen, so a camera was drawn only once it reached the lower part, about 20 s after it came into view at motorway speed), and at or above each set's `minZoom`. **Cameras on our road that point the other way are drawn dimmed, never hidden** (owner, 2026-10-12): the engine's `classify(fix, pois, route)` gives each nearby POI a `Verdict` (`AHEAD_OK`, `WRONG_DIRECTION` (shown dimmed, "facing away"), `OFF_ROAD`, `BEHIND`, `OUT_OF_RANGE`, `NOT_MOVING`, `NO_HEADING`; the same enum the trace writes, §11 step 10) and the layer uses it: one source of truth, so the layer no longer has its own 30° "ahead" test. `WRONG_DIRECTION` (shown dimmed, "facing away") needs a **confident mismatch**: the camera's bearing against our heading exceeds 45° + `headingAccuracyDeg` (§10.6a, clamped 5–20°, 10° when unknown), the car is moving, and the POI is on our road (on the route, or within the side allowance of our line: 40 m, 100 m for mobile sites) and ahead or behind within 45°, within 3 km; with **hysteresis**, a dimmed camera goes back to full colour only once the mismatch drops below 40°. These cameras never alert (§11 step 3), so they're dimmed with their arrow visible, which shows at a glance that a silent camera faces the other way; nothing is dimmed before the heading is known; cameras on other roads are drawn as before. (Found on the bench: a pending mobile site for westbound traffic on our eastbound road, silent as it should be. The first fix hid such cameras altogether, which in the real car looked like cameras vanishing on approach whenever the heading or the 8-point compass bearing in the data was a little off.) While the user is panning, the bounds come from the camera; on camera idle the markers are redrawn from the cache only (as built: no Room viewport query; cells the car hasn't been near stay empty until it gets there).
 2. **Rank and cap**: sort by distance to the vehicle and keep the closest **200**.
 3. **Work out each marker's state**:
    - **icon**: §4.2 resolution
@@ -794,11 +1015,11 @@ Each redraw:
 
 **Car screen use**:
 - With the search box empty, the `SearchTemplate` shows **Home**, **Work**, then favourites and recents ordered by `lastUsedAt`. The car's list limit applies, usually 6 rows while driving, with more when parked (`ConstraintManager.CONTENT_LIMIT_TYPE_LIST`).
-- Each row shows the name, distance and a small origin badge (a "G" for Google Maps imports).
+- Each row shows the name and address (as built; the distance and a "G" origin badge for Google Maps imports were designed, not built).
 - Recents are also on the HomeScreen action strip as **"Recents"**, which opens `RecentsScreen`: a `PlaceListNavigationTemplate` showing markers on the map.
 
 **Deleting from the car screen**:
-- Each row in `RecentsScreen` has a **secondary action** (`Row.addAction`, car API ≥ 6) with a delete icon. Tapping it removes the row straight away and shows a 5 s `Alert` with **Undo**.
+- Each row in `RecentsScreen` has a **secondary action** (`Row.addAction`, car API ≥ 6) with a delete icon. Tapping it removes the row straight away and shows a "Removed …" toast (as built; the 5 s `Alert` with **Undo** was designed, not built).
 - On car API < 6, tapping a row opens `PlaceDetailScreen` (`MapWithContentTemplate`/`PaneTemplate` with the map still showing). It has three actions: **Navigate**, **Favourite / Unfavourite**, **Remove from recents**.
 - There's also a **"Clear all recents"** action at the bottom of the list, with a confirmation step.
 - These are all a couple of taps, and the Car App Library already blocks text entry while driving.
@@ -854,7 +1075,7 @@ What was learned, kept for any future attempt: Data Portability scopes can't be 
   - **Current speed** in your units (mph/km/h), from `AdaptiveLocationSource` (§10.2): the **same fix the alert engine used**, showing the car's display speed when the car gives one (`displaySpeedMps ?: speedMps`, §10.6), so the dial and the engine can't silently diverge. It updates on every fix, up to 10 Hz, with the number rounded and steadied to avoid flicker.
   - **Road speed limit as Google Maps reports it**, in a UK/EU-style red-ringed sign (or US style, chosen by region).
   - **Look** (owner, 2026-10-23, like Google Maps): one white pill with a light grey edge, 56 dp high, the limit ring (46 dp) on the left, the speed and its unit on the right.
-  - **Colour**: the pill stays white; the **speed number** turns **amber** when over the limit by the minor threshold and **red** when over by the major threshold, as Google's does. The thresholds default to 5% and 10% and are settings.
+  - **Colour**: the pill stays white; the **speed number** turns **amber** when over the limit by the minor threshold and **red** when over by the major threshold, as Google's does. The thresholds are 5% and 10% (`SpeedAlertOptions(5f, 10f, 5.0)` in `NavSession`, hard-coded as built; making them settings was designed, not built).
 - **Where the limit comes from**, in this order (the first that has one wins):
   1. **Google**, while you're over its limit: `SpeedingListener.onSpeedingUpdated(percentageAboveLimit, severity)` gives the percentage over, so the limit is worked out (speed ÷ (1 + %)) and kept for 60 s. **It is snapped to a real limit** (code review on the bench, 2026-10-23: "how come we have a 45 mph speed limit?"; a stale or small % at a steady 45 mph gave 45 and 35, which aren't UK limits): in mph to 20, 30, 40, 50, 60 or 70, in km/h to the nearest 10 from 20 to 130, and only from a speeding update in the last 2 s. The speed used is the engine's (GPS or the car's raw speed), not the dashboard figure the panel shows, which reads a few % high (code review, 2026-10-23). Google exposes no limit at all below it, and `NavigationViewForAuto` has no speed-limit icon option (SDK 8.0.0). No marker.
   2. **Camera or zone**: the limit of the camera being alerted (last 20 s) or the average-speed zone you're in. Small **blue dot**.
@@ -905,7 +1126,7 @@ What was learned, kept for any future attempt: Data Portability scopes can't be 
 1. Tap **Report** (⚠) on the action strip. **Straight away, without any menu**, the app saves:
    - **position**: from car GPS if fresh, otherwise the phone (§10.7)
    - **direction of travel**: the heading at the moment of the tap, saved as one-way in that direction
-   - **speed limit**: Google's limit if it's known at that moment, otherwise the nearest camera's limit, otherwise none. The source is recorded as GOOGLE, CAMERA or NONE.
+   - **speed limit**: Google's limit if it's known at that moment, otherwise the limit of the camera being alerted on in the last 20 s (as built; "the nearest camera" was the design), otherwise none. The source is recorded as GOOGLE, CAMERA or NONE.
      - Google's limit is only exposed by the Navigation SDK **while you're over it** (`SpeedingListener` gives the percentage over the limit, §8.4), so it's often not available. It's confirmed or set at review.
    - **speed, time, road** and the nearest camera already in the database (for "not there" or "seen again")
    - A "My reports" marker at that spot. It **doesn't alert while you're still there**: it's quiet until you're 300 m from it, then alerts normally on the next pass. (Without this, the app said "My reports now" seconds after the tap; bench, 2026-10-12.)
@@ -917,7 +1138,7 @@ What was learned, kept for any future attempt: Data Portability scopes can't be 
    - The report **type** isn't asked for in the car. It's guessed from the spoken comment ("mobile", "van" → Mobile; "average", "specs" → Average speed; "red light" → Red light; "not there", "gone" → Camera not there; otherwise Not sure) and confirmed at review.
 
 **Speech to text**:
-- The recording (16 kHz PCM, saved as a private WAV file) is transcribed **on the phone** with Android's `SpeechRecognizer`, using `EXTRA_AUDIO_SOURCE` on Android 13+, ideally on-device.
+- The recording (16 kHz mono PCM, saved as a private raw `.pcm` file; stops after 2 s of silence once speech started, or after 6 s if nothing is said; 15 s at most) is transcribed **on the phone** with Android's `SpeechRecognizer`, using `EXTRA_AUDIO_SOURCE` on Android 13+, ideally on-device.
 - Transcription runs in the background once the recording finishes.
 - If it fails or isn't available, the audio is kept. At review you can play it back, retry transcription, or type the comment.
 - Audio files are deleted once the report is sent or discarded.
@@ -960,11 +1181,11 @@ What was learned, kept for any future attempt: Data Portability scopes can't be 
     - NEW_RED_LIGHT_SPEED → Type 10.
     - CAMERA_GONE → Action 3.
     - WRONG_* → Action 2, with the details in the comment.
-  - **Camera IDs**: the iGO export doesn't contain PGW camera IDs. So for Action 2/3/4 the app tries the form's "AutoFill Current Values" lookup by position. Which endpoint that uses gets confirmed in phase 1, without submitting anything. If no ID can be found, the report is sent as **Action 1 with a comment** ("Mobile seen again at the known site at lat,lon") and you're shown the browser fallback option.
+  - **Camera IDs**: as built `idCam` comes only from the OV2 download's `sourceId` (the iGO export carries no PGW camera IDs). The form's "AutoFill Current Values" lookup by position for iGO sets is designed, not built (§16 row 19). Which endpoint that uses gets confirmed in phase 1, without submitting anything. If no ID can be found, the report is sent as **Action 1 with a comment** ("Mobile seen again at the known site at lat,lon") and you're shown the browser fallback option.
   - **PGW's tips are built in**: don't report warning signs or Traffic Master cameras (shown as a hint in the phone review screen), use the Comments box, and only report mobiles when a unit is actually there.
   3. Treat the response as success if it contains PGW's thank-you or confirmation text (recorded on the first real submission, which you'll do by hand). Otherwise FAILED, with the response saved for diagnostics (without personal fields).
 - **Fallback** when the form can't be automated (fields changed, captcha): **"Open in browser"** opens the SubmitCamera page with the report details copied to the clipboard and shown on screen, so you can paste them.
-- Status SENT/FAILED shows in the Reports screen. Failed reports retry with backoff (3 attempts), then are left FAILED and offered for manual sending.
+- Status SENT/FAILED shows in the Reports screen. As built a failed submission is marked FAILED at once and offered for manual sending (Send again, or Browser); only the "still driving" case retries. The designed 3-attempt backoff is not built.
 
 **Privacy**: a report only contains the camera location and the details above. Nothing is sent until you have reviewed it and pressed Send on the phone, and never while driving. Recordings stay in private app storage and are deleted once the report is sent or discarded.
 
@@ -986,8 +1207,8 @@ What was learned, kept for any future attempt: Data Portability scopes can't be 
   - support the narrow and portrait head-unit layouts, which happen automatically through the templates; use the padding rules to keep the marker in the stable area
 
 ### 9.3 Background guidance
-- Once guidance starts, `NavForegroundService` starts with `foregroundServiceType="location"` and an ongoing notification that shows the next turn.
-- `TripPublisher` (session-level; 2026-10-12, owner: "nav updates on the driver's screen, not just the main screen") calls `NavigationManager.navigationStarted()` and then `updateTrip(Trip)` on **every** turn-by-turn update while guiding, **whichever screen is on top** (Search, More, the preview or the home map) and through reroutes. Today this lives in `HomeScreen.publishTrip()` with `TripMapper`, tied to the home screen's collector; it moves to `NavSession` so the cluster never goes stale while another of our screens is open. When another app is full screen, Android Auto shows our turn info in its rail and widget, and on the driver's screen (§12.4).
+- **As built (2026-10-24): there is no foreground service of our own.** `NavCarAppService` carries `foregroundServiceType="location"` in the manifest and the host keeps it bound while the car is connected (§2 "Process model"); `NavUpdatesService` is the plain service the SDK delivers the turn-by-turn feed to (`registerServiceForNavUpdates`). The ongoing next-turn notification is the host's own. A separate foreground service for phone-only background alerts is on the planned list (README).
+- `TripPublisher` (session-level; 2026-10-12, owner: "nav updates on the driver's screen, not just the main screen") calls `NavigationManager.navigationStarted()` and then `updateTrip(Trip)` on **every** turn-by-turn update while guiding, **whichever screen is on top** (Search, More, the preview or the home map) and through reroutes. As built it is `car/TripPublisher`, created by `NavSession` and fed by `NavUpdatesService`, with `TripMapper`, so the cluster never goes stale while another of our screens is open. When another app is full screen, Android Auto shows our turn info in its rail and widget, and on the driver's screen (§12.4).
 - `NavigationManagerCallback.onStopNavigation` (the user stopped from the system UI, or another navigation app took over) → logged (`Session hostStopNavigation`, then `Guidance stop caller=HOST`, §15.5) and `stopGuidance(HOST)` runs; the service stops. **This is the normal end of a route**: the X on the host's travel-estimate card arrives through the same callback (§8), so `HOST` covers both the X and a stop the host made on its own; the host's logcat (`GhNavFocusManager`, `RouteInfoService`) tells them apart. The toast "Navigation stopped by the car" was dropped with the strip stop (2026-10-13): it would have fired on every X tap. It used to be silent, so a host stop couldn't be told from a bug (2026-10-12).
 - **`stopGuidance(reason: StopReason)`** (`HOST`, `ARRIVED` (the final destination reached, owner 2026-10-13), `KEY_CHANGED`, `SESSION_DESTROY` (unused)) is the only way guidance ends. It resets everything the next route must not inherit: arrived, the route choices and the selected one, the route note, the waypoint and the EV re-ask state (§8.3a; before, arrived/choices/selected survived a stop). The X on the host's travel-estimate card is the user's way to it (§8, via `HOST`); every call is logged with its caller.
 - `onAutoDriveEnabled` (a DHU test hook) → start the simulator, only when a route is set (`start skipped: no route` otherwise; code review, 2026-10-23).
@@ -1005,9 +1226,26 @@ See §12.3. Media is **ducked, never paused**.
 | Feed | Source | Used for |
 |---|---|---|
 | Road-snapped | Navigation SDK `RoadSnappedLocationProvider` | Map car marker, guidance |
-| Raw adaptive | `FusedLocationProviderClient`, `PRIORITY_HIGH_ACCURACY`, speed-based interval | POI alert engine |
+| Raw adaptive | `FusedLocationProviderClient`, `PRIORITY_HIGH_ACCURACY`, asked at 1 Hz, any faster fix accepted (§10.2) | POI alert engine |
 
 Raw fixes are used for alerts because the SDK's road-snapped rate isn't under our control. The alert maths need a rate we choose so trigger distances are accurate.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Phone : AdaptiveLocationSource.start()
+  Phone --> Car : two car fixes in a row, each within 3 s (hysteresis, §10.7)
+  Car --> Phone : no car fix for 3 s
+  Car --> Car : car fix, fresh
+  Phone --> Phone : phone fix at the phone's own rate
+  Phone --> Simulated : Simulate drive (debug)
+  Car --> Simulated : Simulate drive (debug)
+  Simulated --> Phone : simulation stops
+  note right of Car
+    Every flip calls FixEstimator.resetTrack(reason)
+    and is logged (Location source car to phone).
+    Speed for the engine: car raw speed while fresh, else the estimator's.
+  end note
+```
 
 ### 10.2 Rate: what the phone offers, never forced
 **The phone's GPS is taken at the rate the phone offers** (owner, 2026-10-24: "we should be using the rate that the car or phone can offer not forcing it", watching a bench drive fed at a forced 10 Hz stutter: the Navigation SDK glides the car between fixes and restarts that glide on every fix, so bunched fast fixes made the car jump). The request asks for the natural GPS rate, **1 fix a second** (`AdaptiveLocationSource.GPS_HZ`), and **accepts any faster fix the phone already delivers** (`setMinUpdateIntervalMillis(0)`): it never drives the chip faster than it would run on its own, and never throws away a fix. At every speed, stopped or moving, and whether or not the car's GPS is in use. Before this (2026-10-12 to 2026-10-24) the phone was always asked for 10 Hz; that choice was for freshness after a restart (a slow rate left the car map at 0,0 until the next fix), which the 1 s interval still gives. The car's own GPS and speed stay at the fastest rate the car provides (§10.6–10.7).
@@ -1018,7 +1256,7 @@ Raw fixes are used for alerts because the SDK's road-snapped rate isn't under ou
 - The old speed-dependent rate curve (`RateCurve`, `AdaptiveRateController` and the stored `gps_min_mph`/`gps_max_mph`/`gps_max_hz` values) was **deleted** on 2026-10-13 (code shrink); a backup file's old `gpsRate` block is ignored on restore. The median-of-three `SpeedSmoother` it held now lives with `FixEstimator`.
 
 ### 10.5 Lifecycle
-Runs while the foreground service is up (§9.3). It stops when the car session ends and there's no guidance, or when every set has alerts turned off. In that last case it does nothing until a set's alerts are turned back on.
+**As built:** `AlertCoordinator.start()` (which starts `AdaptiveLocationSource`) runs from `NavSession.onCreate` to `NavSession.onDestroy`, i.e. while a car is connected, with the car session kept alive by the host (§2 "Process model", §9.3). It does nothing useful while every set has alerts turned off, until a set's alerts are turned back on.
 
 ---
 
@@ -1030,7 +1268,7 @@ Android Auto can pass the **car's own speed** to the app. The Car App Library re
 
 **Setting:** **Speed and location source** = **Car when available** (default) / **Phone only**. The same setting covers car GPS (§10.7).
 
-**Rate:** the speed listener is registered at **the fastest rate the car can provide** (`CarInfo.addSpeedListener(UPDATE_RATE_FASTEST, …)`; owner, 2026-10-12), never a slower one, so the engine's speed is as fresh as the car's; the rate actually delivered is logged (`CarData firstSpeed`, the block header's Hz, §15.5) and shown in More → GPS.
+**Rate:** the car's speed arrives **as fast as the host sends it** (as built: `CarInfo.addSpeedListener(executor, listener)` takes no rate parameter in the Car App Library; only the location listener has `UPDATE_RATE_FASTEST`, §10.7; owner, 2026-10-12: never a slower rate than the car offers), so the engine's speed is as fresh as the car's; the rate actually delivered is logged (`CarData firstSpeed`, the block header's Hz, §15.5) and shown in More → GPS.
 
 **What each speed is used for** (when the car's speed is *fresh*, i.e. reported in the last 3 s):
 | Use | Speed used | Why |
@@ -1054,7 +1292,7 @@ The panel shows the **same fix the engine used** (`displaySpeedMps ?: speedMps`)
 - **No heading when still**: after 30 s under 1 m/s the heading is **null**. (A parked car used to keep its last heading, and 5 m of jitter could invent a new one, which consumed alert stages for cameras within range before the car ever moved.) **The chord ring is emptied whenever the speed is under 1 m/s** (as built, 2026-10-13), so a chord never spans a stop and moving off in a new direction can't read as the old one through parked jitter.
 - **Right after a reset** (`resetTrack`, below) the ring is empty, so until a chord of at least 10 m exists the heading is the **GPS bearing alone** when it's trustworthy (over 3 m/s, accuracy ≤ 20°, not stale), otherwise none (as built, 2026-10-13).
 - **`resetTrack(reason)`**: on a car↔phone handover (§10.7), a gap over 5 s, a jump over 200 m, and when simulation starts or stops; logged as `Location TRACK_RESET reason=` (§15.5).
-- **What the engine sees**: the `Fix` carries `headingSource` (track / gps / blended / none), `headingAccuracyDeg`, `speedSource`, `displaySpeedMps` (the car's dial speed when there is one), `locationSource` (car / phone / simulated) and `accuracyM`, all defaulted so `:core` callers without them still compile. Tests: `HeadingEstimatorTest`, `SpeedEstimatorTest` (§15.1).
+- **What the engine sees** (as built, two enum sets: `FixEstimator` has its own `LocationSource`/`SpeedSource`/`HeadingSource` and the engine's `Fix` has its own, mapped by `EstimateMapper` in `AdaptiveLocationSource.kt`; the estimator's `DISPLACEMENT` is the engine's `DERIVED`): the `Fix` carries `headingSource` (track / gps / blended / none), `headingAccuracyDeg`, `speedSource`, `displaySpeedMps` (the car's dial speed when there is one), `locationSource` (car / phone / simulated) and `accuracyM`, all defaulted so `:core` callers without them still compile. Tests: `HeadingEstimatorTest`, `SpeedEstimatorTest` (§15.1).
 
 ### 10.7 Car GPS for location
 The car's GPS position is read through `CarHardwareManager.carSensors.addCarHardwareLocationListener(UPDATE_RATE_FASTEST, …)` (car API 3+, uses the existing fine-location permission). It's controlled by the same setting as speed, renamed **Speed and location source**: **Car when available** (default) / **Phone only**.
@@ -1062,7 +1300,7 @@ The car's GPS position is read through `CarHardwareManager.carSensors.addCarHard
 - **Primary feed:** while the car's location is **fresh** (a fix in the last 3 s, with status SUCCESS), car fixes feed the alert engine, the per-fix marker redraw, the report snapshot and the free-drive camera checks. Phone fixes are ignored during that time.
 - **Phone as backup:** while car GPS is fresh, phone fixes are ignored for alerts (the phone keeps reading at its own rate, §10.2). If the car stops reporting for 3 s, phone fixes take over straight away.
 - **Hysteresis** (code review, 2026-10-23): once on the phone, the car takes over again only after **two car fixes in a row**, each within 3 s of the last. Before, a head unit reporting at about 0.5 Hz sat on the 2 s freshness edge and flipped car↔phone on most fixes, and every flip reset the track (no heading for a few fixes).
-- **Rate:** the car's position is requested at **the fastest rate its GPS unit can provide** (`addCarHardwareLocationListener(UPDATE_RATE_FASTEST, …)`; owner, 2026-10-12), never a slower one; the car decides what it can deliver, and the delivered rate is logged (`CarData firstLocation`, the block header's Hz, §15.5). The 10 Hz request applies to the phone.
+- **Rate:** the car's position is requested at **the fastest rate its GPS unit can provide** (`addCarHardwareLocationListener(UPDATE_RATE_FASTEST, …)`; owner, 2026-10-12), never a slower one; the car decides what it can deliver, and the delivered rate is logged (`CarData firstLocation`, the block header's Hz, §15.5). The phone is asked for 1 Hz and any faster fix is accepted (§10.2).
 - **Not changed:** the **map's** car marker and turn-by-turn routing come from the Navigation SDK, which uses the phone's location services. The SDK has no way to feed it the car's GPS. On many cars, Android Auto already passes the car's GPS into the phone's location services anyway.
 - **Handover reset** (2026-10-12): every car↔phone flip calls `resetTrack(reason)` (§10.6a) and is logged (`Location source car→phone (+ms since last car fix)`, §15.5). Before, the heading anchor and the speed smoother carried across the two feeds, and the follow watchdog compared the SDK's phone-based camera with our car-GPS fix (§8).
 - **Clock:** the engine's and the estimator's times are the fix's `elapsedRealtimeNanos` (the time since boot, the same base for phone, car and simulated fixes), else its arrival time on that clock (code review, 2026-10-23). `Location.time` is a GNSS or car clock and was mixed with the wall clock when a feed stamped 0, which could make a gap or a stale clear look minutes long.
@@ -1086,7 +1324,7 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
    - BOTH: passes if either of those holds for *q*.bearing **or** for *q*.bearing + 180
    - An opposite-facing camera cannot pass either test. The bearing-to-camera alternative was **approved by the owner on 2026-10-12 as an amendment to the direction hard rule** (a camera just past a bend is faced only once the car has turned); the 45° tolerance itself is unchanged. **As built (2026-10-13): the β alternative applies only while the camera is properly ahead** (|angleDiff(β, *h*)| ≤ 45°), not in the "closer than 15 m" case of step 2, so a camera the car is practically on top of is judged against the heading alone.
    - **Error budget**: the 45° has to absorb the data's 22.5° compass quantisation (PGW OV2 bearings are 8-point), up to 5° of heading error (§10.6a) and a few degrees of curve, which is why nothing else may eat into it.
-4. **Route matching** (only with a route): the cross-track distance from *q* to the route polyline **ahead** of you, the next 3 km of segments, found by `RoutePolyline` in `:core` (segments behind are never matched; the whole route was, 2026-10-12). **When the car itself is more than 50 m from its segment it is off the SDK's route** (the SDK hasn't rerouted yet, or routed a road parallel to the one being driven), and the route then says nothing about the road the car is on: the matcher returns "no route" and the engine uses its free-drive corridor until the car is back on a route (logged `Guidance carOffRoute d=` / `carOnRoute`; 2026-10-13). **The car is located once per fix, from the car's position** (`GuidanceController.locateCar`, before the engine runs), and the matcher then only measures each POI against the route ahead (bench, 2026-10-23: the matcher had located the "car" at every POI it was asked about, so the car's place on the route jumped from camera to camera and any camera over 50 m from the route made the car look off-route, sending that camera to the looser free-drive corridor; the log flipped `carOnRoute`/`carOffRoute` several times a second). **The car's own segment is chosen among segments running the car's way** (bearing within 90° of the heading; without a heading, or when no segment matches, the plain nearest one): on the bench (2026-10-13) the SDK's route from a parked car went north first, U-turned at a roundabout and came back south along the same A61, and the nearest-segment snap pinned the car to the northbound leg 10 m away, so every southbound camera was "off road" by over a kilometre and nothing alerted. If it's more than **50 m**, drop the POI, which removes cameras on parallel roads. Without a route, a **lateral offset** check is used instead: *d*·sin(angleDiff(β, *h*)) must be ≤ **max(40 m, *d*·sin 12°)** (`Config.freeDriveFarDeg`): 40 m inside 192 m, where the 2nd and passing stages live, widening with distance so a bend or heading noise doesn't reject a camera at first-stage range. (A fixed 40 m was 4.9° at the 70 mph first trigger of 469 m, so the 1st fired late or not at all on any bend.) The 12° budget: ≤ 5° of heading error, a few degrees of road curve over the lookahead, and GPS lateral noise.
+4. **Route matching** (only with a route): the cross-track distance from *q* to the route polyline **ahead** of you, the next 3 km of segments, found by `RoutePolyline` in `:core` (segments behind are never matched; the whole route was, 2026-10-12). **When the car itself is more than 50 m from its segment it is off the SDK's route** (the limit-change lookahead walks the same route points through `GuidanceController.routePointsAhead`, which uses its own looser 100 m off-route threshold, §8.4a) (the SDK hasn't rerouted yet, or routed a road parallel to the one being driven), and the route then says nothing about the road the car is on: the matcher returns "no route" and the engine uses its free-drive corridor until the car is back on a route (logged `Guidance carOffRoute d=` / `carOnRoute`; 2026-10-13). **The car is located once per fix, from the car's position** (`GuidanceController.locateCar`, before the engine runs), and the matcher then only measures each POI against the route ahead (bench, 2026-10-23: the matcher had located the "car" at every POI it was asked about, so the car's place on the route jumped from camera to camera and any camera over 50 m from the route made the car look off-route, sending that camera to the looser free-drive corridor; the log flipped `carOnRoute`/`carOffRoute` several times a second). **The car's own segment is chosen among segments running the car's way** (bearing within 90° of the heading; without a heading, or when no segment matches, the plain nearest one): on the bench (2026-10-13) the SDK's route from a parked car went north first, U-turned at a roundabout and came back south along the same A61, and the nearest-segment snap pinned the car to the northbound leg 10 m away, so every southbound camera was "off road" by over a kilometre and nothing alerted. If it's more than **50 m**, drop the POI, which removes cameras on parallel roads. Without a route, a **lateral offset** check is used instead: *d*·sin(angleDiff(β, *h*)) must be ≤ **max(40 m, *d*·sin 12°)** (`Config.freeDriveFarDeg`): 40 m inside 192 m, where the 2nd and passing stages live, widening with distance so a bend or heading noise doesn't reject a camera at first-stage range. (A fixed 40 m was 4.9° at the 70 mph first trigger of 469 m, so the 1st fired late or not at all on any bend.) The 12° budget: ≤ 5° of heading error, a few degrees of road curve over the lookahead, and GPS lateral noise.
    - **Free drive follows the road ahead, not a straight line** (owner, 2026-10-23: "mobile camera alerts are for road we are not on", then "its fired again"; chose "road only"). Without a route the engine's only test was the corridor around a straight line ahead (side tolerance, widening by d·sin 12°), so a camera on a nearby road roughly parallel to ours and facing our way passed it: on the bench a PGW mobile site on Sheffield Road, Chesterfield alerted (FIRST at 474 m, SECOND at 248 m) while the car drove north on a road 211 m from it, and one on Whittington Hill gave FIRST at 945 m while the car was on the A61 496 m away. Now, in free drive (and in guidance while the car is off the SDK's route), the road ahead is followed through the OpenStreetMap road pieces on the phone (`LimitLookahead.roadAhead`, the connectivity walk of §8.4a: joins within 40 m and 45°, straightest first, up to 2 km), and `RoadAheadMatcher` gives the engine a camera's cross-track distance from that road, checked against the same side tolerance as a route (50 m, 100 m for mobile sites). A camera further along than the walk reaches, or with no OSM road under the car (no limits downloaded, or a road with no posted limit), gets "no route", and the straight corridor applies as before. **Trade-off (owner's choice): a camera on a road you are about to turn onto is silent until you are on that road;** the stages already passed are then marked fired and the next one is spoken (often SECOND or PASSING). The direction rule (step 3) is unchanged and applies to all. The walk is recomputed once a second, **and at once when the heading has turned 10° or more since the last walk, and at most four times a second** (review, 2026-10-24: a heading wandering ±12° fix to fix in a crawl would otherwise re-walk 2 km of road on every 10 Hz fix) (bench, 2026-10-23: at a junction on the A57 Sheffield Parkway the walk taken just before the car turned onto the slip still led to camera 3335, 12 m off it, and gave a FIRST 1.6 s after the turn; from the slip the camera is 461 m off the road).
    - **Tracked latch** (2026-10-12): once a POI has passed ahead + direction + corridor it is marked tracked and stays valid for its stages until it is clearly behind, far outside the corridor, or its direction is off by more than 90°, so a moment of heading noise on the approach can't drop it between stages. **"Far outside the corridor" as built (2026-10-13): lateral > max(side tolerance, 2·*d*·sin 12°) in free drive (twice the entry corridor), or > the route tolerance with a route.
    - **Mobile camera sites get 100 m** for both checks (PGW mobile and pending-mobile sets, and mobile reports): a site is marked where the van parks (bridge, lay-by, verge), often 50–100 m from the carriageway's centre. Found on the bench, 2026-10-12: a PGW mobile site on the M40 south of J11, 62 m off the route and facing the right way, was dropped by the 40 m check. Fixed, red-light and average-speed cameras keep 40/50 m so parallel roads stay filtered. The direction check (step 3) applies to all, unchanged.
@@ -1101,7 +1339,7 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
      - While in the zone, the overspeed check runs on each fix.
      - A ZONE_END POI ends it with a "Leaving zone" alert.
    - **PGW (all SPECS points are type 4, with no start or end)**: zones are worked out from **chains of points**.
-     - **A zone is only real if it has a camera ahead.** When you pass a type-4 POI that passes the checks while you aren't in a zone, zone mode starts ("Entering average speed zone, {speed} limit") only if another type-4 POI **with the same limit** is ahead of you, facing your direction, within the gap (5 km). A lone SPECS point, or the last camera of a zone you joined part-way through, doesn't start a zone: there's nothing ahead to time you against.
+     - **A zone is only real if it has a camera ahead.** When you pass a type-4 POI that passes the checks while you aren't in a zone, zone mode starts ("Entering average speed zone, {speed} limit") only if another type-4 POI **with the same limit** is ahead of you, facing your direction (as built: its bearing within 60° of the heading), within the gap (5 km). A lone SPECS point, or the last camera of a zone you joined part-way through, doesn't start a zone: there's nothing ahead to time you against.
      - Each later type-4 POI you pass (one that passes the direction check) keeps the zone going and updates the limit if it changes.
      - **Passing the last camera ends the zone.** When you pass a zone camera and no same-limit type-4 POI is ahead within the gap, you hear "Leaving average speed zone" there, not 5 km later.
      - The zone also **ends** when no type-4 POI that passes the direction check is ahead within **5 km**, or none has been passed for **5 km** (SPECS points are usually ≤ 2–3 km apart). Then you hear "Leaving average speed zone". Only same-limit points count as "ahead", so a nearby zone with another limit (common in cities, where SPECS 20 and SPECS 30 zones touch) can't keep a finished zone open.
@@ -1112,6 +1350,30 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
    - **What a zone alert shows.** Zone alerts (enter, over the limit, leave) belong to the zone camera you last passed: its id, its set's icon (for PGW that's the set for the limit, e.g. "SPECS 50", so the icon itself shows the limit) and its limit. The over-the-limit text names the limit: "Average speed zone, 50 mph limit, you are over the limit" (spoken "…50 miles per hour limit…"). The banner's subtitle also gives the limit. Before this, zone alerts had no POI, so they showed the generic average-speed icon and no limit.
 9. **Overspeed**: if the POI or zone has a limit and *v* > limit × (1 + `overspeedPct`). It's set with a **slider from −5% to +20% in 0.1% steps**, defaulting to **−0.1%** (so the warning triggers just below the limit, at 99.9% of it), the alert gets an "you are over the limit" suffix. In a zone, a repeat overspeed chime can play at most every 15 s. **Which limit** (2026-10-13): a zone camera is judged against the zone's limit; any other camera inside the zone (a 30 red-light camera in a 50 zone) against its own, and the zone's only when it has none. Passing a zone camera with no limit (variable) keeps the zone's limit. `overspeedPct` is **updated in place**; the engine is no longer recreated when it changes (that lost every POI's state, 2026-10-12).
 10. **Trace** (`fun interface Trace` with `verdict(...)`, `stage(...)` and `cleared(...)`; an optional constructor parameter, zero cost when null; 2026-10-12): the engine reports each **change** of a POI's `Verdict` inside the lookahead (`AHEAD_OK`, `WRONG_DIRECTION` (shown dimmed, "facing away"), `OFF_ROAD`, `BEHIND`, `OUT_OF_RANGE`, `NOT_MOVING`, `NO_HEADING`: the one enum `classify()` gives the marker layer, §8.1), every stage with the distance, speed, heading, camera bearing and expected distance, and every state clear with its reason. The app writes them to `alert-debug.log` (§15.5). Only on change, never per fix. The speed-limit-ahead announcement (§8.4a) goes through the same speech path at FIRST priority.
+
+```mermaid
+flowchart TB
+  F["Fix: position P, speed v, heading h (none when still)"] --> MV{"heading known and v over 2 m/s?"}
+  MV -- no --> N0["No new alerts (NO_HEADING or NOT_MOVING). A tracked POI may still get PASSING down to 0.5 m/s"]
+  MV -- yes --> C["Each candidate q in the cached cells, set and category alerts on, not hiddenByReport"]
+  C --> S1{"1. d = haversine(P, q) within maxLookahead (trigger + 200 m, at most 3 km)?"}
+  S1 -- no --> V1["OUT_OF_RANGE"]
+  S1 -- yes --> S2{"2. ahead: angle between bearing(P, q) and h within 45°, or d under 15 m?"}
+  S2 -- no --> V2["BEHIND"]
+  S2 -- yes --> S3{"3. direction, the hard rule: ANY passes; ONE_WAY: camera bearing within 45° of h or of bearing(P, q); BOTH: either of those for the bearing or the bearing plus 180°"}
+  S3 -- no --> V3["WRONG_DIRECTION: drawn dimmed with its arrow, never alerts"]
+  S3 -- yes --> S4{"4. on the road: cross-track to the route ahead (RoutePolyline) or the road ahead (RoadAheadMatcher) within 40/50 m, 100 m for mobile sites?"}
+  S4 -- no --> V4["OFF_ROAD"]
+  S4 -- yes --> T["AHEAD_OK: tracked latch; trigger per stage = max(previous, floor, v × seconds), the ratchet"]
+  T --> ST{"5. d within the stage's trigger?"}
+  ST -- "1st, then 2nd" --> EV["AlertEvent FIRST / SECOND (several at once: only the closest is spoken)"]
+  ST -- "d within max(18.29 m, v × 1 s)" --> PASS["PASSING: compulsory while sound is on, never dropped; the behind-net fires it if a fix skips past within 150 m"]
+  T --> Z["8. Average-speed zones: start only with a same-limit camera ahead, end at the last camera, a 1 km jump ends it"]
+  T --> O["9. Over the limit: v over limit × (1 + overspeedPct), default −0.1%"]
+  EV --> TR["10. Trace: every verdict change, stage and clear to alert-debug.log"]
+```
+
+*The steps are numbered as in the text above. Verdicts are the `Verdict` enum in `core/alerts/AlertTrace.kt`, shared with the marker layer (§8.1).*
 
 ### 11.1 Alert stages
 | Stage | Settings | Default | Can be turned off? |
@@ -1135,7 +1397,7 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
 | 2nd | Same alert updated, progress continues | 2nd template | Replaces the 1st (same id) |
 | Passing | Alert updated to "Now", ACTIVE marker pulses (§8.1) | Passing template (with chime first if the chime is on) | Replaces; dismissed 3 s after the POI is behind you |
 
-**Output**: `AlertEvent(poi, set, category, kind = FIRST|SECOND|PASSING|ZONE_ENTER|ZONE_EXIT|OVERSPEED, distanceM, iconId, displayText, spokenText, priority)`.
+**Output** (as built): the core `AlertEvent(poiId, kind = FIRST|SECOND|PASSING|ZONE_ENTER|ZONE_EXIT|OVERSPEED, distanceM, overspeed, priority, triggerM, staleBelowM)`; priorities PASSING 100, SECOND and OVERSPEED 50, the rest 10. The app's `AlertCoordinator` resolves the set, category, icon, display and spoken text into an `ActiveAlert` for the dispatcher (§12).
 
 **Cost**: the 5×5 cell cache holds about 10–200 POIs in the UK. Each fix does about 200 haversine and bearing calculations, well under 0.1 ms. At 10 Hz the CPU cost is negligible.
 
@@ -1151,7 +1413,21 @@ For each candidate *q* in the cached cells, with the set's and category's alerts
 | Car connected, another app full screen (e.g. media) | Nav heads-up notification | NavTts | Trip update (if guiding) |
 | Phone only (no car) | Phone heads-up notification | NavTts | — |
 
-Which state applies comes from the `Screen` lifecycle (STARTED = foreground) plus `CarConnection.type`.
+**As built:** the dispatcher has no lifecycle or connection check of its own. `NavSession` sets `AlertDispatcher.carSink` on create and clears it on destroy; `dispatch` tries the sink (the banner, which needs the map surface) and falls back to the heads-up notification when there is no sink or it returns false. The same navigation-category notification serves "another app on top" and "phone only".
+
+```mermaid
+flowchart TB
+  E["AlertEvent + ActiveAlert from AlertCoordinator (alert thread)"] --> D["AlertDispatcher.dispatch(alert, event, speak, chime)"]
+  D --> V{"CarAlertSink set and the map surface ready? (NavSession sets it while the car screen exists)"}
+  V -- yes --> B["AlertBannerView on the map, posted to the main thread (§12.1); host Alert only while the surface doesn't exist"]
+  V -- no --> N["Heads-up notification, navigation category, CarAppExtender, id = POI id (§12.2); Android Auto shows it over other apps"]
+  D --> SP{"speak? (sound on for the set, not muted, not Silent mode)"}
+  SP -- yes --> T["NavTts.speak(text, priority, poiId, chime, kind, distance, staleBelowM)"]
+  SP -- no --> M["Visual only; the scheduler records MUTED"]
+  T --> SS["SpeechScheduler (§12.3)"]
+```
+
+*As built there is one notification path for "car connected, another app on top" and "phone only": the same navigation-category notification.*
 
 ### 12.1 Alert banner on the map
 The alert is drawn by us on the map surface, in the same `Presentation` as the speed panel (§8.4), not with Android Auto's `AppManager.showAlert`. The host places its alert card at the top beside the rail and slides it in from the side; the user wants it to **sit at the bottom**, steady.
@@ -1160,13 +1436,13 @@ The alert is drawn by us on the map surface, in the same `Presentation` as the s
 - **Updates:** the SECOND and PASSING alerts for the same POI update the banner in place.
 - **Dismiss:** tap the banner (`SurfaceCallback.onClick`). There are no buttons on it: the map surface can't host them. **Mute** is in More on the action strip ("Mute alerts for 30 min").
 - **Size and look** (`AlertBannerView`):
-  - height **96 dp**; width up to **640 dp**, leaving **170 dp** clear on each side for the speed panel (two 64 dp boxes and their gaps), but never narrower than half the visible width
-  - placed by `MapSurface.applyPadding` from the **visible** area: centred across it, 16 px above its bottom edge, so it moves with the rail, the turn card and the split-screen media panel
+  - height **96 dp**; width up to **640 dp**, leaving **140 dp** clear on each side (`SPEED_PANEL_CLEAR_DP`, as built) for the speed panel, now one 112 dp pill (§8.4), but never narrower than half the visible width
+  - placed by `MapSurface.layoutOverlays` (as built; `applyPadding` only sets the map camera's padding) from the **visible** area: centred across it, 16 px above its bottom edge, so it moves with the rail, the turn card and the split-screen media panel
   - dark card (`#202124` at 92%), 16 dp corners; the icon (the set's icon, 128 px bitmap) and the text beside it are **centred together** in the card (2026-10-12; text left-aligned to each other, the block centred); title 26 dp white, ellipsised; subtitle 20 dp grey; progress bar 4 dp along the bottom (`#8AB4F8` on a dark track)
   - **GPU drawing** (2026-10-12): the card, icon and text are drawn once per alert (text shortened once, not per frame) into a **hardware layer**, a GPU texture freed when the banner hides; the progress bar is its own view whose `scaleX` is animated on the **render thread** (`ViewPropertyAnimator`), so nothing is redrawn while it runs. (Before, the whole banner was redrawn every 100 ms.)
   - **Map frame rate** (measured on the bench): the Navigation SDK draws the map into a `GLTextureView` and keeps rendering about 57 frames/s even when parked; hiding all our overlays or leaving follow mode doesn't change it, so it's the SDK's own (e.g. its location marker), not our code.
   - fade in and out over 150 ms; never slides
-- **Timing:** shown for 8 s, or 5 s for the passing alert; each new stage restarts the time. The banner hides itself when the time runs out, or at once when tapped.
+- **Timing:** shown for 8 s, or 5 s for the passing alert; each new stage restarts the time. `AlertCoordinator` keeps the alert as "active" (for the markers and the diagnostics) for 12 s after the event, the banner's 8 s plus slack. The banner hides itself when the time runs out, or at once when tapped.
 - **Identity:** the banner remembers the POI id it's showing. A new alert for the same POI (2nd stage, passing) updates the text in place with no fade; a different POI fades the new one in.
 - **Threading:** `AlertDispatcher` calls `NavSession.showCarAlert` on the alert thread; the banner update is posted to the banner's own (main) thread. The tap hit-test in `MapSurface.onClick` compares the tap with the banner's bounds on the surface.
 - **Tap delivery:** `SurfaceCallback.onClick` needs car API 5+ and a template that passes clicks to the surface. If a host doesn't deliver it, the banner still goes by itself after its time, and Mute is in More. **To confirm on the DHU** (TESTING.md A2b).
@@ -1178,15 +1454,14 @@ The alert is drawn by us on the map surface, in the same `Presentation` as the s
 - Built with `NotificationCompat.Builder`:
   - `.setCategory(CATEGORY_NAVIGATION)`
   - `.setSmallIcon(...)`, `.setLargeIcon(iconBitmap)`
-  - `.setContentTitle(displayText)`, `.setContentText(distance)`
+  - `.setContentTitle(displayText)` (*as built the distance is in the title line; no separate content text*)
   - `.setOnlyAlertOnce(false)`, `.setTimeoutAfter(10_000)`
 - `.extend(CarAppExtender.Builder()`:
   - `.setImportance(IMPORTANCE_HIGH)`
   - `.setSmallIcon`, `.setLargeIcon`
   - `.setContentTitle`, `.setContentText`
-  - `.setContentIntent(CarPendingIntent → open our car screen)`
-  - `.addAction(Mute)`
-- Notification id = `poi.id`, so SECOND and PASSING alerts update the existing notification instead of stacking.
+  - *Designed, not built (2026-10-24; ISSUES N8):* `.setContentIntent(CarPendingIntent → open our car screen)` and `.addAction(Mute)`.
+- Notification id = `20_000 + poi.id % 10_000` (as built; two POIs exactly 10,000 ids apart would share one), so SECOND and PASSING alerts update the existing notification instead of stacking.
 - Android Auto shows navigation-category heads-up notifications from the active nav app the same way it shows turn notifications.
 
 ### 12.3 TTS on the navigation audio channel
@@ -1199,7 +1474,7 @@ The alert is drawn by us on the map surface, in the same `Presentation` as the s
   - **Never left without directions**: if our TTS can't start (`NavTts` init failed, §12.3 Errors) or errors twice, the SDK's own voice is switched back on (`VOICE_ALERTS_AND_GUIDANCE`) for the rest of the route and that's logged (`Directions fallback sdkVoice reason=`).
   - Logged: `Directions say kind=prepare|now|continue step=n d= text=` to `debug-nav`, and the speech records list them as "Directions".
 - Audio attributes: `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE`, `CONTENT_TYPE_SPEECH`. On Android Auto this routes to the car's navigation audio stream, the same one turn prompts use.
-- Focus: `AudioFocusRequest(AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)` is requested just before speaking and **abandoned in `onDone`/`onError`**. Media apps duck and don't pause.
+- Focus: `AudioFocusRequest(AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)` is requested just before speaking and **abandoned after the last utterance** (as built: on `onDone`/`onError`/`onStop` only when nothing else is waiting, and when the queue goes idle, so back-to-back utterances keep the focus rather than flapping it). Media apps duck and don't pause.
 - **Speech policy** (2026-10-12; `SpeechScheduler` in `:core`, pure with an injected clock and tested; `NavTts` drives it and is the only speech serialiser, since the engine never drops an event, §11 step 7):
   - **Ours is the only voice on the guidance channel**: the Navigation SDK's is off while we speak the directions (above), and it only comes back when our speech has failed, so the two never speak together. The detection of another guidance player and the bounded waits behind it (2 s for a stage, 0.5 s for a PASSING, a busy channel ignored after 5 s), built when the SDK spoke its own prompts, were removed on 2026-10-23 (owner: clean up what was left from when Google did the voice).
   - **Staleness by distance** (`staleBelowM`): a waiting FIRST or SECOND is not spoken once the car is already closer than the stage's distance makes sense for (it would be announcing a camera it's nearly at); PASSING is **never dropped**.
@@ -1207,13 +1482,30 @@ The alert is drawn by us on the map surface, in the same `Presentation` as the s
   - **Speaking watchdog**: `speaking` is cleared by `onDone`, `onError` and **`onStop(id, interrupted)`** (an interruption by the car's audio handling used to leave the flag set forever, so every later alert queued silently), and by a timeout of **3000 + 120 × characters ms, capped at 15 s** (`TTS_STUCK`). While the engine still reports `isSpeaking` the deadline is extended in 1.5 s steps up to 15 s from `onStart` rather than cutting the sentence off: numbers speak far longer than their characters ("148 yards" is "one hundred and forty-eight yards"), and on the bench the old 1500 + 70/char allowance killed every SECOND mid-sentence (2026-10-13).
   - **Errors**: a non-SUCCESS `speak()` or `onError` → **retry once**, then the chime plus the banner and a one-off toast, so an alert is never silently lost; the audio-focus request's result is recorded.
   - **Every decision is recorded** (`QUEUED / REPLACED / SPOKEN / DROPPED reason / INTERRUPTED / TTS_ERROR status / TTS_STUCK`) in a 50-entry ring shown in car More → Alerts and the phone's Diagnostics, and written to `alert-debug.log` (§15.5); `spoken`/`spokenDelayMs` are written back onto the STAGE event, so a silent alert can always be explained.
+```mermaid
+flowchart TB
+  O["NavTts.speak → scheduler.offer(utterance)"] --> MU{"muted?"}
+  MU -- yes --> R0["MUTED, recorded, not spoken"]
+  MU -- no --> SAME{"same POI already waiting?"}
+  SAME -- "later stage" --> R1["REPLACED: the newest stage wins"]
+  SAME -- "no" --> Q["QUEUED: SECOND and OVERSPEED jump the queue; PASSING has the top priority; GUIDANCE sits at 80"]
+  Q --> NX["scheduler.next(now) on every change"]
+  NX --> STL{"stale by distance? (FIRST and SECOND only; a prepare prompt inside the now distance)"}
+  STL -- yes --> R2["DROPPED stale (PASSING is never dropped)"]
+  STL -- no --> SPK["SPOKEN: audio focus TRANSIENT_MAY_DUCK, TextToSpeech.speak"]
+  SPK --> END{"onDone, onError, onStop(interrupted), or the watchdog: 3000 + 120 × characters ms, extended while isSpeaking, capped at 15 s"}
+  END -- "error" --> RT["Retry once, then chime + banner + a one-off toast (TTS_ERROR)"]
+  END -- "stuck" --> ST["TTS_STUCK recorded; the queue moves on"]
+  END -- "done" --> REL["Focus abandoned; next(now)"]
+```
+
 - Optional chime before speech (setting): a short earcon played through the same attributes in the same focus window.
 - Mute: global and per-set mute **stop speech only**; the visual alerts, including the passing card, still show. The engine still emits PASSING while muted: the coordinator only clears `speak`, it no longer rebuilds the candidates with `soundOn=false` (2026-10-12). The compulsory rule means "always when sound is on", not "even when muted". A "Silent mode" setting turns off visuals as well.
 
 ### 12.4 Driver's screen (instrument cluster) and rail
 **What the driver's screen can show** (owner request, 2026-10-12): Android Auto renders the active navigation app's `Trip` on the instrument cluster of cars that support cluster navigation: the next manoeuvre icon, its distance, the road, and the ETA/remaining distance from the destination's `TravelEstimate`. Third-party navigation apps get this turn card only; the cluster **map** is Google Maps' own and no API offers it to apps. Whether the XPENG G6 shows it at all is the car's decision, so it's **checked on the first drive after this change** (§15.4) and recorded here.
 - **What we send** (`TripMapper.trip`): the current `Step` (manoeuvre, cue, road) with its estimate, the destination with the trip's estimate, and `setCurrentRoad`; the **next step is added as a second `Step`** so clusters that show two manoeuvres can; `setLoading(true)` while rerouting so the cluster shows a spinner, not a stale turn. Published on every `NavInfo` update and from whichever screen is on top (§9.3); each `updateTrip` is sampled into `debug-nav` (`Trip update step=… d=…`, every 5 s), so a blank driver's screen can be told apart from a car that ignores trips.
-- **POI alerts on the cluster**: while guiding, `TripPublisher` puts the active POI alert into the `Trip` for 8 s as a `Step` whose **`Maneuver` icon is the camera's own icon with its limit badge** (no badge on a camera icon, §7) (the same `IconRepository` bitmap as the marker, §8.1, through `CarIcon` from a bitmap, as `TripMapper` already does for the SDK's manoeuvre bitmaps) and whose cue carries the alert text and distance ("Fixed camera · 30 mph · 0.4 mi", the road in `setRoad`), then puts the normal step back. Clusters that don't support this ignore it. Car cluster support varies by vehicle, so this is best effort.
+- **POI alerts on the cluster** (**designed, not built as of 2026-10-24**: `TripPublisher` sends the route's steps only): while guiding, `TripPublisher` would put the active POI alert into the `Trip` for 8 s as a `Step` whose **`Maneuver` icon is the camera's own icon with its limit badge** (no badge on a camera icon, §7) (the same `IconRepository` bitmap as the marker, §8.1, through `CarIcon` from a bitmap, as `TripMapper` already does for the SDK's manoeuvre bitmaps) and whose cue carries the alert text and distance ("Fixed camera · 30 mph · 0.4 mi", the road in `setRoad`), then puts the normal step back. Clusters that don't support this ignore it. Car cluster support varies by vehicle, so this is best effort.
 - **The media artwork slot** (owner question, 2026-10-12): the artwork the driver's screen shows comes from the playing media app's `MediaSession` metadata (title, subtitle, album art, playback state), which Android Auto takes from whichever session is active. There's no navigation API for it, but it **could be borrowed**: our foreground service owns a `MediaSessionCompat`; for the 8 s of an alert it goes active with state `PLAYING` (no audio focus taken, so the music keeps playing), title "Fixed camera · 30 mph", subtitle "0.4 mi" and the camera icon as artwork, then `STOPPED` and released. **Unverified and risky**: Android Auto's main-screen media card would likely switch to us too and may not switch back by itself; the cluster may only accept sessions from a declared Android Auto media app; the car decides whether the media card is even visible while navigating. Open question §16 row 27: prototype on the DHU's cluster config, then the real car, before the owner decides. Until then, camera details on the driver's screen go through the `Trip` step above.
 
 ---
@@ -1227,12 +1519,12 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    2. Notifications
    3. Contacts (optional, for navigating to contacts' addresses)
    4. Navigation SDK Terms & Conditions dialog (`NavigationApi.showTermsAndConditionsDialog`)
-   5. Android Auto setup checklist (developer mode, unknown sources), with deep links
+   5. Android Auto setup checklist (developer mode, unknown sources: only for sideloaded developer builds; a Play install needs neither), with deep links
 
    **Once setup is complete** (key saved, the required permissions granted including background location, terms accepted) the four setup sections **collapse into one "Setup" row** ("✓ Maps key saved, permissions allowed, navigation terms accepted" with **Show**), so the settings proper start at the top of the tab (owner, 2026-10-13: a cleaner Settings tab). Show expands them again; they stay expanded while anything is missing.
 2. **Reports**: the end-of-drive review (§8.5). Per report: type (guessed from the comment), position nudges, speed limit with its source, direction (heading ± and One way / Both), comment transcript with Play recording, then Send / Send all / Save / Discard / Browser. Send is disabled while connected to the car or moving.
 3. **POI sets** (POIs tab): **only POI files you imported by hand** (source FILE). A card per set showing the name, source, count, last updated, and an on/off switch; swipe left to delete, tap to edit. Button: Import file. Camera sets never appear here.
-4. **Import flow**: pick file → auto-detect format (shown, can be overridden) → the CSV wizard if needed (§5.7) → name the set → choose the default icon and template → progress → result report.
+4. **Import flow** (as built): pick file → auto-detect format (shown, can be overridden) → the CSV wizard if needed (§5.7) → progress → result report. **No set-name prompt and no icon or template step at import** (hard rule 9, §5): the name comes from the file, a zip's matching image is its icon, and icon and templates are edited afterwards in the set detail.
 5. **Set detail**:
    - Default icon, and **Alerts** settings:
      - **1st alert**: mode (distance / seconds ahead), value, minimum distance, template
@@ -1241,9 +1533,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
      - **Sound** switch
      - checks from §11.1 shown inline as you type
 
-   - The category list: each category's icon and template override, alerts switch, and zone role.
-   - A map preview of 50 sample POIs with direction arrows.
-   - Actions: re-import, delete, export settings.
+   - *Designed, not built (2026-10-24):* a category list with per-category icon and template overrides, a map preview of 50 sample POIs with direction arrows, and re-import / export-settings actions. Today the editor has the set's icon, stages, templates and sound; delete is a swipe on the list; re-import is importing the file again (matched by name, §5).
 6. **Icon picker**: grid of built-in icons and user icons, plus "Add from file".
 7. **Template editor**:
    - text field with placeholder chips
@@ -1256,7 +1546,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - A summary line above the groups gives the total, e.g. "19,826 cameras in 33 sets".
 9. **Settings** (one scrolling page of cards, in this order; **every control has at most one short line of help** on the phone, the full explanation lives in docs/SETTINGS.md; owner, 2026-10-13):
    - **Car screen**: units (mph/km/h and miles/km), speed panel show/hide, **Satellite map in the car**.
-   - Alerts: voice on/off (the alerts only; directions are always spoken, §12.3), chime on/off, overspeed %, the **alert lead-time slider** ("First alert: N s ahead · second alert at N/2 s", 15–60 s, with the worked distances at 30/50/70 mph; §11.1), **Announce speed limit changes ahead** (on; §8.4a), and the default stage modes and floors for new sets.
+   - Alerts: voice on/off (the alerts only; directions are always spoken, §12.3), chime on/off, overspeed %, the **alert lead-time slider** ("First alert: N s ahead · second alert at N/2 s", 15–60 s, with the worked distances at 30/50/70 mph; §11.1), **Announce speed limit changes ahead** (on; §8.4a). (Default stage modes and floors for new sets: designed, not built; new sets get the §11.1 defaults.)
    - Over-limit warning: −5% to +20% slider, default −0.1%.
    - Speed and location source: car when available / phone only (§10.6).
    - Routing: **Avoid tolls** (on), **Energy-efficient routes (EV)** (off) (§8.3a).
@@ -1264,7 +1554,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - Backup: save / restore the settings file (§13.4).
    - Bench testing (debug builds): simulated-drive speed.
    - There's no GPS card: the rate is what the phone offers (§10.2).
-10. **Places**:
+10. **Places** (*designed, not built on the phone as of 2026-10-24*: recents and favourites are managed on the car screen, §8.2; the Google Maps import and the Data Portability sync are on the planned list, README):
    - Favourites and recents, each with its source. Delete by swiping, with undo.
    - **Import from Google Maps**: Takeout zip, or Timeline.json, with a months-back setting.
    - **Google account sync** (Data Portability API): connect/disconnect, last sync, Sync now.
@@ -1273,7 +1563,7 @@ The phone app has **four tabs: POIs · Cameras · Reports · Settings**. There's
    - **Contacts**: permission status; "Clear contact location cache".
 11. **Diagnostics** (Settings → Diagnostics, between Backup and About, **folded behind Show/Hide**: collapsed, the card is one line, "Two debug logs always on · drive recording on/off"; owner, 2026-10-13; §15.5; 2026-10-12): for each of the two debug logs a status line (size, oldest entry), **Show last 200 lines** (monospace, scrollable), **Save** (`CreateDocument("text/plain")`, `autonavalerts-<name>-YYYY-MM-DD.log`), **Share** (via `FileProvider`, `${applicationId}.diag`) and **Clear**; **Engine now** (shows and records `AlertCoordinator.snapshot()`); the speech record ring (§12.3); the **Drive recording** switch and its Save. About shows the build stamp (§1.3).
 12. **Connecting to a car** (Settings, between Diagnostics and About, **folded behind Show/Hide** like Diagnostics; owner, 2026-10-23: "place information of getting it working on the settings under connecting for debug to a real head unit"). Collapsed, it is one line, "Getting AutoNavAlerts on the car screen, and debugging on a head unit". Open, it is plain numbered steps in two parts, the only card allowed more than one line of help, since it is a manual, not a control:
-    - **On a car** (any make; XPENG G6 and MG4 for the owner): the app installed with the Play Store recorded as its installer (`adb install -r -i com.android.vending app-release.apk`), Android Auto developer mode (tap Version about 10 times), ⋮ → Developer settings → **Unknown sources** on. **The phone's Customise Launcher list is not a check** (2026-10-24, owner's phone, Android Auto 18.0.664204): a sideloaded Car App Library app is not kept there. It appeared once, during the first head-unit session after a reinstall, and was gone after a reboot, while a head unit connected after the reboot still opened the app at once with no reinstall; a reinstall plus an Android Auto restart without a session did not list it. Google documents that Unknown sources does not cover Car App Library apps and that the Play internal test track is the way to test in real cars (§1.3 Distribution, §16 row 10); until the app is on Play, the sideload is a developer path and the list stays empty of it. Then the app opened once on the phone (key, permissions, terms), then connect (a data cable for a wired car; Bluetooth and Wi-Fi on for wireless) and open the car's app grid. **If it's missing**: Android Auto only picks up a sideloaded app that was installed or updated during a car session, so disconnect and reconnect once; if it's still missing, force stop Android Auto and reconnect; failing that, connect the phone once to a head unit on a computer (below), then reconnect the car. Stop the head unit server before driving.
+    - **On a car** (any make; XPENG G6 and MG4 for the owner). **Testers (since 2026-10-24):** install from Google Play through the internal-testing opt-in link (§13.3 "Google Play"); nothing to turn on in Android Auto. **Developers (the sideload path):** the app installed with the Play Store recorded as its installer (`adb install -r -i com.android.vending app-release.apk`), Android Auto developer mode (tap Version about 10 times), ⋮ → Developer settings → **Unknown sources** on. **The phone's Customise Launcher list is not a check** (2026-10-24, owner's phone, Android Auto 18.0.664204): a sideloaded Car App Library app is not kept there. It appeared once, during the first head-unit session after a reinstall, and was gone after a reboot, while a head unit connected after the reboot still opened the app at once with no reinstall; a reinstall plus an Android Auto restart without a session did not list it. Google documents that Unknown sources does not cover Car App Library apps and that the Play internal test track is the way to test in real cars (§1.3 Distribution, §16 row 10); until the app is on Play, the sideload is a developer path and the list stays empty of it. Then the app opened once on the phone (key, permissions, terms), then connect (a data cable for a wired car; Bluetooth and Wi-Fi on for wireless) and open the car's app grid. **If it's missing**: Android Auto only picks up a sideloaded app that was installed or updated during a car session, so disconnect and reconnect once; if it's still missing, force stop Android Auto and reconnect; failing that, connect the phone once to a head unit on a computer (below), then reconnect the car. Stop the head unit server before driving.
     - **Debugging on a head unit** (the Desktop Head Unit on a computer with the Android SDK, `extras;google;auto`): Android Auto ⋮ → **Start head unit server** (again after every phone restart), USB debugging on, `adb forward tcp:5277 tcp:5277`, run `desktop-head-unit`; the logs are in Diagnostics above; ⋮ → Stop head unit server when done.
     Buttons: **Open Android Auto settings** (the same deep link as the setup card).
 
@@ -1332,7 +1622,7 @@ Shown under **Create a key with my Google account** as **Set it up yourself in G
 5. **Copy the key** in the Console and press **Paste key from clipboard** in the app. The app checks it looks like a Google API key (`AIza` + 35 characters), saves it encrypted and re-initialises the Navigation SDK and Places (§1.4).
 
 ### 13.3 One signing key for every build, and the one-time registration
-**Application ID `uk.damiendye.autonav`** (owner, 2026-10-24: "use uk.damiendye.autonav as id", for the Google Play listing). Only Gradle's `applicationId` changed; the Kotlin namespace and packages stay `io.autonav.alerts`, and the code never hard-codes the ID (`BuildConfig.APPLICATION_ID`, `context.packageName`, FileProvider authority `${applicationId}.diag`). Consequences: Android treats it as a **new app** (the `io.autonav.alerts` install on a phone stays beside it with its own data; move settings with Backup → Restore, §13.4, then uninstall the old one); the **Android OAuth client** for sign-in and every **Maps key's Android restriction** are per package, so the maintainer registers a second Android client for `uk.damiendye.autonav` + the shared SHA-1 and users' keys made by §13.1 are created afresh for the new package (the button does this by itself; a pasted key needs the new package added in Cloud Console). The debug bench action string `io.autonav.alerts.BENCH` is unchanged (it is an intent action, not the ID).
+**Application ID `uk.damiendye.autonav`** (owner, 2026-10-24: "use uk.damiendye.autonav as id", for the Google Play listing). Only Gradle's `applicationId` changed; the Kotlin namespace and packages stay `io.autonav.alerts`, and the code never hard-codes the ID (`BuildConfig.APPLICATION_ID`, `context.packageName`, FileProvider authority `${applicationId}.diag`). Consequences: Android treats it as a **new app** (the `io.autonav.alerts` install on a phone stays beside it with its own data; move settings with Backup → Restore, §13.4, then uninstall the old one); the **Android OAuth client** for sign-in and every **Maps key's Android restriction** are per package, so the maintainer registers a second Android client for `uk.damiendye.autonav` + the shared SHA-1 (**done 2026-10-24** in the Maps project, next to the `io.autonav.alerts` one; Google says it can take "five minutes to a few hours" to take effect) and users' keys made by §13.1 are created afresh for the new package (the button does this by itself; a pasted key needs the new package added in Cloud Console). The debug bench action string `io.autonav.alerts.BENCH` is unchanged (it is an intent action, not the ID).
 
 **Why**: Google matches the app's sign-in to its package name **and signing SHA-1**. Each PC's own debug key has a different SHA-1, so without a shared key every PC (and the release build) would need its own registration.
 
@@ -1344,6 +1634,16 @@ Shown under **Create a key with my Google account** as **Set it up yourself in G
 - **A new PC:** `git clone git@github.com:damo2929/autonavalerts-signing.git ~/.config/autonavalerts`, then build as normal. **Check** a build is signed with it: `apksigner verify --print-certs app/build/outputs/apk/debug/app-debug.apk` must show SHA-1 `6c48a1e5…9d2c0f`. A different SHA-1 means the folder wasn't found and the PC's own debug key was used, so Google sign-in (§13.1) and the restricted Maps keys won't accept that build.
 - Changing an installed app's signing key needs an uninstall first (Android refuses the update), which clears its data: the Maps key, the navigation-terms record, the PGW login, the camera database and reports. On the bench that means re-entering the Maps key and PGW login after the switch.
 - **Maps keys and the signing key:** a key restricted to Android apps lists package + SHA-1 pairs. A key made by §13.1 lists the SHA-1 of the build that made it. The maintainer's own key (project `damien-maps-b17139`, see CHECKPOINT.md) lists both the shared SHA-1 and the old laptop debug SHA-1, so it worked across the switch. Remove the old one once no installed build uses it.
+
+**Google Play** (owner, 2026-10-24; set up that evening):
+- The app exists in the owner's personal Play developer account as **AutoNavAlerts**, free, package `uk.damiendye.autonav`. The account's details (owner account, account ID, Console links, tester addresses) are in `play-console.md` in the private signing folder, never here.
+- **Play App Signing is enrolled with the shared key as the app signing key** (the key exported and encrypted with Google's PEPK tool, uploaded through Change key → "Export and upload a key from Java keystore"; the tool, Google's encryption public key and the encrypted output live in the private folder, gitignored). Google had generated its own key when the app was created; it was replaced before any release, with no installs. The upload key is the same shared key, so `:app:bundleRelease` signs the bundle and the Console accepts it. **Never let Google generate or rotate the key:** a different SHA-1 breaks every user's Maps key and the OAuth client.
+- **Automatic protection (Play's installer check) stays off** (owner: "turn protection off"): a Play-protected build refuses to run when sideloaded, which would end the developer path and make the shipped build differ from the tested one.
+- **Every Play upload increments `versionCode`** in `app/build.gradle.kts`; the Console refuses a version code it has already seen. `versionName` is stamped with `-PversionName=` as before.
+- **The release bundle carries native debug symbols** (`ndk { debugSymbolLevel = "SYMBOL_TABLE" }` on the release build type, NDK `29.0.14206865` pinned by `ndkVersion`; the symbols are the Navigation SDK's `.so` symbol tables). Without them the Console warns on every upload and native crashes in Android vitals are unsymbolicated (owner, 2026-10-24: "we should comply with the warning").
+- **Internal testing track:** one email list, "AutoNavAlerts testers", up to 100 Google accounts; a tester must be on it before the opt-in link works. The link is public and lives in docs/INSTALLATION.md. Releases are live within minutes, with no Play review. Until the store listing is finished and reviewed, Play shows the app under a temporary name (`uk.damiendye.autonav (unreviewed)`) to testers.
+- **Not needed for internal testing, needed before any closed, open or production release:** the App content declarations (privacy policy, ads, data safety, target audience, content rating, advertising ID, government/financial/health, location permissions, foreground service permissions) and the store listing. There is no Android Auto / car-app declaration in the Console for this app; the Car App Library category needs none at this stage.
+- **Still the owner's to check (ISSUES N5):** that a Play-installed build is kept in Android Auto's Customise Launcher across a reboot on the phone, which is what the sideload never managed (§16 row 10).
 
 **One-time registration by the maintainer** (Google Cloud, done once for the app, never by users):
 1. A Cloud project for the app: **`autonavalerts-app-6c5c7b`** ("AutoNavAlerts app", created 2026-10-12 with `gcloud`), with Cloud Resource Manager, Cloud Billing, Service Usage and API Keys enabled. It has no billing and needs none.
@@ -1577,7 +1877,7 @@ Setup: phone with Android Auto developer mode → "Start head unit server"; `adb
 | 7 | ~~10 Hz GPS on phones~~ **Resolved 2026-10-24** | Many chips cap below 10 Hz | The phone is asked at its natural 1 Hz and any faster fix it offers is accepted; nothing is forced (§10.2, owner). The actual rate shows in More → GPS. |
 | 8 | Background location | Android 14+ foreground-service rules; OEM battery killers | `foregroundServiceType=location`, started while the car UI is visible; onboarding asks to ignore battery optimisation. |
 | 9 | Default nav app selection | Android Auto UI for choosing the default varies by version | Document the steps; handle `ACTION_NAVIGATE` either way. |
-| 10 | Sideload restrictions | Android Auto may hide unknown-source apps without developer mode | **2026-10-24:** Google's testing guide says Unknown sources "doesn't apply to apps built using the Android for Cars App Library": they must come from Google Play (internal test track or internal app sharing, no review). On the owner's CPH2791 (Android Auto 18.0.664204) the sideloaded app (installed with `-i com.android.vending`) runs on a head unit, before and after a reboot, but is not kept in Customise Launcher: listed once during the first head-unit session after a reinstall, gone after a reboot, not re-added by a later session or by a reinstall plus an Android Auto restart. **Decision for the owner (ISSUES D5):** move distribution to a Play internal testing track with Play App Signing on the shared key (same SHA-1, so the Maps keys and the OAuth client stay valid and the sideloaded install updates in place). The release bundle (`:app:bundleRelease`) is built and ready. |
+| 10 | Sideload restrictions | Android Auto may hide unknown-source apps without developer mode | **2026-10-24:** Google's testing guide says Unknown sources "doesn't apply to apps built using the Android for Cars App Library": they must come from Google Play (internal test track or internal app sharing, no review). On the owner's CPH2791 (Android Auto 18.0.664204) the sideloaded app (installed with `-i com.android.vending`) runs on a head unit, before and after a reboot, but is not kept in Customise Launcher: listed once during the first head-unit session after a reinstall, gone after a reboot, not re-added by a later session or by a reinstall plus an Android Auto restart. **Decision put to the owner (then ISSUES D5):** move distribution to a Play internal testing track with Play App Signing on the shared key (same SHA-1, so the Maps keys and the OAuth client stay valid and the sideloaded install updates in place). The release bundle (`:app:bundleRelease`) is built and ready. **Resolved 2026-10-24 22:10:** the internal testing track is live with release 1 (§1.3 Distribution, §13.3 "Google Play"); the Customise Launcher check on a Play-installed build is still to do (ISSUES N5). |
 | 11 | Car-app API level on older head units | `Alert` needs API ≥ 5 | Fall back to the nav heads-up notification on lower levels. |
 | 12 | Places API cost | Autocomplete is billed per session | Use session tokens, a 300 ms debounce, and a minimum of 3 characters. |
 | 13 | Google Maps recents | No live API; Takeout and Timeline are manual; Data Portability needs an OAuth client, test-user setup and the EEA/UK | Our own recents and Maps shares are always current; imports fill in the history; Data Portability sync is optional (§8.2) |
@@ -1784,6 +2084,8 @@ One `ChargerProvider` interface lets sources be added or turned off. Results are
 - **Tests**: 98 JVM unit tests in `:core` (all pass).
 
 **2026-10-12, first real-car drive** (XPENG G6, wireless Android Auto): the route cleared on drive-off, the SDK's on-map controls were dead, some alerts were silent, markers vanished on approach and Recents stayed empty: see §16 rows 22–25 and the diagnostics in §15.5, with the amended §8, §8.1, §8.3, §8.3a, §8.4a, §9.3, §10.2, §10.6a, §11, §11.1, §12.3 and §13. Designed; to be built in that order, diagnostics first, then re-tested against §15.4.
+
+**2026-10-24, distribution:** the app is on Google Play's internal testing track (release 2, `0.0.2-2026-10-24`, version code 2, Play App Signing on the shared key, native debug symbols in the bundle; §1.3 Distribution, §13.3 "Google Play"). The first Play install on the owner's phone and the Customise Launcher check after a reboot are still to do (ISSUES N5).
 
 **Not yet built** (later phases):
 - Home Assistant people finder (§17), Google Maps history imports and the share receiver (§8.2), EV chargers (§18).

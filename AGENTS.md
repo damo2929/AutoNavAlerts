@@ -10,7 +10,7 @@ This file is for AI agents and anyone else picking the project up cold. It says 
 | [DESIGN.md](DESIGN.md) | **The source of truth.** Every behaviour, rule, data format, threshold and decision. Nothing is built that isn't designed here first | Before any change; again before you commit |
 | [TESTING.md](TESTING.md) | The bench: Desktop Head Unit, emulator, `tools/drive.py`, scenarios, the debug broadcast hooks, the full checklist (§6) and the real-car protocol (§6.12) | Before testing or claiming something works |
 | [docs/SETTINGS.md](docs/SETTINGS.md) | Every user-facing setting explained | When touching settings, the phone UI or the backup file |
-| [docs/INSTALLATION.md](docs/INSTALLATION.md) | The tester's guide: APK from Releases, `adb install -r -i com.android.vending`, phone setup, Android Auto, the car, sending logs | When the install, setup or Android Auto steps change, or a tester reports a setup problem |
+| [docs/INSTALLATION.md](docs/INSTALLATION.md) | The tester's guide: the Play internal-testing link (the adb route only for developers), phone setup, Android Auto, the car, sending logs | When the install, setup or Android Auto steps change, or a tester reports a setup problem |
 | [README.md](README.md) | The public overview, build steps, licensing | For orientation and when user-facing behaviour changes |
 | [CHANGELOG.md](CHANGELOG.md) | What changed for the user, by day, with the DESIGN.md section for each | When reporting a change; add a line for anything the user will notice |
 | [ISSUES.md](ISSUES.md) | Outstanding bugs, decisions waiting on the owner, what isn't verified yet, what isn't built | When picking the next thing up, and to move an item out when it's done |
@@ -24,8 +24,8 @@ Do not rely on a summary of these files from memory or from an earlier session. 
 | Topic | Section |
 |---|---|
 | Goals, decisions table, prerequisites (Maps key rules) | §1 |
-| Architecture, threads, process model | §2 |
-| Package layout: which class does what, `:core` vs `:app` | §3 |
+| Architecture, threads, process model; the component diagram and the fix-to-speech sequence | §2 |
+| Package layout: which class does what, `:core` vs `:app` (regenerated from the source tree; keep it in step when adding or renaming a class) | §3 |
 | Room entities, icon/template resolution, grid cells, staging swap | §4 |
 | Importers (iGO, OV2, KML, GPX, CSV, zip) and the PGW file formats | §5 |
 | PocketGPSWorld sync, RSS feed, licence handling | §6 |
@@ -42,6 +42,8 @@ Do not rely on a summary of these files from memory or from an earlier session. 
 | Open questions and the first real-car drive bugs | §16 |
 | Not yet built: Home Assistant people finder, EV chargers | §17, §18 |
 | Build phases and implementation status | Appendix A, B |
+
+**Diagrams** (Mermaid, rendered by GitHub): components and the alert sequence (§2), the Room entities (§4.1), the staging swap (§4.4), the import pipeline (§5), the PGW sync (§6.1), the car screen graph and the map surface composition (§8), the location feeds (§10), the alert engine's decision per candidate (§11), alert dispatch (§12) and the speech scheduler (§12.3). They are drawn from the code's real class names and call paths; a change to either side updates the diagram.
 
 **In the code:**
 - `core/src/main/kotlin/io/autonav/alerts/core/` is pure JVM logic, unit-tested: geo maths, importers, `AlertEngine`, `FixEstimator`, `SpeechScheduler`, `FollowWatchdog`, `EcoReaskPolicy`, `RoutePolyline`, `LimitIndex`/`LimitLookahead`, `BatchLog`, `DriveLog`.
@@ -73,7 +75,7 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 
 ### 3.2 Other fixed behaviours to preserve
 
-- Phone GPS taken at the rate the phone offers, never forced faster (asked at 1 Hz, any faster fix accepted; owner, 2026-10-24); car speed and car GPS at `UPDATE_RATE_FASTEST` when the car provides them (§10).
+- Phone GPS taken at the rate the phone offers, never forced faster (asked at 1 Hz, any faster fix accepted; owner, 2026-10-24); car GPS at `UPDATE_RATE_FASTEST` and car speed as fast as the host sends it (the speed listener has no rate parameter) when the car provides them (§10).
 - Three alert stages: 1st and 2nd from the global lead-time slider (N s and N/2 s at current speed, floors 242 m and 142 m), and the **compulsory passing alert 1 s before the camera at the current speed, never less than 20 yd, whenever sound is on**; the trigger ratchets and never shrinks on an approach; events are never dropped, PASSING is never dropped (§11, §11.1, §12.3).
 - Average-speed zones only start with a same-limit camera ahead and end at the last camera (§11 step 8).
 - Over-limit slider −5% to +20%, default −0.1% (§11 step 9).
@@ -84,6 +86,7 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 - Navigation terms accepted once and remembered. PGW swap never happens while navigating (§6.2).
 - Big data streamed from disk, never held whole in RAM (§1.3 Memory).
 - The quarterly SDK feature-watch workflow stays free: public repo, standard runner, 10-minute cap.
+- Google Play (§13.3 "Google Play"): Play App Signing stays on the shared key (never let Google generate or rotate it); automatic protection stays off; every Play upload bumps `versionCode`; release bundles carry native debug symbols; the tester opt-in link is the only Play detail that belongs in the public docs.
 - Emulator: 2 vCPUs, `-gpu host -feature -Vulkan`, never change SELinux booleans.
 
 ### 3.3 The cross-check procedure
@@ -105,4 +108,5 @@ Interface contracts between parallel agents (when CHECKPOINT.md lists them, e.g.
 - Debug builds only have `Simulate`, the bench hooks and `run-as` log access. The owner's phone runs a release build; check release-only paths (R8 keep rules, §14) when touching the Navigation SDK or Maps classes.
 - Don't `pkill -f` a pattern that matches your own shell; kill by PID from `/tmp/autonav-bench/*.pid`.
 - Don't push, commit or create issues unless asked. Commit messages end with the `Co-Authored-By: Claude` trailer the README mentions.
+- Every source file carries a KDoc that names its DESIGN.md section, the thread it runs on and the hard rule it upholds; keep that true when you add or change a class, and keep comments on their own lines.
 - Keep this file, CHECKPOINT.md and DESIGN.md in step: if you add a rule or a pointer here, it must already exist in DESIGN.md or CHECKPOINT.md §5. This file points; it never originates design.

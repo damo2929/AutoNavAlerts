@@ -57,7 +57,7 @@ Use a **debug** build for bench testing. Only debug builds have the **Simulate**
 ### 2.2 Phone: Android Auto developer mode
 1. Open **Android Auto settings**. On Android 10+ it's built in: **Settings → Connected devices → Connection preferences → Android Auto** (the path varies by phone; search Settings for "Android Auto").
 2. Scroll to the bottom and tap **Version** about 10 times, then accept the prompt. Developer mode is now on.
-3. Open the **⋮ menu → Developer settings** and turn on **Unknown sources**. That's required because AutoNavAlerts is sideloaded rather than installed from Play. On a real phone also install with `-i com.android.vending` (the Play Store recorded as installer). Don't use the phone's Customise Launcher as a check: a sideloaded Car App Library app isn't kept there (DESIGN.md §16 row 10, 2026-10-24); the head unit is the check.
+3. Open the **⋮ menu → Developer settings** and turn on **Unknown sources**. That's required because the bench build is sideloaded rather than installed from Play (a phone with the Play internal-test build needs none of this, DESIGN.md §13.3 "Google Play"). On a real phone also install with `-i com.android.vending` (the Play Store recorded as installer). Don't use the phone's Customise Launcher as a check: a sideloaded Car App Library app isn't kept there (DESIGN.md §16 row 10, 2026-10-24); the head unit is the check.
 4. In the same **⋮ menu**, tap **Start head unit server**. A notification confirms it's running. Do this again after each phone reboot.
 
 ### 2.3 Install and set up the app
@@ -456,7 +456,7 @@ The bench can't produce a real receiver, a real head unit or Android Auto's audi
 
 | # | Step |
 |---|---|
-| V0 | Install the build. Settings → Diagnostics → **Clear**, **Drive recording** on. Phone on the dash with a clear view of the sky. Note the phone's clock against the car's. Pick a route with **at least 10 cameras**, including **3 or more ONE_WAY cameras passed in both directions**, and a gentle bend. |
+| V0 | Install the build (from Play's internal testing track on the owner's phone, DESIGN.md §13.3 "Google Play"; a sideloaded release APK with `-i com.android.vending` only when the build isn't on Play). Settings → Diagnostics → **Clear**, **Drive recording** on. Phone on the dash with a clear view of the sky. Note the phone's clock against the car's. Pick a route with **at least 10 cameras**, including **3 or more ONE_WAY cameras passed in both directions**, and a gentle bend. |
 | V1 | Drive it. At every anomaly (an alert that didn't speak, a marker that vanished, a route that cleared), **say the time aloud** or tap **Report**: Report taps land in the logs as timestamps you can find afterwards. |
 | V2 | Afterwards, with the car off: Settings → Diagnostics → **Save** both logs and **Save drive recording…**; `adb pull` them from Downloads. Keep them **out of the repo** (they contain your route and PGW camera ids). |
 | V3 | Build a POI CSV of the cameras you passed (from `poi.db`, §3 step 5, "Passing real cameras") and run **G10** with the recording; then read the logs against the table below. |

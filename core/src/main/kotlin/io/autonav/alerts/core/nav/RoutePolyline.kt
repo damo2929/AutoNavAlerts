@@ -12,6 +12,13 @@ import io.autonav.alerts.core.geo.LatLngLike
  * cross-track distance from a point to the segments from the car's segment onward for [aheadM],
  * never to segments behind. [locate] finds the car's segment with a hint (the last one), so a
  * route that passes the same spot twice matches the pass the car is on.
+ *
+ * No Android, no threads of its own. The app's `GuidanceController` builds one from the SDK's
+ * route polyline whenever the route changes and calls [locate] once per fix, from the car's
+ * position and heading, before the engine runs (`locateCar`); the engine then measures each POI
+ * through [distanceToRouteM] on the alert thread. When the car itself is over 50 m from its
+ * segment ([carDistanceM]) the app hands the engine no route at all, so the free-drive corridor
+ * applies (§11 step 4 "carOffRoute"). Degrees in, metres out; [aheadM] defaults to the 3 km of §11.
  */
 class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000.0) : RouteMatcher {
     private val lat = DoubleArray(points.size) { points[it].lat }
@@ -23,6 +30,7 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
         for (i in 1 until points.size) cum[i] = cum[i - 1] + Geo.distanceM(lat[i - 1], lon[i - 1], lat[i], lon[i])
     }
 
+    /** Points and segments in the route. */
     val size: Int get() = lat.size
     val segments: Int get() = maxOf(0, lat.size - 1)
 
@@ -41,6 +49,8 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
         return carIndex
     }
 
+    // Defaults: look 500 m along from the hint (and 200 m back), take a hit within 50 m; a same-way
+    // segment further than 150 m is a later leg, not our road, so the heading is then dropped.
     /**
      * The segment nearest the car, searched from up to [backM] before [hintIndex] (so a wrong jump
      * ahead can recover): first within [windowM] along the route (taken if within [snapM]), else
@@ -78,6 +88,7 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
             }
             i++
         }
+        // Nothing same-way near enough: try once more ignoring the heading, else stay near the hint.
         if (best >= 0 && (headingDeg == null || bestD <= farSnapM)) return best
         return if (headingDeg != null) nearestSegment(carLat, carLon, hintIndex, windowM, snapM, null, sameWayDeg, backM, farSnapM) else start
     }
@@ -101,6 +112,7 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
         return best
     }
 
+    /** The engine's view (§11 step 4): the POI's distance to the route ahead of the car's last located segment. */
     override fun distanceToRouteM(lat: Double, lon: Double): Double = distanceAheadM(lat, lon, carIndex)
 
     /** How far the car is from the segment it was last located on: over ~50 m the car isn't on this route. */

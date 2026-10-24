@@ -45,6 +45,11 @@ enum class ClearReason {
  * The engine's diagnostic hook (§11 step 10, §15.5). Optional and zero cost when absent: the engine
  * calls it only when a POI's verdict changes inside that POI's lookahead, when an event is emitted and
  * when a state clears, never per fix.
+ *
+ * The app's `AlertCoordinator` implements it and writes the lines to `alert-debug.log` (the
+ * `Trace` and `PASSED` tags of §15.5). Called on the engine's thread, inside [AlertEngine.onFix],
+ * so an implementation must be quick and must not call back into the engine. Distances are metres,
+ * angles degrees.
  */
 interface AlertTrace {
     /**

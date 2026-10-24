@@ -28,9 +28,13 @@ import java.io.File
 import kotlin.coroutines.coroutineContext
 
 /**
- * Downloads the UK's speed limits from Geofabrik (DESIGN.md §8.4a): for England, Scotland, Wales
- * and Northern Ireland (from the Ireland file, kept to its border), only the roads layer is fetched out of each zip (range requests) and streamed into
- * one compact file. The old file is replaced only when the new one is complete.
+ * Downloads the UK's speed limits from Geofabrik (DESIGN.md §8.4a): for England, Scotland, Wales and Northern
+ * Ireland (from the Ireland file, kept to its border), only the roads layer is fetched out of each zip (range
+ * requests, [RemoteZip]) and streamed into one compact `OsmLimitFile`. The old file is replaced only when the
+ * new one is complete. A one-off WorkManager job built by Hilt, enqueued by `SpeedLimitRepository.download`
+ * when the user presses Download or Update (§8.4a "When": never automatic); runs on Dispatchers.IO with a
+ * progress notification and a Cancel action. The whole run never holds the country in RAM (§8.4a "Low memory
+ * by design", §1.3): about 13 MB of heap on the bench for 1 GB of input.
  */
 @HiltWorker
 class SpeedLimitWorker @AssistedInject constructor(
@@ -46,6 +50,8 @@ class SpeedLimitWorker @AssistedInject constructor(
         try { setForeground(foreground("Starting…", 0, 0)) } catch (e: IllegalStateException) {
             Log.i(TAG, "Running in the background without a foreground service: ${e.message}")
         }
+        // The two temp files of §8.4a "Result": roads are spilled to `.spill` as they arrive, and `.road_limits`
+        // holds one byte per road from the .dbf pass while the .shp pass reads the shapes.
         val writer = OsmLimitFile.Writer(File(repo.file.parentFile, "osm_limits.spill"))
         val limitsTmp = File(repo.file.parentFile, "osm_limits.road_limits")
         var dataDate = ""
@@ -56,6 +62,7 @@ class SpeedLimitWorker @AssistedInject constructor(
             var before = 0L
             for ((region, zip) in zips) {
                 val name = region.name
+                // The newest of the four extracts' dates is shown as the data's date on the Settings card.
                 dataDate = maxOf(dataDate, dateOf(zip.url))
                 val dbf = zip.entry(DBF) ?: error("$name: no roads layer in the download")
                 val shp = zip.entry(SHP) ?: error("$name: no roads layer in the download")
@@ -64,6 +71,8 @@ class SpeedLimitWorker @AssistedInject constructor(
                     limitsTmp.outputStream().buffered(1 shl 16).use { ShapefileRoads.readLimits(d, it) }
                 }
                 before += dbf.compressed
+                // Second pass: the shapes, record by record, keeping only roads with a limit (readRoads skips the
+                // zero-limit ones), simplified to 3 m and cut into tiles by the writer (§8.4a "Processed as it streams").
                 zip.open(shp) { show(name, "roads", before + it, total) }.use { s ->
                     limitsTmp.inputStream().use { limits -> ShapefileRoads.readRoads(s, limits) { mph, xy ->
                         if (region.keeps(mph, xy)) writer.add(mph, ShapefileRoads.simplify(xy, SIMPLIFY_M))
@@ -73,6 +82,8 @@ class SpeedLimitWorker @AssistedInject constructor(
                 coroutineContext.ensureActive()
                 Log.i(TAG, "$name done: ${writer.roads} roads so far")
             }
+            // §8.4a: built as osm_limits.tmp and renamed over the old file only when complete. replaced() before the
+            // rename closes the old reader's file handle, and again after so the next lookup opens the new file.
             val tmp = File(repo.file.parentFile, "osm_limits.tmp")
             show("", "Writing the file", total, total)
             writer.write(tmp, dataDate)
@@ -84,6 +95,7 @@ class SpeedLimitWorker @AssistedInject constructor(
             Result.success()
         } catch (e: Exception) {
             writer.close()
+            // Cancel (from the card or the notification): the temp files go, the old file is untouched (§8.4a).
             if (e is kotlinx.coroutines.CancellationException || isStopped) {
                 Log.i(TAG, "Speed limits download cancelled; the old file is unchanged")
                 repo.report(null)
@@ -99,6 +111,7 @@ class SpeedLimitWorker @AssistedInject constructor(
 
     private var lastShown = 0L
 
+    /** Progress from the stream reads: the live StateFlow on every call, the notification at most every 2 s. */
     private fun show(region: String, step: String, done: Long, total: Long) {
         // The reads block, so coroutine cancellation alone wouldn't stop them: stop here on Cancel.
         if (isStopped) throw kotlinx.coroutines.CancellationException("Speed limit download cancelled")
@@ -111,12 +124,14 @@ class SpeedLimitWorker @AssistedInject constructor(
             .notify(NOTIFICATION_ID, notification(text, done, total))
     }
 
+    /** The foreground-service wrapper for the progress notification; Android 10+ wants the dataSync type declared. */
     private fun foreground(text: String, done: Long, total: Long): ForegroundInfo {
         val n = notification(text, done, total)
         return if (Build.VERSION.SDK_INT >= 29) ForegroundInfo(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         else ForegroundInfo(NOTIFICATION_ID, n)
     }
 
+    /** The ongoing progress notification with a Cancel action (§8.4a "with a progress notification and Cancel"); indeterminate until the total is known. */
     private fun notification(text: String, done: Long, total: Long): android.app.Notification {
         val nm = applicationContext.getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
@@ -138,12 +153,15 @@ class SpeedLimitWorker @AssistedInject constructor(
         private const val TAG = "OsmLimits"
         private const val CHANNEL = "osm_limits"
         private const val NOTIFICATION_ID = 30_200
+        /** The roads layer's two files inside each Geofabrik shapefile zip: attributes (.dbf) and shapes (.shp) (§8.4a "Only the roads are fetched"). */
         private const val DBF = "gis_osm_roads_free_1.dbf"
         private const val SHP = "gis_osm_roads_free_1.shp"
+        /** Douglas-Peucker tolerance in metres for each road's line (§8.4a). */
         private const val SIMPLIFY_M = 3.0
+        /** Geofabrik's free shapefile extracts, rebuilt daily (§8.4a "Source"). */
         private const val BASE = "https://download.geofabrik.de/europe/united-kingdom"
 
-        /** One Geofabrik extract, and which of its roads to keep. */
+        /** One Geofabrik extract, and which of its roads to keep ([keeps] gets the limit in mph and the road's points). */
         class Region(val name: String, val url: String, val keeps: (mph: Int, xy: DoubleArray) -> Boolean = { _, _ -> true })
 
         /**
@@ -153,7 +171,10 @@ class SpeedLimitWorker @AssistedInject constructor(
         val REGIONS = listOf(
             Region("Wales", "$BASE/wales-latest-free.shp.zip"),
             Region("Scotland", "$BASE/scotland-latest-free.shp.zip"),
+            // The Ireland file also holds the Republic (km/h limits): NorthernIreland.keeps keeps only roads inside the
+            // NI border whose limit is a multiple of 5 mph (§8.4a "Northern Ireland from the Ireland file").
             Region("Northern Ireland", "https://download.geofabrik.de/europe/ireland-and-northern-ireland-latest-free.shp.zip", NorthernIreland::keeps),
+            // England is by far the largest (about 700 MB of the 1.07 GB), so it goes last.
             Region("England", "$BASE/england-latest-free.shp.zip"),
         )
 

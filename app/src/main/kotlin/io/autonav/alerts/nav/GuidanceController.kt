@@ -37,13 +37,24 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
-/** Where to go. [address] is kept with the recent (e.g. a contact's address, DESIGN.md §8.3). */
+/**
+ * Where to go. [address] is kept with the recent (e.g. a contact's address, DESIGN.md §8.3).
+ * [lat]/[lon] in degrees; [placeId] is preferred for routing when present (the SDK and the
+ * Routes API both resolve it to the right entrance), the position is the fallback.
+ */
 data class Destination(val title: String, val lat: Double, val lon: Double, val placeId: String? = null, val address: String? = null)
 
-/** A route the driver can choose in the preview (DESIGN.md §8.3a). */
+/**
+ * A route the driver can choose in the preview (DESIGN.md §8.3a): [label] is the row's name
+ * ("Fastest", "Energy-efficient (EV)" or "Fastest and most efficient"), [route] the Routes API
+ * route with its token, [efficient] true for the energy-efficient row (selected first).
+ */
 data class RouteChoice(val label: String, val route: EcoRoutes.Route, val efficient: Boolean)
 
-/** Route alternative shown in the preview (DESIGN.md §8). */
+/**
+ * The SDK's single route as the preview shows it (DESIGN.md §8): [seconds] and [meters] from
+ * `currentTimeAndDistance`, [delaySeverity] the SDK's own traffic level for the row.
+ */
 data class RouteOption(val index: Int, val seconds: Int, val meters: Int, val delaySeverity: Int)
 
 /**
@@ -61,6 +72,21 @@ enum class StopReason { HOST, ARRIVED, KEY_CHANGED, SESSION_DESTROY }
  * Destination, preview, guidance and route geometry on top of the [Navigator] (DESIGN.md §8,
  * §8.3a, §9.3). The route state lives in one core [GuidanceState], mirrored to the StateFlows the
  * screens collect; [stopGuidance] is the only way guidance ends and resets all of it.
+ *
+ * What it does: sets the destination and gets the routes ([setDestination], with the Routes API's
+ * energy-efficient route when the EV option is on, §8.3a), lets the preview pick one ([select]),
+ * starts guidance with our own spoken directions ([startGuidance], §12.3), stops it with a logged
+ * reason ([stopGuidance], §9.3), puts a guided route back after a preview ([abandonPreview]),
+ * re-asks for an energy-efficient route after the SDK's own reroute (§8.3a `EcoReaskPolicy`),
+ * and serves the route's geometry to the alert engine ([locateCar], [routeMatcher], §11 step 4)
+ * and the limit lookahead ([routePointsAhead], §8.4a).
+ *
+ * Lifecycle: a Hilt singleton; guidance outlives the car screen because the host keeps
+ * `NavCarAppService` bound while the car is connected (§2 "Process model", §9.3). Threads (§2):
+ * the suspend functions and the SDK's listeners run on the main thread (the Navigator must be
+ * used there); [locateCar] and [routeMatcher] are called by `AlertCoordinator` on the alert
+ * collector, which is why the route fields are `@Volatile` and the core [RoutePolyline] is only
+ * replaced, never mutated, from the main thread.
  */
 @Singleton
 class GuidanceController @Inject constructor(
@@ -77,9 +103,11 @@ class GuidanceController @Inject constructor(
     /** What kind of route is set, for the preview: e.g. "Energy-efficient route (EV)" (DESIGN.md §8.3a). */
     val routeNote: StateFlow<String?> = _routeNote
 
+    /** The destination as the SDK has it; null with no route. Identity is compared to detect a route swap. */
     @Volatile private var waypoint: Waypoint? = null
 
     /** The one source of truth for the route state (core, pure); the flows below mirror it. */
+    /** Pure decision for the EV re-ask: 60 s grace, at most once a minute, only after the SDK's reroute (§8.3a). */
     @Volatile private var state = GuidanceState()
     private val ecoPolicy = EcoReaskPolicy()
     /** A rerouting event has been seen and no route-changed event has followed it yet (§8.3a). */
@@ -89,11 +117,14 @@ class GuidanceController @Inject constructor(
     /** True while the Navigation SDK simulator drives the route (debug bench testing). */
     val simulating: StateFlow<Boolean> = _simulating
 
+    /** Debug Simulate: the SDK's road-snapped positions become the alert engine's fixes (§10.7, §15.3). */
     private val simListener = RoadSnappedLocationProvider.LocationListener { loc -> location.inject(loc) }
 
+    /** The destination being previewed or guided; null after a stop or an abandoned preview. */
     private val _destination = MutableStateFlow<Destination?>(null)
     val destination: StateFlow<Destination?> = _destination
 
+    /** True from [startGuidance] to [stopGuidance]; the screens and the trip publisher collect it. */
     private val _guiding = MutableStateFlow(false)
     val guiding: StateFlow<Boolean> = _guiding
 
@@ -108,6 +139,7 @@ class GuidanceController @Inject constructor(
     )
     @Volatile private var guided: Guided? = null
 
+    /** The SDK's route as it gave it, refreshed on every route change; read by [routePointsAhead]. */
     @Volatile private var routePoints: List<LatLng> = emptyList()
     /** The same route as a core polyline, for the alert engine and the limit lookahead. */
     @Volatile private var polyline: RoutePolyline? = null
@@ -119,6 +151,7 @@ class GuidanceController @Inject constructor(
     init {
         // A new key makes a new navigator: stop on the old one while it's still alive (NavigatorHolder
         // runs this before cleanup()).
+        // Registered once for the singleton's life; NavigatorHolder keeps the listener across key changes.
         holder.onKeyChanged { stopGuidance(StopReason.KEY_CHANGED) }
         App.appScope.launch { location.fixes.collect { lastHeading = it.heading } }
         // Our speech failed while guiding: Google's own voice takes the directions back for the rest
@@ -141,6 +174,8 @@ class GuidanceController @Inject constructor(
      * Places the car on the route, once per fix and from the car's own position, before the engine
      * runs (DESIGN.md §11 step 4), so [RoutePolyline.carIndex] follows the car and [routeMatcher]
      * only measures POIs. Called from the alert thread.
+     *
+     * Parameters: the fix's position in degrees and the engine's heading in degrees true (null with none).
      */
     fun locateCar(lat: Double, lon: Double, headingDeg: Double?) {
         val p = polyline ?: return
@@ -167,6 +202,7 @@ class GuidanceController @Inject constructor(
     val routeMatcher = RouteMatcher { lat, lon ->
         val p = polyline ?: return@RouteMatcher null
         if (!_guiding.value || carOffRoute) return@RouteMatcher null
+        // Capped at 10 km: a POI far from any route segment only needs to fail the 50 m / 100 m test.
         p.distanceToRouteM(lat, lon).coerceAtMost(10_000.0)
     }
 
@@ -183,6 +219,8 @@ class GuidanceController @Inject constructor(
         val here = location.lastLocation.value ?: return emptyList()
         val i = p.nearestSegment(here.latitude, here.longitude, p.carIndex).coerceIn(0, pts.size - 2)
         val a = pts[i]; val b = pts[i + 1]
+        // 100 m, looser than the engine's 50 m off-route rule: the lookahead only needs the road the car is
+        // about to be on, and a slightly wide snap is better than no limit change at a junction.
         if (Geo.distanceToSegmentM(here.latitude, here.longitude, a.latitude, a.longitude, b.latitude, b.longitude) > 100.0) return emptyList()
         val out = ArrayList<LatLngLike>(AHEAD_POINTS + 1)
         out += LatLngPoint(here.latitude, here.longitude)
@@ -198,7 +236,11 @@ class GuidanceController @Inject constructor(
         return if (out.size >= 2) out else emptyList()
     }
 
-    /** Sets the destination and computes routes. Returns null on success, or an error message. */
+    /**
+     * Sets the destination and computes routes. Returns null on success, or an error message.
+     *
+     * Main thread. The returned message is shown on the car screen as is, so it's worded for the driver.
+     */
     suspend fun setDestination(dest: Destination): String? {
         val nav = holder.ensureNavigator() ?: return "Navigation isn't available (check the API key and terms on the phone)"
         addListeners(nav)
@@ -225,12 +267,17 @@ class GuidanceController @Inject constructor(
         }
     }
 
-    /** Debug bench only: two route rows even when Google's fastest is also the most efficient. */
+    /**
+     * Debug bench only: two route rows even when Google's fastest is also the most efficient.
+     *
+     * Set by the bench's broadcast (TESTING.md §3 step 5a); ignored in release builds.
+     */
     @Volatile var debugTwoChoices = false
 
     private val _choices = MutableStateFlow<List<RouteChoice>>(emptyList())
     /** Routes the driver can pick in the preview (fastest / energy-efficient); empty = the SDK's one route. */
     val choices: StateFlow<List<RouteChoice>> = _choices
+    /** Index into [choices] of the route set in the SDK; 0 with a single route. */
     private val _selected = MutableStateFlow(0)
     val selected: StateFlow<Int> = _selected
 
@@ -244,6 +291,7 @@ class GuidanceController @Inject constructor(
         _choices.value = emptyList()
         val s = settings.current()
         if (s.evEfficientRoutes) {
+            // The origin: the latest fix, or the phone's last known position right after a restart (§8.3a step 1).
             val here = location.lastLocation.value ?: lastKnown()
             val eco = if (here == null) EcoRoutes.Result.Unavailable("no GPS position yet")
                 else eco.route(here.latitude, here.longitude, dest, s.avoidTolls, lastHeading)
@@ -253,6 +301,7 @@ class GuidanceController @Inject constructor(
                     val same = (eco.same || eco.fastest == null) && !(BuildConfig.DEBUG && debugTwoChoices)
                     val list = if (same) listOf(RouteChoice("Fastest and most efficient", eco.efficient, efficient = true))
                         else listOf(RouteChoice("Fastest", eco.fastest ?: eco.efficient, efficient = false), RouteChoice("Energy-efficient (EV)", eco.efficient, efficient = true))
+                    // The energy-efficient row is selected first because the option is on (§8.3a step 3).
                     val pick = list.indexOfFirst { it.efficient }
                     val status = setToken(nav, waypoint, list[pick].route.token, "preview")
                     if (status == Navigator.RouteStatus.OK) {
@@ -298,6 +347,7 @@ class GuidanceController @Inject constructor(
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
+    /** Every `setDestinations` result is logged with its time and point count (§8.3a, §15.5 `routeStatus=`). */
     private fun logRouteStatus(nav: Navigator, status: Navigator.RouteStatus, t0: Long, why: String) {
         val points = if (status == Navigator.RouteStatus.OK) runCatching { nav.routeSegments.sumOf { it.latLngs.size } }.getOrDefault(-1) else 0
         log("routeStatus=${status.name} ms=${SystemClock.elapsedRealtime() - t0} points=$points ($why)")
@@ -310,6 +360,10 @@ class GuidanceController @Inject constructor(
         lm.getProviders(true).mapNotNull { lm.getLastKnownLocation(it) }.maxByOrNull { it.time }
     }.getOrNull()
 
+    /**
+     * Sets a Routes API route in the SDK by its token (`CustomRoutesOptions`, §8.3a "How"). On OK the
+     * token is remembered in [state] so the re-ask applies only a token that differs from it.
+     */
     private suspend fun setToken(nav: Navigator, waypoint: Waypoint, token: String, why: String): Navigator.RouteStatus {
         val t0 = SystemClock.elapsedRealtime()
         val options = CustomRoutesOptions.Builder().setRouteToken(token).setTravelMode(CustomRoutesOptions.TravelMode.DRIVING).build()
@@ -339,13 +393,18 @@ class GuidanceController @Inject constructor(
         return ok
     }
 
+    /** The SDK's current route for the single-route preview row, or null without one. Main thread. */
     fun currentRoute(): RouteOption? {
         val nav = holder.navigator.value ?: return null
         val td = nav.currentTimeAndDistance ?: return null
         return RouteOption(0, td.seconds, td.meters, td.delaySeverity)
     }
 
-    /** Starts guidance along the set route. False, and nothing starts, with no route (DESIGN.md §9.3). */
+    /**
+     * Starts guidance along the set route. False, and nothing starts, with no route (DESIGN.md §9.3).
+     *
+     * [simulate] is honoured in debug builds only (the Navigation SDK simulator, TESTING.md). Main thread.
+     */
     fun startGuidance(simulate: Boolean = false): Boolean {
         val nav = holder.navigator.value ?: return false
         val wp = waypoint ?: run { log("start skipped: no route simulate=$simulate"); return false }
@@ -354,6 +413,7 @@ class GuidanceController @Inject constructor(
         val ours = tts.healthy.value
         setSdkVoice(nav, on = !ours)
         if (ours) directions.start() else log("Directions fallback sdkVoice reason=ttsUnhealthy")
+        // The turn-by-turn feed: two steps of preview and bitmap manoeuvre images for the turn card and the cluster (§12.4).
         nav.registerServiceForNavUpdates(
             app.packageName, NavUpdatesService::class.java.name,
             NavigationUpdatesOptions.Builder()
@@ -390,13 +450,19 @@ class GuidanceController @Inject constructor(
         )
     }
 
-    /** Simulator speed multiplier (1 = real time). */
+    /**
+     * Simulator speed multiplier (1 = real time).
+     *
+     * From the `simulationSpeed` setting, kept current by AlertCoordinator's settings collector.
+     */
     @Volatile var simulationSpeed = 1f
 
     /**
      * The only way guidance ends (DESIGN.md §9.3): logged with its caller, and nothing survives
      * for the next route: destination, arrived, the choices and the selected one, the route note,
      * the waypoint, the EV re-ask state and the route points.
+     *
+     * Any thread (the key-change listener and the arrival listener both call it); the SDK calls are wrapped.
      */
     fun stopGuidance(reason: StopReason) {
         log("stop caller=$reason guiding=${state.guiding} dest=${_destination.value?.title ?: "-"}")
@@ -470,6 +536,7 @@ class GuidanceController @Inject constructor(
         _routeNote.value = null
     }
 
+    /** Re-reads the SDK's route segments into [routePoints] and a fresh [RoutePolyline] (never mutated in place). */
     private fun refreshRoutePoints(nav: Navigator) {
         val pts = runCatching { nav.routeSegments.flatMap { it.latLngs } }.getOrDefault(emptyList())
         routePoints = pts
@@ -487,6 +554,7 @@ class GuidanceController @Inject constructor(
         if (status == Navigator.RouteStatus.OK) refreshRoutePoints(nav)
     }
 
+    /** The SDK's route, reroute and arrival listeners, once per Navigator (a key change makes a new one, §9.3). */
     private fun addListeners(nav: Navigator) {
         if (listenersFor === nav) return
         listenersFor = nav
@@ -519,7 +587,12 @@ class GuidanceController @Inject constructor(
         }
     }
 
-    /** Ask the Routes API again, if the policy says so; apply the token only when it's new. */
+    /**
+     * Ask the Routes API again, if the policy says so; apply the token only when it's new.
+     *
+     * The policy is asked twice: now (grace, interval, selected route, reroute done) and again once Google
+     * answers (the token must differ from the applied one), since the state can move while the call runs.
+     */
     private fun maybeEcoReask(nav: Navigator) {
         val wp = waypoint ?: return
         val dest = _destination.value ?: return
@@ -553,6 +626,7 @@ class GuidanceController @Inject constructor(
         }
     }
 
+    /** A `Guidance …` line in debug-nav (§15.5). */
     private fun log(msg: String) = eventLog.record(EventLog.Channel.NAV, "Guidance", msg)
 
     companion object {
@@ -561,6 +635,7 @@ class GuidanceController @Inject constructor(
         private const val TAG = "Guidance"
         /** How much route [routePointsAhead] returns: enough for the 600 m limit lookahead. */
         private const val AHEAD_M = 1_500.0
+        /** A cap on the points [routePointsAhead] returns, so a dense polyline doesn't make the lookahead slow. */
         private const val AHEAD_POINTS = 200
     }
 }

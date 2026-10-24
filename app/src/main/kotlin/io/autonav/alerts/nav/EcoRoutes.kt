@@ -23,7 +23,14 @@ import javax.inject.Singleton
 /**
  * Energy-efficient routes for an electric car from Google's Routes API (DESIGN.md §8.3a): the
  * eco-friendly ("FUEL_EFFICIENT") route's token, which the Navigation SDK then follows. Uses the
- * user's own Maps key, so it's billed to them like the rest of their Maps use.
+ * user's own Maps key, so it's billed to them like the rest of their Maps use (§1.4: there is no
+ * built-in key; with none stored the call isn't made).
+ *
+ * Lifecycle: a Hilt singleton with one OkHttp client. `GuidanceController` calls [route] for the
+ * preview when the EV option is on and again for the re-ask after the SDK's own reroute (§8.3a,
+ * `EcoReaskPolicy`). [route] switches itself to `Dispatchers.IO` (§2), so it can be called from
+ * any coroutine; it never throws, every failure is a [Result.Unavailable] with a reason the
+ * preview can show ("Fallback, never a dead end").
  */
 @Singleton
 class EcoRoutes @Inject constructor(
@@ -31,7 +38,12 @@ class EcoRoutes @Inject constructor(
     private val settings: SettingsStore,
     private val keys: MapsKeyCreator,
 ) {
-    /** One route Google offers: its token, time with traffic, distance, and time without traffic. */
+    /**
+     * One route Google offers: its [token] for `CustomRoutesOptions`, [seconds] with today's
+     * traffic (`duration`), [meters] along it, and [freeFlowSeconds] without traffic
+     * (`staticDuration`, null when Google gave none). The derived properties are what the
+     * preview's rows show (§8.3a "Traffic on each route").
+     */
     data class Route(
         val token: String, val seconds: Int, val meters: Int, val freeFlowSeconds: Int? = null,
         /** Metres from the start to the first stretch Google expects to be jammed when you get there; null = none. */
@@ -42,7 +54,11 @@ class EcoRoutes @Inject constructor(
             if (meters <= 0) null else ((m.toDouble() / meters) * seconds / 60).toInt()
         }
 
-        /** Minutes lost to traffic (0 if Google gave no traffic-free time). */
+        /**
+         * Minutes lost to traffic (0 if Google gave no traffic-free time).
+         *
+         * +30 before the division rounds to the nearest minute rather than down.
+         */
         val delayMinutes: Int get() = freeFlowSeconds?.let { ((seconds - it).coerceAtLeast(0) + 30) / 60 } ?: 0
 
         /** Light / some / heavy traffic from the delay against the traffic-free time (DESIGN.md §8.3a). */
@@ -51,6 +67,7 @@ class EcoRoutes @Inject constructor(
             val delay = (seconds - free).coerceAtLeast(0)
             val share = if (free > 0) delay.toDouble() / free else 0.0
             return when {
+                // §8.3a: under 3 min or under 10% of the traffic-free time is light; under 25% some; else heavy.
                 delay < 180 || share < 0.10 -> Traffic.LIGHT
                 share < 0.25 -> Traffic.SOME
                 else -> Traffic.HEAVY
@@ -58,21 +75,31 @@ class EcoRoutes @Inject constructor(
         }
     }
 
+    /** The preview's traffic word per route; UNKNOWN when Google gave no traffic-free time. */
     enum class Traffic { LIGHT, SOME, HEAVY, UNKNOWN }
 
     /** The fastest and the energy-efficient route (the same one when Google says so), or why not. */
     sealed class Result {
+        /** [fastest] is null when [same] (one route carried both labels), and the preview shows one row. */
         data class Routes(val fastest: Route?, val efficient: Route, val same: Boolean) : Result()
+        /** Why there is no energy-efficient route, in words the preview's route note can show. */
         data class Unavailable(val reason: String) : Result()
     }
 
+    // 20 s covers the whole call: a preview must not hang on a dead network, the SDK route is the fallback.
     private val http = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build()
+    /** The signing certificate's SHA-1 without colons, for the key's Android-app restriction (§8.3a, §13.3). */
     private val certHex by lazy { runCatching { keys.signingSha1().replace(":", "") }.getOrDefault("") }
 
     /**
      * The fastest and energy-efficient routes from (lat, lon) to the destination. Never throws.
      * [headingDeg] is the car's heading when known (DESIGN.md §8.3a): sent as the origin's
      * `location.heading`, so a re-ask mid-drive starts on our carriageway, not the one opposite.
+     *
+     * [fromLat]/[fromLon] are the origin in degrees (the latest fix, or the phone's last known
+     * position right after a restart); [dest] is routed by place ID when it has one, else by its
+     * position; [avoidTolls] is the Avoid tolls setting, sent as `routeModifiers.avoidTolls`;
+     * [headingDeg] is degrees true, wrapped to 0–359 for the API. Runs on `Dispatchers.IO`.
      */
     suspend fun route(fromLat: Double, fromLon: Double, dest: Destination, avoidTolls: Boolean, headingDeg: Double? = null): Result = withContext(Dispatchers.IO) {
         val key = settings.mapsApiKey() ?: return@withContext Result.Unavailable("no Maps key")
@@ -108,6 +135,7 @@ class EcoRoutes @Inject constructor(
                     val msg = runCatching { JSONObject(text).getJSONObject("error").optString("message") }.getOrNull()
                     Log.w(TAG, "Routes API ${r.code}: $msg")
                     return@withContext Result.Unavailable(
+                        // 403 is the common first-run case: the key exists but the Routes API isn't enabled on it (§8.3a Bench).
                         if (r.code == 403) "turn on the Routes API for your Maps key in Settings" else "Routes API error ${r.code}")
                 }
                 val json = JSONObject(text)
@@ -126,7 +154,12 @@ class EcoRoutes @Inject constructor(
         private const val TAG = "EcoRoutes"
         private const val URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 
-        /** Metres along the route to the first TRAFFIC_JAM interval, or null. */
+        /**
+         * Metres along the route to the first TRAFFIC_JAM interval, or null.
+         *
+         * Walks the decoded polyline up to the first TRAFFIC_JAM interval's start index and sums the
+         * segment lengths: the "queue in N min" figure comes from this share of the route (§8.3a).
+         */
         private fun firstJam(r: JSONObject): Int? {
             val intervals = r.optJSONObject("travelAdvisory")?.optJSONArray("speedReadingIntervals") ?: return null
             val jamStart = (0 until intervals.length()).map { intervals.getJSONObject(it) }
@@ -141,7 +174,11 @@ class EcoRoutes @Inject constructor(
             return m.toInt()
         }
 
-        /** Google's encoded polyline → (lat, lon) points. */
+        /**
+         * Google's encoded polyline → (lat, lon) points.
+         *
+         * The standard Google polyline algorithm: 5-bit chunks, zig-zag sign, deltas in 1e-5 degrees.
+         */
         fun decode(s: String): List<Pair<Double, Double>> {
             val out = ArrayList<Pair<Double, Double>>()
             var i = 0; var lat = 0; var lon = 0
@@ -163,6 +200,7 @@ class EcoRoutes @Inject constructor(
             return out
         }
 
+        /** The Routes API's `{latLng: {latitude, longitude}}` object. */
         private fun latLng(lat: Double, lon: Double) =
             JSONObject().put("latLng", JSONObject().put("latitude", lat).put("longitude", lon))
 

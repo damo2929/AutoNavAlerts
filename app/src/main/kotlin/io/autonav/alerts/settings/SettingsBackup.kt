@@ -21,8 +21,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * The settings backup file (DESIGN.md §13.4): app settings, the Maps key and PGW login (in plain
- * text, by design) and each POI set's own settings, as one JSON file the user saves where they like.
+ * The settings backup file (DESIGN.md §13.4): app settings, the Maps key and PGW login (in plain text, by
+ * design: the user asked for a readable file, and the card warns them) and each POI set's own settings, as
+ * one JSON file the user saves where they like through Android's file picker. A Hilt singleton; called by the
+ * phone's Backup card (`MainActivity` and `PhoneScreens`) from a coroutine, with the file I/O on the caller's
+ * dispatcher. The app never uploads the file and keeps no copy.
+ * Hard rule 6 (AGENTS.md §3.1): no camera data goes in. Sets are keyed by name and carry only their switches,
+ * icon, templates and stages; the PocketGPSWorld data itself is never copied out of the app (§13.4 "Not included").
  */
 @Singleton
 class SettingsBackup @Inject constructor(
@@ -30,6 +35,7 @@ class SettingsBackup @Inject constructor(
     private val pois: PoiRepository,
     private val icons: IconRepository,
 ) {
+    /** The whole backup as pretty-printed JSON, format [FORMAT] (the layout in §13.4 "What's in it"). */
     suspend fun toJson(): String {
         val s = settings.current()
         val root = JSONObject()
@@ -55,6 +61,7 @@ class SettingsBackup @Inject constructor(
                 .put("pgwAutoSync", s.pgwAutoSync)
                 .put("pgwWifiOnly", s.pgwWifiOnly)
                 .put("pgwDownload", s.pgwDownload.name))
+        // Secrets are decrypted only here, to write this file (§13.4 "Plain text, with a warning"); unset ones are left out.
         val secrets = JSONObject()
         settings.mapsApiKey()?.let { secrets.put("mapsApiKey", it) }
         settings.pgwCredentials()?.let { (user, pass) -> secrets.put("pgwUsername", user).put("pgwPassword", pass) }
@@ -65,13 +72,14 @@ class SettingsBackup @Inject constructor(
         return root.toString(2)
     }
 
-    /** Writes the backup to [uri] (from the system file picker). */
+    /** Writes the backup to [uri] (from `CreateDocument`, §13.4). "wt" truncates, so overwriting an old backup leaves no tail. */
     suspend fun writeTo(context: Context, uri: Uri) {
         val text = toJson()
         val out = context.contentResolver.openOutputStream(uri, "wt") ?: error("Couldn't open the file")
         out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
     }
 
+    /** One active set's own settings, keyed by name because set ids change on every download (§13.4 `poiSets`). No POIs. */
     private fun setJson(set: PoiSetEntity) = JSONObject()
         .put("name", set.name)
         .put("source", set.source.name)
@@ -88,6 +96,7 @@ class SettingsBackup @Inject constructor(
         .put("firstAlert", stageJson(set.firstAlert))
         .put("secondAlert", stageJson(set.secondAlert))
 
+    /** One alert stage as stored (§11.1); `seconds` is written as JSON null when unset. */
     private fun stageJson(s: StageCols) = JSONObject()
         .put("enabled", s.enabled)
         .put("mode", s.mode.name)
@@ -107,14 +116,17 @@ class SettingsBackup @Inject constructor(
         val matchingSets: Int,
     )
 
+    /** What [restore] applied, for the summary line (§13.4 step 5): which parts were in the file, how many sets matched and how many didn't. */
     data class Restored(val settings: Boolean, val mapsKey: Boolean, val pgwLogin: Boolean, val sets: Int, val setsNotFound: Int)
 
+    /** The file isn't an AutoNavAlerts backup this version can read; the message is shown as it is (§13.4 step 2). */
     class BadBackup(message: String) : Exception(message)
 
+    /** Reads the picked file whole (it is a few KB of JSON). */
     fun readText(context: Context, uri: Uri): String =
         context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) } ?: error("Couldn't open the file")
 
-    /** Checks the file and says what's in it. Throws [BadBackup] if it isn't one of ours. */
+    /** Checks the file and says what's in it for the confirm dialog (§13.4 step 3). Throws [BadBackup] if it isn't one of ours. Changes nothing. */
     suspend fun preview(text: String): Preview {
         val root = parse(text)
         val secrets = root.optJSONObject("secrets")
@@ -131,7 +143,13 @@ class SettingsBackup @Inject constructor(
         )
     }
 
-    /** Applies the file. The caller tells the Navigation SDK if [Restored.mapsKey] is true. */
+    /**
+     * Applies the file (§13.4 step 4). Settings replace the current ones value by value; a Maps key or PGW login
+     * in the file is saved, one missing from the file never removes the current one; set settings are matched
+     * to this phone's active sets by name, and unmatched ones are skipped (the user downloads the cameras and
+     * restores again). Navigation terms, sync state, mute and all data are untouched. Safe to run twice.
+     * The caller tells the Navigation SDK (`NavigatorHolder.keyChanged`) if [Restored.mapsKey] is true.
+     */
     suspend fun restore(text: String): Restored {
         val root = parse(text)
         val restoredSettings = root.optJSONObject("settings")?.let { j -> settings.update { applySettings(it, j) }; true } ?: false
@@ -141,9 +159,11 @@ class SettingsBackup @Inject constructor(
         key?.let { settings.setMapsApiKey(it) }
         val user = secrets?.optString("pgwUsername")?.takeIf { it.isNotBlank() }
         val pass = secrets?.optString("pgwPassword")?.takeIf { it.isNotEmpty() }
+        // Saving the login also clears the PGW session cookies, so the next download logs in afresh (§13.4).
         if (user != null && pass != null) settings.setPgwCredentials(user, pass)
 
         val byName = pois.sets().values.associateBy { it.name }
+        // An icon from the file is taken only if it exists on this phone; a PGW icon arrives with the camera download (§13.4).
         val iconIds = (icons.builtinIds() + icons.userIds()).toSet()
         val updated = ArrayList<PoiSetEntity>()
         var notFound = 0
@@ -159,6 +179,7 @@ class SettingsBackup @Inject constructor(
         return Restored(restoredSettings, key != null, user != null && pass != null, updated.size, notFound)
     }
 
+    /** The three checks of §13.4 step 2: JSON, `"app": "AutoNavAlerts"`, and a `format` this version knows (1). */
     private fun parse(text: String): JSONObject {
         val root = runCatching { JSONObject(text) }.getOrElse { throw BadBackup("This isn't an AutoNavAlerts settings backup (not JSON)") }
         if (root.optString("app") != "AutoNavAlerts") throw BadBackup("This isn't an AutoNavAlerts settings backup")
@@ -168,12 +189,16 @@ class SettingsBackup @Inject constructor(
         return root
     }
 
+    /** The set names in the file, for the preview's match count. */
     private fun setNames(root: JSONObject): List<String> {
         val arr = root.optJSONArray("poiSets") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("name")?.takeIf(String::isNotEmpty) }
     }
 
-    /** Each value replaces the current one; a missing or unreadable value keeps it. */
+    /**
+     * Each value replaces the current one; a missing or unreadable value (unknown enum name, non-number) keeps
+     * it, so a hand-edited or older file still restores what it can; numbers are clamped as `SettingsStore` does (§13.4 step 4).
+     */
     private fun applySettings(cur: AppSettings, j: JSONObject): AppSettings {
         fun bool(k: String, d: Boolean) = if (j.has(k) && !j.isNull(k)) j.optBoolean(k, d) else d
         fun num(o: JSONObject, k: String) = o.optDouble(k).takeIf { !it.isNaN() }
@@ -197,6 +222,7 @@ class SettingsBackup @Inject constructor(
         )
     }
 
+    /** A matched set takes the file's switches, templates, stages, zoom and (if it exists here) icon (§13.4 step 4 "Camera set settings"). */
     private fun applySet(set: PoiSetEntity, j: JSONObject, iconIds: Set<String>): PoiSetEntity {
         fun bool(k: String, d: Boolean) = if (j.has(k) && !j.isNull(k)) j.optBoolean(k, d) else d
         val t = j.optJSONObject("templates")
@@ -220,6 +246,7 @@ class SettingsBackup @Inject constructor(
         )
     }
 
+    /** One stage from the file, each field falling back to the phone's; a JSON null `seconds` means none. */
     private fun stage(j: JSONObject, cur: StageCols) = StageCols(
         enabled = if (j.has("enabled")) j.optBoolean("enabled", cur.enabled) else cur.enabled,
         mode = j.optString("mode").let { n -> DistanceMode.entries.firstOrNull { it.name == n } } ?: cur.mode,
@@ -228,7 +255,9 @@ class SettingsBackup @Inject constructor(
     )
 
     companion object {
+        /** The file format this version writes and the highest it reads (§13.4 "format 1"). Bump when a field changes meaning. */
         const val FORMAT = 1
+        /** The name offered in the file picker: `autonavalerts-settings-YYYY-MM-DD.json` (§13.4). */
         fun fileName(): String = "autonavalerts-settings-${LocalDate.now()}.json"
     }
 }

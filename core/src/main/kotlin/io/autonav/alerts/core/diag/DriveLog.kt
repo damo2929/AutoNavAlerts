@@ -12,9 +12,16 @@ import java.io.Reader
  * The drive recorder's CSV (DESIGN.md §15.5): one row per `Location` reaching the location
  * source (phone or car, used or dropped), car fix and car speed report. The app writes it with
  * [format]; the replay test reads it with [parse]. Empty fields are nulls.
+ *
+ * No Android, no threads of its own: `DriveRecorder` formats rows on the diag thread (fed by
+ * `AdaptiveLocationSource` and `CarDataSource`); `DriveReplayTest` and `tools/drive.py --replay`
+ * read them back. Units: degrees for lat/lon and bearings, metres, m/s, and milliseconds ([RecordedFix.tMs]
+ * wall clock, [RecordedFix.fixTMs] the fix's own clock).
  */
 object DriveLog {
+    /** The header row, exactly as DESIGN.md §15.5 lists the columns; the order is the file format. */
     const val HEADER = "t_ms,kind,src,used,lat,lon,acc_m,spd_mps,brg_deg,has_brg,alt_m,fix_t_ms,eng_spd_mps,eng_hdg_deg,hdg_src,car_raw_mps,car_disp_mps"
+    /** The column names in order; a row with fewer fields is skipped by [parseLine]. */
     val COLUMNS: List<String> = HEADER.split(',')
 
     /** [RecordedFix.kind] values. */
@@ -26,6 +33,7 @@ object DriveLog {
     const val SRC_CAR = "car"
     const val SRC_SIM = "sim"
 
+    /** One row. [kind] is [KIND_FIX] or [KIND_SPEED]; [src] one of the SRC_ values. */
     data class RecordedFix(
         /** Wall-clock time the row was recorded, ms. */
         val tMs: Long,
@@ -74,6 +82,7 @@ object DriveLog {
     /** Rows in file order; the header row and blank or malformed lines are skipped. */
     fun parse(reader: Reader): Sequence<RecordedFix> = reader.buffered().lineSequence().mapNotNull(::parseLine)
 
+    /** One row, or null for the header, a blank line, too few fields or an unreadable number. */
     fun parseLine(line: String): RecordedFix? {
         val t = line.trim()
         if (t.isEmpty() || t.startsWith("t_ms")) return null

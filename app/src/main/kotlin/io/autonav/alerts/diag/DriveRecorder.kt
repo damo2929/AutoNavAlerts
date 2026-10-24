@@ -32,6 +32,14 @@ import kotlinx.coroutines.launch
  * Callers: `start(sessionTag)` when a car session begins, `stop()` when it ends, `record(row)` for
  * each `Location` reaching the location source (phone and car, `used=false` for the ones dropped
  * while the other feed is fresh) and each car speed report. Any thread.
+ *
+ * Lifecycle: a Hilt singleton. `NavSession` calls [start] on create and [stop] on destroy;
+ * [AdaptiveLocationSource] and [CarDataSource] call [record]; the phone's Diagnostics screen
+ * calls [flush], [files] and [latest] for Save and Share. The setting is watched on
+ * `App.appScope`. The file is opened, flushed and closed on the diag thread ([EventLog.handler]),
+ * never the main thread; [record] writes into the buffer under the lock and is cheap when no
+ * file is open. The CSV columns are [DriveLog.HEADER] in `:core`, which the replay parses, so
+ * the two can't drift apart.
  */
 @Singleton
 class DriveRecorder @Inject constructor(
@@ -45,16 +53,21 @@ class DriveRecorder @Inject constructor(
      * what was recorded (G9/G10).
      */
     data class Row(
+        /** Epoch ms when the app saw it (the wall clock, so a recording lines up with the debug logs). */
         val tMs: Long,
+        /** `fix` or `speed` ([DriveLog.KIND_FIX] / [DriveLog.KIND_SPEED]). */
         val kind: String,
+        /** Which feed: phone, car or sim. */
         val src: String,
         /** Whether the app used it (false for a phone fix dropped while car GPS was fresh). */
         val used: Boolean,
+        // A fix's own fields as Android gave them: degrees, metres, m/s, degrees true; null when absent.
         val lat: Double? = null,
         val lon: Double? = null,
         val accM: Float? = null,
         val spdMps: Float? = null,
         val brgDeg: Float? = null,
+        /** Whether the fix carried a bearing at all (a 0 bearing with hasBrg=false is "none"). */
         val hasBrg: Boolean = false,
         val altM: Double? = null,
         /** The fix's own timestamp (Location.time), as opposed to [tMs] when the app saw it. */
@@ -63,9 +76,11 @@ class DriveRecorder @Inject constructor(
         val engSpdMps: Double? = null,
         val engHdgDeg: Double? = null,
         val hdgSrc: String? = null,
+        // The car's measured and dial speeds, m/s, when fresh for a fix or the report itself for a speed row.
         val carRawMps: Double? = null,
         val carDispMps: Double? = null,
     ) {
+        /** The row as one CSV line, in the column order of [DriveLog.HEADER]. */
         fun toCsv(): String = DriveLog.format(
             DriveLog.RecordedFix(
                 tMs, kind, src, used, lat, lon, accM?.toDouble(), spdMps?.toDouble(), brgDeg?.toDouble(), hasBrg,
@@ -74,15 +89,19 @@ class DriveRecorder @Inject constructor(
         )
     }
 
+    /** `files/diag/`, shared with the two debug logs. */
     private val dir = File(context.filesDir, "diag")
 
+    /** The `driveRecordingOn` setting; [wanted] is whether a session is up. A file is open only when both hold. */
     @Volatile private var enabled = false
     private var wanted = false
     private var sessionTag = ""
     private var writer: BufferedWriter? = null
     private var current: File? = null
+    /** Bytes written to [current], for the 50 MB cap. */
     private var bytes = 0L
 
+    /** The once-a-second flush on the diag thread (§15.5), so a hard kill loses at most a second. */
     private val tick = object : Runnable {
         override fun run() {
             synchronized(this@DriveRecorder) {
@@ -163,6 +182,11 @@ class DriveRecorder @Inject constructor(
         eventLog.handler.post { synchronized(this) { if (enabled && wanted && writer == null) open() } }
     }
 
+    /**
+     * Diag thread, under the lock: makes `drive-YYYYMMDD-HHMM.csv` (a `-2`, `-3` suffix if a file
+     * of that minute exists), writes the header, deletes all but the newest [KEEP] recordings,
+     * logs the start and arms the flush tick.
+     */
     private fun open() {
         dir.mkdirs()
         val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.ROOT).format(Date())
@@ -187,6 +211,7 @@ class DriveRecorder @Inject constructor(
         eventLog.handler.postDelayed(tick, FLUSH_MS)
     }
 
+    /** Flushes, closes and logs the stop with its [reason] and byte count. Under the lock. */
     private fun close(reason: String) {
         val w = writer ?: return
         eventLog.handler.removeCallbacks(tick)
@@ -198,10 +223,13 @@ class DriveRecorder @Inject constructor(
     }
 
     companion object {
+        /** Recordings kept, newest first (DESIGN.md §15.5). */
         const val KEEP = 3
+        /** The size cap: recording stops and says so in debug-nav (DESIGN.md §15.5). */
         const val MAX_BYTES = 50L * 1024 * 1024
         const val PREFIX = "drive-"
         const val SUFFIX = ".csv"
+        /** The buffered writer is flushed this often on the diag thread (DESIGN.md §15.5). */
         private const val FLUSH_MS = 1_000L
         private const val TAG = "AutoNav"
     }

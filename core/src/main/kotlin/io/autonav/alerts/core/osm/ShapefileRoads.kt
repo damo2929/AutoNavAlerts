@@ -17,6 +17,12 @@ import kotlin.math.roundToInt
  * Streaming readers for Geofabrik's roads shapefile (DESIGN.md §8.4a): the `.dbf` gives each
  * road's `maxspeed`, the `.shp` its line. Both are read front to back, never seeked, so they can
  * come straight from an inflating network stream.
+ *
+ * Stateless. The app's `SpeedLimitWorker` calls [readLimits] first (one byte per road to a temp
+ * file), then [readRoads] with that file alongside the `.shp`, then [simplify] and
+ * [NorthernIreland.keeps] per road, feeding [OsmLimitFile.Writer]; all on WorkManager's thread,
+ * with the progress callbacks checking for Cancel. Nothing here holds more than one record.
+ * Coordinates are lon/lat degrees as the file orders them; limits come out in whole mph.
  */
 object ShapefileRoads {
     /** One byte per road record: its limit in whole mph, 0 if none. Small files and tests only. */
@@ -29,6 +35,8 @@ object ShapefileRoads {
      */
     fun readLimits(dbf: InputStream, out: java.io.OutputStream, onProgress: (Long) -> Unit = {}): Int {
         val d = DataInputStream(dbf.buffered(1 shl 16))
+        // dBASE header: record count at byte 4, header length at 8, record length at 10 (little-endian),
+        // then 32-byte field descriptors (name in bytes 0–10, length at 16) ended by 0x0D.
         val head = ByteArray(32).also(d::readFully)
         val bb = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN)
         val count = bb.getInt(4)
@@ -53,6 +61,7 @@ object ShapefileRoads {
         val rec = ByteArray(recordLen)
         for (i in 0 until count) {
             d.readFully(rec)
+            // The field is numeric text, space padded; digits only, so a blank reads as 0 (no limit).
             var kmh = 0
             for (k in msOff until msOff + msLen) {
                 val c = rec[k].toInt()
@@ -66,6 +75,7 @@ object ShapefileRoads {
     }
 
     /** Geofabrik stores km/h converted from the mph tag; back to whole mph (48 → 30). 0 = none. */
+    // 5–90 mph: outside that it isn't a road limit (§8.4a "Limits").
     fun mphFromKmh(kmh: Int): Int {
         if (kmh <= 0) return 0
         val mph = (kmh / 1.609344).roundToInt()
@@ -83,6 +93,9 @@ object ShapefileRoads {
     fun readRoads(shp: InputStream, limits: InputStream, onProgress: (Long) -> Unit = {}, onRoad: (mph: Int, xy: DoubleArray) -> Unit) {
         val lim = limits.buffered(1 shl 16)
         val d = DataInputStream(shp.buffered(1 shl 16))
+        // Shapefile: a 100-byte file header, then records of an 8-byte big-endian header (number, content
+        // length in 16-bit words) and little-endian content: shape type at 0 (3 = polyline), part count
+        // at 36, point count at 40, part start indexes, then the points as lon/lat doubles.
         d.skipFully(100)
         var read = 100L
         var lastReport = 0L
@@ -112,6 +125,7 @@ object ShapefileRoads {
     }
 
     /** Douglas-Peucker on lon/lat pairs, tolerance in metres. Keeps the ends. */
+    // The worker passes 3 m (§8.4a "Processed as it streams"), which keeps bends and drops the rest.
     fun simplify(xy: DoubleArray, toleranceM: Double): DoubleArray {
         val n = xy.size / 2
         if (n < 3) return xy

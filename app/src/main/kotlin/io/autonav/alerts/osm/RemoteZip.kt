@@ -15,17 +15,27 @@ import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
 
 /**
- * A zip file on a web server, read with HTTP range requests (DESIGN.md §8.4a): its directory, and
- * one entry streamed and inflated, without downloading the rest. A dropped connection is resumed
- * from the same byte (up to [RETRIES] times).
+ * A zip file on a web server, read with HTTP range requests (DESIGN.md §8.4a "Only the roads are fetched"):
+ * its directory, and one entry streamed and inflated, without downloading the rest. This is how the
+ * speed-limit download takes the two roads-layer files (about 1 GB) out of Geofabrik's 0.3–3 GB extracts.
+ * A dropped connection is resumed from the same byte (up to [RETRIES] times). Blocking I/O on
+ * `HttpURLConnection`: used only by `SpeedLimitWorker` on Dispatchers.IO. Nothing is cached in memory
+ * beyond the central directory (§1.3 Memory). Plain zip and ZIP64 are both read.
  */
 class RemoteZip private constructor(val url: String, val size: Long, private val entries: Map<String, Entry>) {
+    /** One central-directory record: [method] 0 stored or 8 deflate; [compressed] and [size] in bytes; [headerOffset] of the local file header. */
     data class Entry(val name: String, val method: Int, val compressed: Long, val size: Long, val headerOffset: Long)
 
+    /** The entry by its full name inside the zip, or null. */
     fun entry(name: String): Entry? = entries[name]
 
-    /** The entry's bytes, inflated. [onBytes] gets the compressed bytes read so far. */
+    /**
+     * The entry's bytes, inflated, as a stream the caller reads record by record. [onBytes] gets the compressed
+     * bytes read so far, for progress (and the worker uses it to notice Cancel, since these reads block).
+     */
     fun open(e: Entry, onBytes: (Long) -> Unit): InputStream {
+        // The local file header is 30 fixed bytes plus its own name and extra fields, which can differ in
+        // length from the central directory's, so the data offset is read from here, not computed.
         val local = range(e.headerOffset, 30)
         val b = ByteBuffer.wrap(local).order(ByteOrder.LITTLE_ENDIAN)
         require(b.getInt(0) == 0x04034b50) { "Bad local header for ${e.name}" }
@@ -33,14 +43,19 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
         val raw = ResumingStream(url, start, e.compressed, onBytes)
         return when (e.method) {
             0 -> raw
+            // Zip entries are raw deflate (no zlib header), hence Inflater(nowrap = true); 64 KB buffer.
             8 -> InflaterInputStream(raw, Inflater(true), 1 shl 16)
             else -> error("Unsupported zip method ${e.method}")
         }
     }
 
+    /** A small fixed-size range read in one go. */
     private fun range(headerOffset: Long, len: Int): ByteArray = get(url, headerOffset, headerOffset + len - 1).use { it.readBytes() }
 
-    /** Reads [length] bytes from [start], reopening the request where it stopped if the connection drops. */
+    /**
+     * Reads [length] bytes from [start], reopening the request where it stopped if the connection drops
+     * (a UK download takes minutes on Wi-Fi and the phone may roam or sleep). Waits 5 s × attempt between tries.
+     */
     private class ResumingStream(val url: String, start: Long, length: Long, val onBytes: (Long) -> Unit) : InputStream() {
         private var pos = start
         private val end = start + length
@@ -78,24 +93,32 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
 
     companion object {
         private const val TAG = "RemoteZip"
+        /** Resumes before giving up on an entry. */
         private const val RETRIES = 8
         private val UA = "AutoNavAlerts/${BuildConfig.VERSION_NAME} (Android)"
 
-        /** Follows redirects (Geofabrik's "-latest" links point at dated files) and reads the directory. */
+        /**
+         * Follows redirects (Geofabrik's "-latest" links point at dated files, whose name gives the data date)
+         * and reads the directory: the size from a HEAD, the end-of-central-directory record from the tail, the
+         * central directory itself from where that points. Three or four small requests, nothing else fetched.
+         */
         fun open(link: String): RemoteZip {
             val url = resolve(link)
             val size = head(url)
+            // The EOCD record is 22 bytes plus a comment of up to 65,535, so the last 65,557 bytes must hold it.
             val tailLen = minOf(size, 65_557L)
             val tail = get(url, size - tailLen, size - 1).use { it.readBytes() }
             val tb = ByteBuffer.wrap(tail).order(ByteOrder.LITTLE_ENDIAN)
             val eocd = lastIndexOf(tail, 0x06054b50) ?: error("Not a zip: $url")
             var cdSize = tb.getInt(eocd + 12).toLong() and 0xffffffffL
             var cdOff = tb.getInt(eocd + 16).toLong() and 0xffffffffL
+            // A ZIP64 end record, when the archive has one, carries the real 64-bit size and offset.
             lastIndexOf(tail, 0x06064b50)?.let { z64 -> cdSize = tb.getLong(z64 + 40); cdOff = tb.getLong(z64 + 48) }
             val cd = get(url, cdOff, cdOff + cdSize - 1).use { it.readBytes() }
             val b = ByteBuffer.wrap(cd).order(ByteOrder.LITTLE_ENDIAN)
             val entries = HashMap<String, Entry>()
             var p = 0
+            // Each central-directory record: 46 fixed bytes, then the name, extra field and comment.
             while (p + 46 <= cd.size && b.getInt(p) == 0x02014b50) {
                 val method = b.getShort(p + 10).toInt() and 0xffff
                 var comp = b.getInt(p + 20).toLong() and 0xffffffffL
@@ -107,6 +130,8 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
                 val name = String(cd, p + 46, n, Charsets.UTF_8)
                 var q = p + 46 + n
                 val extraEnd = q + e
+                // Extra field id 1 is the ZIP64 record: it holds, in order, any of the uncompressed size,
+                // compressed size and offset whose 32-bit field above is the 0xffffffff placeholder.
                 while (q + 4 <= extraEnd) { // ZIP64 sizes and offset
                     val id = b.getShort(q).toInt() and 0xffff
                     val len = b.getShort(q + 2).toInt() and 0xffff
@@ -124,12 +149,14 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
             return RemoteZip(url, size, entries)
         }
 
+        /** The last occurrence of a little-endian signature in [bytes]: the end records sit at the very end, after any comment. */
         private fun lastIndexOf(bytes: ByteArray, sig: Int): Int? {
             val b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
             for (i in bytes.size - 4 downTo 0) if (b.getInt(i) == sig) return i
             return null
         }
 
+        /** A connection with our User-Agent and 30 s / 60 s timeouts. Redirects are off so [resolve] can follow them by HEAD and keep the final URL. */
         private fun connect(url: String, method: String): HttpURLConnection =
             (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = method
@@ -139,6 +166,7 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
                 setRequestProperty("User-Agent", UA)
             }
 
+        /** Follows up to 5 redirects by HEAD and returns the final URL (the dated Geofabrik file). */
         private fun resolve(link: String): String {
             var u = link
             repeat(5) {
@@ -150,6 +178,7 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
             return u
         }
 
+        /** The file's size in bytes from a HEAD's Content-Length. */
         private fun head(url: String): Long {
             val c = connect(url, "HEAD")
             try {
@@ -158,6 +187,7 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
             } finally { c.disconnect() }
         }
 
+        /** A `Range: bytes=from-to` GET; anything but 206 means the server didn't honour the range (Geofabrik does, §8.4a). */
         private fun get(url: String, from: Long, to: Long): InputStream {
             val c = connect(url, "GET")
             c.setRequestProperty("Range", "bytes=$from-$to")

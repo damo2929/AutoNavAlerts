@@ -18,27 +18,51 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
-/** Why the Navigator isn't available, shown on the car and phone screens. */
+/**
+ * Why the Navigator isn't available, shown on the car and phone screens.
+ *
+ * NOT_AUTHORIZED is the SDK's word for a key that isn't enabled for the Navigation SDK or is restricted
+ * to another app; the phone's Settings explains it (§13.1).
+ */
 enum class NavUnavailable { NO_API_KEY, TERMS_NOT_ACCEPTED, NOT_AUTHORIZED, NETWORK, LOCATION_PERMISSION, UNKNOWN }
 
 /**
  * Owns the Navigation SDK [Navigator] and the Places client. The Maps API key can be supplied by the
  * user at run time (phone Settings), so both are initialised lazily with the stored key.
+ *
+ * Rule upheld here (AGENTS.md §3.1 rule 5; DESIGN.md §1.4): there is no manifest key and no
+ * fallback key. Every SDK call goes through [applyApiKey] first, because a Navigation SDK call
+ * made before `NavigationApi.setApiKey` looks for a manifest key and crashes the app. Terms are
+ * accepted once and remembered by the app itself (§6.2, §13), so the dialog never comes back
+ * even if the SDK's own flag is lost.
+ *
+ * Lifecycle: a Hilt singleton shared by the car session and the phone app (§2). The session
+ * (and the phone's key test) call [ensureNavigator]; `GuidanceController` reads [navigator] and
+ * registers for [onKeyChanged]; the phone's Settings call [keyChanged] after a new key is saved.
+ * The suspend functions run on whatever dispatcher the caller uses; the SDK's callbacks come on
+ * the main thread, and the StateFlows are safe to read from any.
  */
 @Singleton
 class NavigatorHolder @Inject constructor(
     private val app: Application,
     private val settings: SettingsStore,
 ) {
+    /** The live Navigator, null until [ensureNavigator] succeeds and again after [keyChanged]. */
     private val _navigator = MutableStateFlow<Navigator?>(null)
     val navigator: StateFlow<Navigator?> = _navigator
 
+    /** Why there is no Navigator, for the car's home screen and the phone's Settings; null when fine. */
     private val _unavailable = MutableStateFlow<NavUnavailable?>(null)
     val unavailable: StateFlow<NavUnavailable?> = _unavailable
 
     private var places: PlacesClient? = null
+    /** The key the SDK and Places were last initialised with, so a saved-again key isn't re-applied. */
     private var keyApplied: String? = null
 
+    /**
+     * Gives the SDK and Places the stored key, once per key. False (and [unavailable] = NO_API_KEY)
+     * when none is stored: the caller must then make no SDK call. Reads DataStore, so suspend.
+     */
     suspend fun applyApiKey(): Boolean {
         val key = settings.mapsApiKey()
         if (key.isNullOrBlank()) {
@@ -47,6 +71,7 @@ class NavigatorHolder @Inject constructor(
         }
         if (key != keyApplied) {
             NavigationApi.setApiKey(key)
+            // A new key needs a new Places client: Places caches the key it was initialised with.
             if (Places.isInitialized()) Places.deinitialize()
             Places.initializeWithNewPlacesApiEnabled(app, key)
             places = Places.createClient(app)
@@ -109,14 +134,21 @@ class NavigatorHolder @Inject constructor(
         }
     }
 
+    /**
+     * The SDK's road-snapped feed (§10.1): the map's car marker and the follow watchdog use it, and
+     * the debug simulator feeds the alert engine through it. Null until a Navigator exists, because
+     * asking the SDK for it before the key is applied is the crash of §1.4.
+     */
     fun roadSnappedProvider(): RoadSnappedLocationProvider? =
         if (_navigator.value != null) NavigationApi.getRoadSnappedLocationProvider(app) else null
 
+    /** The Places client for search and autocomplete (§8), or null with no key. */
     suspend fun placesClient(): PlacesClient? {
         if (!applyApiKey()) return null
         return places
     }
 
+    /** Run by [keyChanged] before the old Navigator is cleaned up; copy-on-write so a listener may register from any thread. */
     private val keyListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
 
     /**

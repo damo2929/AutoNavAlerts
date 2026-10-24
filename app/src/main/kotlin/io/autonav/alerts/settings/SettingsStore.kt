@@ -21,19 +21,31 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+// One Preferences DataStore file, "settings", for every setting, the PGW sync state and the encrypted secrets.
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
+/** Over-limit warning default: −0.1%, i.e. warn just below the limit (DESIGN.md §11 step 9; slider −5% to +20%). */
 const val DEFAULT_OVERSPEED = -0.001
+/** The global alert lead-time slider (DESIGN.md §11.1): 1st alert N s ahead, 2nd at N/2; 15–60 s, default 15. */
 const val DEFAULT_ALERT_LEAD_SECONDS = 15
 const val MIN_ALERT_LEAD_SECONDS = 15
 const val MAX_ALERT_LEAD_SECONDS = 60
 
-/** Where speed comes from (DESIGN.md §10.6). */
+/** Where speed comes from (DESIGN.md §10.6): the car's own speed when the head unit offers it, or the phone's GPS only. */
 enum class SpeedSource { CAR_WHEN_AVAILABLE, PHONE_GPS }
 
+/**
+ * Every user setting, as one immutable snapshot (DESIGN.md §13 item 9; each one explained in docs/SETTINGS.md).
+ * Read as a Flow from [SettingsStore.settings] or once with [SettingsStore.current]; changed only through
+ * [SettingsStore.update]. All but [mutedUntilMs], [simulationSpeed] and [driveRecordingOn] go in the settings
+ * backup file (§13.4).
+ */
 data class AppSettings(
+    /** mph and miles, or km/h and km, on the car screen and in speech (§7.2 `{units}`). */
     val units: Units = Units.IMPERIAL,
+    /** Spoken camera alerts. Off silences speech only; cards still show, and directions are always spoken (§12.3). */
     val voiceOn: Boolean = true,
+    /** A chime before the passing alert (§11.1). */
     val chimeOn: Boolean = true,
     /** Over-limit warning threshold as a fraction: −0.001 = warn above 99.9% of the limit. */
     val overspeedPct: Double = DEFAULT_OVERSPEED,
@@ -44,8 +56,11 @@ data class AppSettings(
     val alertLeadSeconds: Int = DEFAULT_ALERT_LEAD_SECONDS,
     /** Say the new limit once as the car approaches a change of limit (DESIGN.md §8.4a). */
     val announceLimitChanges: Boolean = true,
+    /** The daily feed check and automatic download (§6.2a); off is the switch §6.4 promises. */
     val pgwAutoSync: Boolean = true,
+    /** Hold the ~220 KB camera download for Wi-Fi (§6.2 "An optional Wi-Fi only setting, off by default"). */
     val pgwWifiOnly: Boolean = false,
+    /** The speed and limit pill on the car map (§8.4). */
     val speedPanelOn: Boolean = true,
     /** Car map shows satellite imagery (with road names) instead of the road map. */
     val satelliteMap: Boolean = false,
@@ -57,9 +72,11 @@ data class AppSettings(
     val osmLimitsOn: Boolean = true,
     /** The speed-limit download waits for Wi-Fi; off lets it use mobile data too. */
     val osmWifiOnly: Boolean = true,
+    /** Epoch millis until which alerts are muted from the car's Mute action (§12.3: speech only); 0 = not muted. Not in the backup. */
     val mutedUntilMs: Long = 0,
     /** Debug builds: Navigation SDK simulator speed multiplier for bench testing. */
     val simulationSpeed: Float = 1f,
+    /** See [SpeedSource] (§10.6). */
     val speedSource: SpeedSource = SpeedSource.CAR_WHEN_AVAILABLE,
     /** Which PocketGPSWorld download to use (Cameras tab). */
     val pgwDownload: io.autonav.alerts.core.pgw.PgwDownload = io.autonav.alerts.core.pgw.PgwDownload.DEFAULT,
@@ -67,27 +84,45 @@ data class AppSettings(
     val driveRecordingOn: Boolean = false,
 )
 
+/**
+ * The PocketGPSWorld sync state (DESIGN.md §6.1 step 4, §6.2), kept by `PgwFeedCheckWorker` and `PgwSyncWorker`
+ * and shown on the phone's Cameras tab. Not in the settings backup (§13.4 "Not included").
+ */
 data class PgwState(
+    /** The database version the cameras on the phone came from, e.g. "24.101", from Release.txt (§5.2); null before the first sync. */
     val installedVersion: String? = null,
     /** PGW package id the installed data came from (61 single file, 288 consolidated by type). */
     val installedPackage: Int? = null,
     /** Import layout the installed data was built with; a different value forces a re-download. */
     val installedLayout: Int? = null,
+    /** The newest release the feed has shown, and its summary line (§6.2). */
     val latestVersion: String? = null,
     val latestSummary: String? = null,
+    /** A release seen in the feed but not yet installed; kept across failed attempts (§6.2 "Backoff"). */
     val pendingVersion: String? = null,
+    /** Epoch millis of the last feed check and the last sync that finished (the 14-day safety net reads the latter). */
     val lastFeedCheckMs: Long = 0,
     val lastSyncMs: Long = 0,
+    /** One line for the Cameras tab: "Updated to …", "Already up to date", or the failure. */
     val lastResult: String? = null,
+    /** The feed's validators for the next conditional GET (§6.2). */
     val feedEtag: String? = null,
     val feedLastModified: String? = null,
 )
 
-/** All persisted settings. Secrets are stored encrypted with [SecretBox]. */
+/**
+ * All persisted settings (DESIGN.md §3 `settings/SettingsStore.kt`): user settings, the PGW sync state, the
+ * navigation-terms record and the secrets, in one Preferences DataStore. A Hilt singleton; every call is a
+ * suspend function or a Flow and DataStore does its I/O on its own thread, so callers may be on any
+ * dispatcher. Secrets are stored encrypted with [SecretBox] and come back as null when missing or unreadable.
+ * Upholds hard rule 5 (AGENTS.md §3.1): [mapsApiKey] is the only source of a Maps key and there is no
+ * fallback; and hard rule 6: the PGW login is the user's own, entered once (§6.2a).
+ */
 @Singleton
 class SettingsStore @Inject constructor(@ApplicationContext private val context: Context) {
     private val ds get() = context.dataStore
 
+    /** The DataStore keys. Names are stable storage: never rename one without a migration. `_enc` keys hold [SecretBox] output. */
     private object K {
         val units = stringPreferencesKey("units")
         val voice = booleanPreferencesKey("voice")
@@ -128,8 +163,10 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         val pgwLastModified = stringPreferencesKey("pgw_last_modified")
     }
 
+    /** Live settings; emits again after every [update]. The alert coordinator keeps the latest value rather than reading per fix (§4.3). */
     val settings: Flow<AppSettings> = ds.data.map { p -> read(p) }
 
+    /** Preferences → [AppSettings]. Every value has a default and the numeric ones are clamped, so a stray or old value can't break the app. */
     private fun read(p: Preferences): AppSettings =
         AppSettings(
             units = p[K.units]?.let { runCatching { Units.valueOf(it) }.getOrNull() } ?: Units.IMPERIAL,
@@ -153,6 +190,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
             driveRecordingOn = p[K.driveRecording] ?: false,
         )
 
+    /** Live PGW sync state for the Cameras tab. */
     val pgwState: Flow<PgwState> = ds.data.map { p ->
         PgwState(
             installedVersion = p[K.pgwInstalled], installedPackage = p[K.pgwInstalledPackage], installedLayout = p[K.pgwInstalledLayout], latestVersion = p[K.pgwLatest], latestSummary = p[K.pgwLatestSummary],
@@ -161,6 +199,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         )
     }
 
+    /** One-off reads of the latest values. */
     suspend fun current(): AppSettings = settings.first()
     suspend fun currentPgw(): PgwState = pgwState.first()
 
@@ -190,6 +229,11 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
         }
     }
 
+    /**
+     * Applies [block] to the PGW state. Unlike [update] the read happens before the edit, so two writers at
+     * once could lose one change; in practice one worker runs at a time (unique work, `PgwScheduler`).
+     * Null strings remove their key, so "no pending version" is an absent key, not an empty string.
+     */
     suspend fun updatePgw(block: (PgwState) -> PgwState) {
         val s = block(currentPgw())
         ds.edit { p ->
@@ -206,15 +250,22 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
 
     // --- Navigation SDK terms (accepted once, DESIGN.md §13) --------------------------------
 
-    /** When the user accepted Google's navigation terms in this app, or null if never. */
+    /**
+     * When the user accepted Google's navigation terms in this app, or null if never. The app's own record is
+     * checked before any SDK call (§1.4 "No SDK call before the key"); it is written to the backup as
+     * information only and never restored (§13.4), since the terms must be accepted on each install.
+     */
     suspend fun navTermsAcceptedAt(): Long? = ds.data.first()[K.termsAcceptedAt]?.takeIf { it > 0 }
 
+    /** Records acceptance; called by the phone once the SDK's terms dialog returns accepted. */
     suspend fun setNavTermsAccepted(atMs: Long) { ds.edit { it[K.termsAcceptedAt] = atMs } }
 
     // --- Secrets ---------------------------------------------------------------------------
 
+    /** Decrypts a stored secret; null when absent or unreadable (a lost Keystore key reads as "not set", see [SecretBox.decrypt]). */
     private suspend fun getSecret(k: Preferences.Key<String>): String? = ds.data.first()[k]?.let(SecretBox::decrypt)
 
+    /** Stores a secret encrypted, or removes it for null or empty, so a cleared field leaves no key behind. */
     private suspend fun putSecret(k: Preferences.Key<String>, v: String?) {
         ds.edit { p -> if (v.isNullOrEmpty()) p.remove(k) else p[k] = SecretBox.encrypt(v) }
     }
@@ -224,20 +275,24 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
      * build-time fallback: every user's Maps use is billed to their own Google account (DESIGN.md §1.4).
      */
     suspend fun mapsApiKey(): String? = getSecret(K.mapsKey)?.takeIf { it.isNotBlank() }
+    /** Saves (trimmed) or removes the key. The caller then tells `NavigatorHolder.keyChanged()` so the SDK re-applies it (§1.4 "Changing the key"). */
     suspend fun setMapsApiKey(key: String?) = putSecret(K.mapsKey, key?.trim())
 
+    /** The user's own PGW username and password (§6.1 step 1), or null when either is missing. There is no built-in or default account (§6.4). */
     suspend fun pgwCredentials(): Pair<String, String>? {
         val u = getSecret(K.pgwUser) ?: return null
         val p = getSecret(K.pgwPass) ?: return null
         return u to p
     }
 
+    /** Saves or clears the login. The session cookies are dropped with it, so the next sync logs in afresh (§13.4 "PGW login"). */
     suspend fun setPgwCredentials(user: String?, password: String?) {
         putSecret(K.pgwUser, user)
         putSecret(K.pgwPass, password)
         putSecret(K.pgwCookies, null)
     }
 
+    /** The persisted PGW session, one cookie per line, as `PgwClient` serialises it (§6.1 step 2.1). */
     suspend fun pgwCookies(): String? = getSecret(K.pgwCookies)
     suspend fun setPgwCookies(serialized: String?) = putSecret(K.pgwCookies, serialized)
 }

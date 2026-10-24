@@ -19,10 +19,17 @@ import kotlin.math.min
  * behind another speaker. Every decision goes
  * into a 50-entry [records] ring. Directions (GUIDANCE, §12.3): a newer one replaces one waiting,
  * they go stale by distance like a stage, and mute never touches them (it is the alerts' control).
+ *
+ * No Android, no threads of its own and no clock: every call takes `nowMs` from the caller (the
+ * app passes its time since boot; only differences are used), and the app's `NavTts` is the one
+ * caller, from one thread at a time. Distances are metres. The engine never drops an event (§11
+ * step 7), so this is the only place a stage can go unspoken, and every such decision is recorded.
  */
 class SpeechScheduler(private val config: Config = Config()) {
     data class Config(
+        /** The quiet gap between two utterances, so two alerts don't run into one sentence. */
         val minGapMs: Long = 400,
+        // The allowance is 3000 + 120 × characters ms, capped at 15 s (DESIGN.md §12.3 "Speaking watchdog").
         /**
          * Allowance before an utterance counts as stuck: numbers speak far longer than their characters
          * ("148 yards" is "one hundred and forty-eight yards"), and on the bench 1500 + 70/char cut every
@@ -32,9 +39,16 @@ class SpeechScheduler(private val config: Config = Config()) {
         val watchdogBaseMs: Long = 3_000,
         val watchdogPerCharMs: Long = 120,
         val watchdogCapMs: Long = 15_000,
+        /** The decision ring shown in More → Alerts and Diagnostics (§12.3). */
         val ringSize: Int = 50,
     )
 
+    /**
+     * One thing to say. [id] is unique per utterance (the TTS utterance id); [poiId] groups the stages
+     * of one camera (directions are −2, limit changes −1, as `NavTts` sets them); [priority] is the engine's (§12.3);
+     * [distanceM] the distance when queued; [chime] whether the earcon plays first; [queuedMs] when it
+     * was offered, for the waited time written back onto the STAGE line.
+     */
     data class Utterance(
         val id: Long,
         val poiId: Long,
@@ -48,8 +62,10 @@ class SpeechScheduler(private val config: Config = Config()) {
         val queuedMs: Long,
     )
 
+    /** How an utterance ended, as recorded in the ring (§12.3 "Every decision is recorded"). */
     enum class Outcome { SPOKEN, REPLACED, STALE, INTERRUPTED, TIMED_OUT, TTS_ERROR, MUTED, FOCUS_DENIED }
 
+    /** One ring entry: the utterance, its outcome, when, and for a spoken one when it started and how long it waited. */
     data class Record(
         val utterance: Utterance,
         val outcome: Outcome,
@@ -60,14 +76,19 @@ class SpeechScheduler(private val config: Config = Config()) {
         val detail: String? = null,
     )
 
+    /** What the caller should do now. [offer] returns several; [next] and the error path return one. */
     sealed interface Decision {
         /** Start this one now; [waitedMs] is how long it queued. */
         data class Speak(val utterance: Utterance, val waitedMs: Long) : Decision
         /** Nothing to do before [untilMs] (call [next] again then, or sooner if something changes). */
         data class Wait(val untilMs: Long, val reason: String) : Decision
+        /** Nothing queued and nothing speaking. */
         data object Idle : Decision
+        /** Accepted into the queue; call [next] to see whether it speaks now. */
         data class Queued(val utterance: Utterance) : Decision
+        /** [old] was waiting and is dropped in favour of [by] (a later stage of the same POI, or a newer direction). */
         data class Replaced(val old: Utterance, val by: Utterance) : Decision
+        /** Not queued: muted, or an earlier stage offered while a later one of the same POI already waits. */
         data class Dropped(val utterance: Utterance, val outcome: Outcome) : Decision
         /** Speak it again (it is back at the head of the queue). */
         data class Retry(val utterance: Utterance) : Decision
@@ -84,7 +105,9 @@ class SpeechScheduler(private val config: Config = Config()) {
     private val retried = HashSet<Long>()
     private val ring = ArrayDeque<Record>()
 
+    /** The utterance the engine is speaking, or null. */
     val speaking: Utterance? get() = current
+    /** A copy of the queue, in offer order (the pick order is [pick]'s, not this). */
     val waiting: List<Utterance> get() = queue.toList()
 
     /** The decisions so far, oldest first, at most [Config.ringSize]. */
@@ -93,6 +116,7 @@ class SpeechScheduler(private val config: Config = Config()) {
     /** The time by which the current utterance must have ended, for the caller's watchdog timer. */
     fun deadlineMs(): Long? = current?.let { (currentStartMs ?: currentSpeakMs) + expectedMs(it) }
 
+    /** How long [u] may take before the watchdog frees the engine: base + per character, capped (§12.3). */
     fun expectedMs(u: Utterance): Long = min(config.watchdogCapMs, config.watchdogBaseMs + config.watchdogPerCharMs * u.text.length)
 
     /** A new alert. While [muted] it is recorded and dropped (the visual alert still shows). */
@@ -155,6 +179,11 @@ class SpeechScheduler(private val config: Config = Config()) {
         return speakingNow != null
     }
 
+    /**
+     * What to do now: [Decision.Wait] while something is speaking (until its deadline) or inside the
+     * gap after the last one; [Decision.Idle] when nothing waits; else [Decision.Speak] with the
+     * picked utterance, which becomes [speaking]. Stale FIRST/SECOND/GUIDANCE entries are dropped first.
+     */
     fun next(nowMs: Long): Decision {
         current?.let { return Decision.Wait(deadlineMs()!!, "speaking") }
         dropStale(nowMs)
@@ -175,6 +204,7 @@ class SpeechScheduler(private val config: Config = Config()) {
         return nowMs - u.queuedMs
     }
 
+    /** The engine finished [u]: recorded as SPOKEN with its start and wait; ignored if [u] isn't current. */
     fun onDone(u: Utterance, nowMs: Long) {
         if (current?.id != u.id) return
         val start = currentStartMs ?: currentSpeakMs
@@ -182,6 +212,7 @@ class SpeechScheduler(private val config: Config = Config()) {
         finish(nowMs)
     }
 
+    /** The engine's `onStop(interrupted)`: the car's audio handling cut [u] off (§12.3 "Speaking watchdog"). */
     fun onInterrupted(u: Utterance, nowMs: Long) {
         if (current?.id != u.id) return
         record(Record(u, Outcome.INTERRUPTED, nowMs, startMs = currentStartMs ?: currentSpeakMs))
@@ -233,6 +264,8 @@ class SpeechScheduler(private val config: Config = Config()) {
         }
     }
 
+    // Order (§12.3): a PASSING first whatever its priority, then higher priority, then the nearer POI
+    // (its latest distance when known), then first come, first served.
     private fun pick(): Utterance = queue.minWith(
         compareBy<Utterance> { if (it.kind == AlertKind.PASSING) 0 else 1 }
             .thenByDescending { it.priority }
@@ -251,6 +284,7 @@ class SpeechScheduler(private val config: Config = Config()) {
     }
 
     companion object {
+        /** The three camera stages: the only kinds that replace one another per POI. */
         fun isStage(k: AlertKind) = k == AlertKind.FIRST || k == AlertKind.SECOND || k == AlertKind.PASSING
 
         private fun stageRank(k: AlertKind) = when (k) {

@@ -7,18 +7,28 @@ import kotlin.math.floor
 
 /**
  * 0.01° grid cells (DESIGN.md §4.3). `cell = row * COLS + col` with
- * row = floor((lat + 90) / 0.01), col = floor((lon + 180) / 0.01).
+ * row = floor((lat + 90) / 0.01), col = floor((lon + 180) / 0.01). A cell is about 1.11 km
+ * north–south everywhere and about 0.69 km east–west at 52°N; the id fits a Long with no collisions.
+ *
+ * Stateless. The app's `PoiRepository` stamps `Poi.gridCell` on import and queries by cell lists;
+ * `AlertCoordinator`'s cell cache keeps the block of cells around the car that covers
+ * the engine's reach ([reachCells] over the 5 km zone gap); `CameraReportRepository` stamps
+ * reports the same way. Degrees in.
  */
 object Grid {
     const val CELL_DEG = 0.01
+    /** 180° / 0.01° rows and 360° / 0.01° columns. */
     const val ROWS = 18_000L
     const val COLS = 36_000L
 
+    /** Row from latitude, clamped at the poles; column from longitude, wrapping at the antimeridian. */
     fun row(lat: Double): Long = floor((lat + 90.0) / CELL_DEG).toLong().coerceIn(0, ROWS - 1)
     fun col(lon: Double): Long = floor((lon + 180.0) / CELL_DEG).toLong().mod(COLS)
 
+    /** The cell id of a point (the `gridCell` column of §4.1). */
     fun cellOf(lat: Double, lon: Double): Long = row(lat) * COLS + col(lon)
 
+    /** The row and column back out of a cell id. */
     fun rowOf(cell: Long): Long = cell / COLS
     fun colOf(cell: Long): Long = cell % COLS
 

@@ -26,7 +26,16 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Built-in and user icons, rendered to cached bitmaps (DESIGN.md §7.1). */
+/**
+ * Built-in and user icons, rendered to cached bitmaps (DESIGN.md §7.1), and the map marker and direction
+ * arrow drawn from them (§8.1). A Hilt singleton. Called by `PoiMarkerLayer` for every marker it adds or
+ * changes (so a repeat call must be a cache hit: the first render of an icon decodes a file), by
+ * `AlertDispatcher` for the car `Alert` icon, by `PoiRepository` when a download brings icons, and by
+ * the phone's icon picker and set editor. The bitmap LruCache is synchronised (a race only costs a duplicate
+ * render); the arrow map is not, and only `PoiMarkerLayer` uses it, from one thread.
+ * Icon ids: "builtin:<name>" for the vector pack, "user:<uuid>" for a picked image, "user:pgw_<stem>"
+ * for a PocketGPSWorld download's own icon, "user:imp_<name>" for one found in an imported zip (§5, §5.2a).
+ */
 @Singleton
 class IconRepository @Inject constructor(@ApplicationContext private val context: Context) {
 
@@ -37,18 +46,26 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
      */
     enum class Emphasis { ACTIVE, AHEAD, OTHER, FACING_AWAY }
 
+    // Rendered bitmaps by "<id>@<px>" and "m:<id>:<speed>:<emphasis>:<px>" (§7.1 "Cache"; 96 rather than the 64 written there).
     private val cache = LruCache<String, Bitmap>(96)
     /** The arrow descriptors, by direction type, emphasis and size: at most 8, made once (§8.1). */
     private val arrows = HashMap<String, BitmapDescriptor>()
 
+    /** `filesDir/icons/`: every "user:" icon lives here as `<id>.png` (§7.1). Private storage, so it goes with an uninstall. */
     private fun dirUser() = File(context.filesDir, "icons").apply { mkdirs() }
 
+    /** The built-in pack's ids, for the icon picker (§13 item 6). */
     fun builtinIds(): List<String> = BUILTIN.keys.toList()
+    /** Every "user:" icon on disk (picked, PGW-supplied and zip-supplied alike), sorted; the picker and the backup restore's "does this icon exist" check (§13.4). */
     fun userIds(): List<String> = dirUser().listFiles { f -> f.extension == "png" }?.map { "user:" + it.nameWithoutExtension }?.sorted() ?: emptyList()
 
+    /** A short name for the picker and the set editor. */
     fun label(id: String): String = BUILTIN_LABELS[id] ?: if (isPgwIcon(id)) "PocketGPSWorld icon" else "Custom icon"
 
-    /** Copies a picked image into app storage and returns its id. */
+    /**
+     * Copies a picked image into app storage and returns its id, or null if it can't be decoded (§7.1 "User icons").
+     * Scaled to 256 px wide, keeping the aspect ratio. Bitmap formats only: there is no SVG decoding here.
+     */
     fun addUserIcon(uri: Uri): String? {
         val bmp = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) } ?: return null
         val scaled = Bitmap.createScaledBitmap(bmp, 256, 256 * bmp.height / bmp.width.coerceAtLeast(1), true)
@@ -57,16 +74,20 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         return "user:$id"
     }
 
-    /** Saves an icon shipped in a PGW download (BMP) as `user:pgw_<stem>`; null if it can't be decoded. */
+    /**
+     * Saves an icon shipped in a PGW download (BMP) as `user:pgw_<stem>`; null if it can't be decoded (§5.2a
+     * "Icons supplied in the download are used"). Overwrites on every sync, so a refreshed icon shows at once.
+     */
     fun savePgwIcon(stem: String, bmp: ByteArray): String? {
         val decoded = BitmapFactory.decodeByteArray(bmp, 0, bmp.size) ?: return null
         val id = "pgw_" + stem.replace(Regex("[^a-z0-9_]"), "_")
         File(dirUser(), "$id.png").outputStream().use { decoded.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        // The old rendering of this id may be cached; drop everything rather than track which keys hold it.
         cache.evictAll()
         return "user:$id"
     }
 
-    /** Saves an icon supplied inside an imported zip (BMP/PNG) as `user:imp_<name>`. */
+    /** Saves an icon supplied inside an imported zip (BMP/PNG) as `user:imp_<name>` (§5: "icons from matching .bmp/.png"); null if it can't be decoded. */
     fun saveImportedIcon(name: String, bytes: ByteArray): String? {
         val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
         val id = "imp_" + name.lowercase().replace(Regex("[^a-z0-9_]"), "_")
@@ -75,14 +96,19 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         return "user:$id"
     }
 
-    /** Keeps the icon licence next to the icons, as the licence requires. */
+    /** Keeps the icon licence next to the icons, as the licence requires (§5.2a: the `_X2` icons are free for non-commercial use with credit). */
     fun savePgwIconLicence(text: ByteArray) {
         File(dirUser(), "LICENCE_pgw_X2_icons.txt").writeBytes(text)
     }
 
+    /** The saved licence text for the set editor and Settings → About "Show icon licence" (§5.2a), or null before any OV2 download. */
     fun pgwIconLicence(): String? = File(dirUser(), "LICENCE_pgw_X2_icons.txt").takeIf { it.exists() }?.readText(Charsets.ISO_8859_1)
 
-    /** Square icon bitmap in pixels. */
+    /**
+     * Square icon bitmap in pixels, cached per (id, size). A "user:" icon whose file has gone (an uninstall,
+     * a set restored before its download) falls back to the pin, as does an unknown "builtin:" id, so a
+     * marker is always drawn.
+     */
     fun bitmap(id: String, sizePx: Int): Bitmap {
         val key = "$id@$sizePx"
         cache.get(key)?.let { return it }
@@ -95,7 +121,12 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         return bmp
     }
 
-    /** Map marker: icon, optional speed badge, and emphasis (DESIGN.md §8.1). */
+    /**
+     * Map marker: icon, optional speed badge, and emphasis (DESIGN.md §8.1 step 3), cached per
+     * (icon, speed, emphasis, size) so a redraw never creates a bitmap. [basePx] is the 48 dp marker in
+     * pixels; ACTIVE is drawn 1.3× with a translucent red pulse ring behind the icon. [speed] is already
+     * in the display units (the caller converts, §8.4 "Units").
+     */
     fun marker(id: String, speed: Int?, emphasis: Emphasis, basePx: Int): Bitmap {
         val key = "m:$id:$speed:$emphasis:$basePx"
         cache.get(key)?.let { return it }
@@ -104,6 +135,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         val c = Canvas(out)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = alphaOf(emphasis) }
         if (emphasis == Emphasis.ACTIVE) {
+            // The pulse ring (§8.1 ACTIVE): a static translucent disc; the "pulse" is the layer swapping emphasis.
             c.drawCircle(size / 2f, size / 2f, size / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 230, 40, 40) })
         }
         // A camera is drawn with its icon alone, never with a limit badge (DESIGN.md §7, owner). Not larger:
@@ -112,6 +144,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         val inner = (size * 0.8f).toInt()
         c.drawBitmap(bitmap(id, inner), (size - inner) / 2f, (size - inner) / 2f, paint)
         if (speed != null && !camera) {
+            // The limit badge for non-camera POIs (§7.1): a white disc, a red ring, the number in bold, bottom right.
             val r = size * 0.22f
             val cx = size - r
             val cy = size - r
@@ -165,6 +198,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         return d
     }
 
+    /** Marker opacity per emphasis (§8.1 step 3): full, 60% for OTHER, 35% for FACING_AWAY (dimmed, never hidden; hard rule 1). */
     private fun alphaOf(emphasis: Emphasis): Int = when (emphasis) {
         Emphasis.ACTIVE, Emphasis.AHEAD -> 255
         Emphasis.OTHER -> 153
@@ -172,9 +206,13 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     }
 
     companion object {
-        /** A camera set's own icon (PocketGPSWorld's or a zip import's, [isSuppliedIcon]) or our built-in camera icons. */
+        /**
+         * A camera set's own icon (PocketGPSWorld's or a zip import's, [isSuppliedIcon]) or our built-in camera
+         * icons. Decides "icon alone, never with a limit badge" in [marker] (§7.1, owner 2026-10-23).
+         */
         fun isCameraIcon(id: String): Boolean = isSuppliedIcon(id) || id.startsWith("builtin:camera_")
 
+        // The built-in pack's ids (§7.1). The drawables are vector assets under res/drawable/ic_poi_*.
         const val CAMERA_FIXED = "builtin:camera_fixed"
         const val CAMERA_MOBILE = "builtin:camera_mobile"
         const val CAMERA_AVERAGE = "builtin:camera_average"
@@ -188,6 +226,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         const val EV = "builtin:ev"
         const val STAR = "builtin:star"
 
+        /** Id → drawable for the built-in pack; also the "is this a built-in" test used when a sync decides whether to refresh a set's icon (§5.2a). */
         val BUILTIN = mapOf(
             CAMERA_FIXED to R.drawable.ic_poi_camera_fixed,
             CAMERA_MOBILE to R.drawable.ic_poi_camera_mobile,
@@ -203,17 +242,24 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
             STAR to R.drawable.ic_poi_star,
         )
 
+        /** Picker labels for the built-in pack. */
         val BUILTIN_LABELS = mapOf(
             CAMERA_FIXED to "Fixed camera", CAMERA_MOBILE to "Mobile camera", CAMERA_AVERAGE to "Average speed",
             CAMERA_REDLIGHT to "Red light", CAMERA_REDLIGHT_SPEED to "Red light + speed", CAMERA_PENDING to "Pending site",
             PIN to "Pin", HAZARD to "Hazard", SCHOOL to "School", FUEL to "Fuel", EV to "EV charger", STAR to "Star",
         )
 
+        /** An icon that came in a PocketGPSWorld download (`user:pgw_<stem>`, §5.2a). */
         fun isPgwIcon(id: String) = id.startsWith("user:pgw_")
 
         /** Icons that came with a download or imported zip (refreshed on re-import unless the user picked another). */
         fun isSuppliedIcon(id: String) = isPgwIcon(id) || id.startsWith("user:imp_")
 
+        /**
+         * The built-in icon for a PGW category when the download brought no icon of its own (the iGO
+         * package): by iGO type code (§5.2: 1 fixed, 3 red light, 4 average speed, 5 mobile, 11 red light + speed)
+         * or by OV2 type name (§5.2a). Pending mobile sites get the lighter "P" icon whatever the code (§5.2).
+         */
         fun pgwIconFor(code: String, source: PoiSourceType): String = when {
             source == PoiSourceType.PGW_PENDING || code == "pMOBILE" -> CAMERA_PENDING
             // TomTom OV2 type codes (optional "t" prefix = temporary)
@@ -222,11 +268,14 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
             code.removePrefix("t") == "REDLIGHT" -> CAMERA_REDLIGHT
             code.removePrefix("t") == "SPECS" -> CAMERA_AVERAGE
             code.removePrefix("t") == "MOBILE" -> CAMERA_MOBILE
+            // iGO TXT type codes (§5.2)
             code == "1" -> CAMERA_FIXED
             code == "3" -> CAMERA_REDLIGHT
             code == "4" -> CAMERA_AVERAGE
             code == "5" -> CAMERA_MOBILE
+            // 11 is the OV2 download's REDSPEED (§5.2a); §5.2 shows it as "Fixed camera (type 11)".
             code == "11" -> CAMERA_REDLIGHT_SPEED
+            // An unknown code becomes a "Type N" category (§5.2) with the fixed-camera icon.
             else -> CAMERA_FIXED
         }
     }

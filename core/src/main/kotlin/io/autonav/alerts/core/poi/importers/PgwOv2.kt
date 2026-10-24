@@ -20,8 +20,16 @@ import io.autonav.alerts.core.poi.SpeedUnit
  *  - `@30`      speed limit in mph; `@0` = variable; missing = to be confirmed
  *
  * Verified against v24.101: the compass point is within 22.5° of iGO's exact heading for 98%.
+ *
+ * The compass point is the direction of travel the camera enforces, our `bearing` (§4.1), so the
+ * direction rule (§11 step 3) applies to these cameras with a 22.5° quantisation that the rule's
+ * 45° error budget allows for. A missing compass point is the only way a camera becomes ANY.
+ * Stateless; the app's `PoiRepository` calls it on IO, one file per set (hard rule: never merged),
+ * and the phone's Cameras tab uses the labels. Speeds are mph. Only made-up fixtures are in the
+ * tests; no PGW data enters the repo.
  */
 object PgwOv2 {
+    /** What one entry's name says. [bearing] degrees true from the compass point; [type] the camera make or kind. */
     data class Parsed(
         val bearing: Float?,
         val directionType: DirectionType,
@@ -33,9 +41,12 @@ object PgwOv2 {
         val variable: Boolean,
     )
 
+    // Groups: 1 compass, 2 "R-", 3 "t" (only before a type word), 4 type (a "p" prefix allowed for
+    // pMOBILE), 5 PGW id, 6 speed after "@".
     private val NAME = Regex("""^(?:(N|NE|E|SE|S|SW|W|NW)-)?(R-)?(t(?=[A-Zp]))?(p?[A-Z]+):(\d+)(?:@(\d+))?$""")
     private val COMPASS = mapOf("N" to 0f, "NE" to 45f, "E" to 90f, "SE" to 135f, "S" to 180f, "SW" to 225f, "W" to 270f, "NW" to 315f)
 
+    /** The entry's fields, or null when the name isn't in PGW's scheme (the copyright watermark entry). */
     fun parseName(name: String): Parsed? {
         val m = NAME.matchEntire(name.trim()) ?: return null
         val compass = m.groupValues[1].takeIf { it.isNotEmpty() }
@@ -57,6 +68,7 @@ object PgwOv2 {
     /** Category code stored for a camera: type, with a `t` prefix for temporary ones (e.g. "tSPECS"). */
     fun categoryCode(p: Parsed) = (if (p.temporary) "t" else "") + p.type
 
+    /** The category's display name for a [categoryCode]; unknown type words are title-cased. */
     fun categoryName(code: String): String {
         val temp = code.startsWith("t") && code.length > 1 && code[1].isUpperCase()
         val base = when (code.removePrefix(if (temp) "t" else "")) {
@@ -97,6 +109,7 @@ object PgwOv2 {
     }
 
     /** One entry per PGW OV2 file, keyed by its stem: `pocketgps_uk_gatso_30.ov2` → "gatso_30"; `…_redlight.ov2` → "redlight". */
+    // The map stays lazy (see [LazyBytes]): nothing is inflated until a set is imported, and never all at once.
     fun files(entries: Map<String, ByteArray>): Map<String, ByteArray> {
         val rx = Regex("""^pocketgps_([a-z]+)_([a-z]+(?:_[a-z0-9]+)?)\.ov2$""", RegexOption.IGNORE_CASE)
         val out = LinkedHashMap<String, () -> ByteArray>()
@@ -120,6 +133,7 @@ object PgwOv2 {
         return entries.entries.firstOrNull { x2.matches(it.key) }?.value ?: entries.entries.firstOrNull { plain.matches(it.key) }?.value
     }
 
+    /** The icon licence text saved beside the icons and shown in Settings → About (§5.2a). */
     const val ICON_LICENCE_FILE = "licence_X2_icons.txt"
     const val ICON_CREDIT = "Icon © GerryC, 2007 (from your PocketGPSWorld download, non-commercial use)"
 

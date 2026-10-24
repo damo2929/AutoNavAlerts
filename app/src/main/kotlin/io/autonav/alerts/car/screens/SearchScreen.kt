@@ -37,6 +37,15 @@ import kotlinx.coroutines.launch
  * The host delivers spoken input through the same `onSearchSubmitted` as a typed Enter and
  * doesn't say which it was, so voice isn't a separate line here; Assistant's "navigate to …"
  * arrives as the navigate intent (`Search NavigateIntent`, §9.1).
+ *
+ * The Search screen of DESIGN.md §8 (a `SearchTemplate`; the host owns the keyboard and blocks
+ * typing while driving). Pushed from Home's strip, from `ContactsScreen` ("Search contacts…",
+ * [contactsOnly]) and by a navigate intent with only a name ([initialQuery]). Every pick ends in
+ * `RoutePreviewScreen`. Main thread; `PlacesSearch` and `ContactsSource` do their network and
+ * content-provider work off it (§2). The template is re-sent when the results change, never on a
+ * timer (hard rule 3).
+ *
+ * @param initialQuery text to search at once (a navigate intent that carried only a name, §9.1).
  */
 class SearchScreen(
     carContext: CarContext,
@@ -47,7 +56,9 @@ class SearchScreen(
 ) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
     private var query = initialQuery.orEmpty()
+    /** Places results for the current query (autocomplete while typing, text search on submit). */
     private var hits: List<SearchHit> = emptyList()
+    /** Matching contact addresses with their known distance in metres, shown above [hits] (§8.3). */
     private var contacts: List<Pair<ContactAddress, Int?>> = emptyList()
     /** Several places matched a contact's address: pick one (§8.3). */
     private var choosing: Pair<ContactAddress, List<SearchHit>>? = initialChoice
@@ -69,6 +80,11 @@ class SearchScreen(
         lifecycleScope.launch { recents = deps.places().recents(6); invalidate() }
     }
 
+    /**
+     * The list for the current state, in this order of precedence: a contact's "Which address?"
+     * choice; the empty state (recents, then the Contacts row); "Searching…" while a submit runs;
+     * else contacts above Places results, or "No results for …". Never a silent empty list (§8).
+     */
     override fun onGetTemplate(): Template {
         val list = ItemList.Builder()
         val choice = choosing
@@ -143,6 +159,7 @@ class SearchScreen(
             }
         }
         return SearchTemplate.Builder(object : SearchTemplate.SearchCallback {
+            // Each keystroke: cancel the last lookup, show matching contacts at once, then Places after the debounce.
             override fun onSearchTextChanged(searchText: String) {
                 log("textChanged len=${searchText.length}")
                 query = searchText
@@ -155,6 +172,7 @@ class SearchScreen(
                     contacts = findContacts(searchText)
                     invalidate()
                     if (contactsOnly) return@launch
+                    // Autocomplete debounced 300 ms (§8): each keystroke cancels the job above, so only a pause asks Places.
                     delay(300)
                     hits = deps.places().autocomplete(searchText, deps.location().lastLocation.value)
                     invalidate()
@@ -167,11 +185,13 @@ class SearchScreen(
             .setHeaderAction(Action.BACK)
             .setInitialSearchText(query)
             .setSearchHint(carContext.getString(if (contactsOnly) R.string.car_search_contacts_hint else R.string.car_search_hint))
+            // The keyboard opens at once only when there's nothing to pick from (no recents) or it's the typed contacts search.
             .setShowKeyboardByDefault(contactsOnly || (query.isBlank() && recents.isEmpty()))
             .setItemList(list.build())
             .build()
     }
 
+    // Enter or voice: a full Places text search (not autocomplete), with "Searching…" shown meanwhile (§8).
     private fun submit(text: String) {
         log("submitted len=${text.length} contactsOnly=$contactsOnly")
         query = text
@@ -206,6 +226,7 @@ class SearchScreen(
         }
     }
 
+    // An autocomplete hit has no position yet: one Place Details call resolves it (billed to the user's key, §1.4).
     private fun pick(h: SearchHit) {
         lifecycleScope.launch {
             val dest = deps.places().resolve(h)

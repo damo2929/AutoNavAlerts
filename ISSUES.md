@@ -1,6 +1,6 @@
 # Outstanding issues
 
-What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 01:10. Each line says where the detail lives (DESIGN.md §16 rows, CHECKPOINT.md sections, TESTING.md rows). Fixed items move to CHANGELOG.md; this file only lists what is still open.
+What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 22:30. Each line says where the detail lives (DESIGN.md §16 rows, CHECKPOINT.md sections, TESTING.md rows). Fixed items move to CHANGELOG.md; this file only lists what is still open.
 
 ## 1. Bugs seen, not yet explained or fixed
 
@@ -10,6 +10,8 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 01
 | B2 | **Route cleared on drive-off** (first real-car drive, XPENG G6, 2026-10-12): a route set while parked cleared within seconds of moving | Candidates designed and logged (`Guidance stop caller=`); needs a real-car drive with the logs to confirm which | DESIGN §16 row 22 |
 | B3 | **"That should have said Gatso variable"** (owner, 2026-10-23 22:39, poi 4169): the spoken category for a variable-limit Gatso | Not looked at | CHECKPOINT §4f |
 | B4 | The fork test in the limit-change walk keys on OSM drawing direction, so a two-way branch drawn towards the junction isn't seen as a fork and its limit can be announced | Needs a oneway flag in the limit file (data rebuild) and a purely geometric test; owner's call | DESIGN §16 row 28 |
+| B6 | Restoring a settings backup saves a new PGW login but doesn't call `PgwClient.forgetSession()`, so in a running process the old login's in-memory session cookies survive until restart (the Cameras tab's own Save does call it) | Found by the comment pass, 2026-10-24; `SettingsBackup.restore` | DESIGN §13.4, §6.1 |
+| B7 | `SettingsStore.updatePgw` reads then writes instead of one DataStore transaction, so two concurrent writers could lose a change; harmless today (unique work) | Found by the comment pass, 2026-10-24 | DESIGN §6.2 |
 | B5 | After Google's X the SDK moves its camera a moment later; the settle re-follows and the watchdog put it back, with one `watchdog miss` logged each time | Pre-existing, self-healing; no visible jump since the settle re-follows | DESIGN §8 "Ending (or starting) a route keeps the view" |
 
 ## 2. Waiting on the owner's decision
@@ -20,7 +22,6 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 01
 | D2 | Our POI alerts in the host's turn card: no custom field exists; car `Alert` + heads-up is the fallback | DESIGN §16 row 3 |
 | D3 | Submitting camera reports to PocketGPSWorld automatically: the camera-ID lookup endpoint, the success text and whether automated sending is allowed are unknown; review-first with "Open in browser" meanwhile | DESIGN §16 row 19 |
 | D4 | Camera alerts in the cluster's media card: unknown whether the cluster takes a `MediaSession` from a non-media app | DESIGN §16 row 27 |
-| D5 | **Distribute through Google Play's internal testing track** (owner, 2026-10-24: the app must be in Android Auto "without needing to set up a head server", surviving reboots). Needs a Google Play developer account (one-time fee), the app created for `uk.damiendye.autonav`, Play App Signing enrolled with the **shared key** as the app signing key (PEPK upload, so the SHA-1 stays `6C:48:A1:E5…`), the release bundle uploaded, testers' emails added. Available to testers within minutes, no Play review, up to 100 testers. Internal app sharing is not suitable: it re-signs with Google's own key, so the Maps key and OAuth client would stop matching | DESIGN §1.3, §16 row 10; CHECKPOINT §4g |
 
 ## 3. Not yet verified
 
@@ -61,4 +62,8 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 01
 | N2 | EV chargers (Electroverse has no public API; Places + Open Charge Map and a hand-off meanwhile) | DESIGN §18; §16 row 20 |
 | N3 | PGW automation hardening: terms, site changes, captcha (`PgwConfig`, manual import fallback) | DESIGN §16 row 6 |
 | N4 | iGO TYPE code 11 (RedSpeed) is a best guess; confirm against package 288 | DESIGN §16 row 5 |
-| N5 | Google Play **internal testing track** (the supported way to run a Car App Library app in a real car; the sideload is a developer path and never stays in Android Auto's Customise Launcher). Waiting on D5 | DESIGN §1.3 Distribution, §16 row 10 |
+| N9 | **Car screens designed richer than built** (DESIGN §8, §8.2, §8.4, as-built notes dated 2026-10-24): Recents as a place list with markers, distance and origin badge, delete with Undo; a Favourite action on place detail; a results list with map markers; a per-set alerts toggle on POI layers; the speed pill's amber/red thresholds as settings; RadarDroid/Nokia importers (§5.3) | DESIGN §8, §8.2, §8.4, §5.3 |
+| N8 | **Heads-up alert notification extras** designed in DESIGN §12.2 but not built: a content intent that opens our car screen and a Mute action; the notification id is `20_000 + poi.id % 10_000`, so two POIs exactly 10,000 ids apart would share one | DESIGN §12.2 |
+| N7 | **Phone app items designed in DESIGN §13 but not built**: the set editor's category list, 50-POI map preview and re-import/export actions (item 5); default stage modes for new sets (item 9); the Places card (item 10: Google Maps import, Data Portability sync, hidden places); the speech record ring on the phone's Diagnostics (it is on the car's More → Alerts) | DESIGN §13 |
+| N6 | **POI alerts on the driver's screen (cluster)**: designed in DESIGN §12.4 (the alert as an 8 s `Step` in the `Trip`), not built; `TripPublisher` sends the route's steps only | DESIGN §12.4 |
+| N5 | Google Play **internal testing** is live (2026-10-24 22:10, release 1 `0.0.2-2026-10-24`). Release 2 (version code 2, native debug symbols) published 22:28 without the Console warning. Not yet verified: installing it from Play on the owner's phone (the phone's Play Store gave a 404 right after the invite was accepted; expected to be propagation), and that Android Auto then keeps it in **Customise Launcher** across a reboot | DESIGN §1.3 Distribution, §13.3 "Google Play", §16 row 10 |

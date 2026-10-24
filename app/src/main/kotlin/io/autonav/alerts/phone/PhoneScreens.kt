@@ -117,6 +117,42 @@ import io.autonav.alerts.settings.PgwState
 import io.autonav.alerts.settings.SettingsBackup
 import io.autonav.alerts.settings.SpeedSource
 
+// The phone app's screens (DESIGN.md §13; every setting in docs/SETTINGS.md), hosted one per tab
+// by MainActivity, plus the cards and dialogs they use. Camera reports are reviewed and sent from
+// here only, never in the car (AGENTS.md §3.1 rule 8). The Maps key is the user's own, saved by
+// the setup sections; there is no built-in or fallback key (rule 5; DESIGN.md §1.4).
+//
+// The composables in the order they appear on the phone (tab, then top to bottom):
+//
+//   POIs tab       PoiSetsScreen → SetCard (swipe: DeleteSetDialog) → ImportDialog (ColField)
+//                  → SetEditor (StageEditor, TemplateField; validate, withSliderSeconds)
+//                                                      DESIGN.md §13 items 3 to 7; docs/SETTINGS.md §3
+//   Cameras tab    CameraDbScreen: subscription, download format, database, CameraSets
+//                  (CameraGroup, cameraGroups, speedOrder) → SetCard / SetEditor, manual import
+//                                                      DESIGN.md §13 item 8; docs/SETTINGS.md §4
+//   Reports tab    ReportsScreen → ReportCard (compass)   DESIGN.md §8.5, §13 item 2; docs/SETTINGS.md §5
+//   Settings tab   SettingsScreen:
+//                    SetupSections (CreateKeyWithGoogle → GuidedKeySetup; PermState, PermLine,
+//                      openAppSettings)                  DESIGN.md §13 item 1, §13.1, §13.2; docs/SETTINGS.md §2
+//                    Car screen (units, speed panel, satellite)      docs/SETTINGS.md §1.1, §1.4
+//                    Alerts (OverLimitSlider, AlertLeadSlider)       docs/SETTINGS.md §1.2
+//                    Speed and location source                       docs/SETTINGS.md §1.3
+//                    Routing                                         docs/SETTINGS.md §1.4b
+//                    Speed limits (OsmLimitsSection)                 docs/SETTINGS.md §1.4a
+//                    Bench testing (debug builds only)               docs/SETTINGS.md §1.6
+//                    Backup (save, restore dialog)                   docs/SETTINGS.md §1.7; DESIGN.md §13.4
+//                    Diagnostics (DiagnosticsSection → DiagLogCard, MonoLines)
+//                                                                    docs/SETTINGS.md §1.8; DESIGN.md §15.5
+//                    Connecting to a car (CarConnectionSection)      docs/SETTINGS.md §1.8a
+//                    About                                           docs/SETTINGS.md §1.9
+//   Shared         Section (one card), SwitchRow, granted, sizeText, pctLabel, halfSecondsLabel,
+//                  leadDistanceText, FIRST_ALERT_FLOOR_M
+//
+// Every screen takes the one [PhoneDeps] from MainActivity and runs on the main thread; Room,
+// network and settings writes go through `rememberCoroutineScope()` and the repositories'
+// own dispatchers.
+
+/** One settings card: a title and its controls, the shape every tab uses (docs/SETTINGS.md §1 "one scrolling page of cards"). */
 @Composable
 private fun Section(title: String, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -127,6 +163,7 @@ private fun Section(title: String, content: @Composable () -> Unit) {
     }
 }
 
+/** A labelled switch filling the row: the shape of every on/off setting on the phone. */
 @Composable
 private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -135,13 +172,23 @@ private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
     }
 }
 
+/** True when the runtime permission [p] is granted. */
 private fun granted(ctx: Context, p: String) = ContextCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
 
 // --- Setup -------------------------------------------------------------------------------------
 
 /**
  * The setup steps (Maps key, permissions, navigation terms, Android Auto), shown at the top of the
- * Settings tab (DESIGN.md §13). Emits its sections into the caller's scrolling column.
+ * Settings tab (DESIGN.md §13 item 1; docs/SETTINGS.md §2). Emits its sections into the caller's
+ * scrolling column. Once setup is complete (key saved, foreground permissions and background
+ * location granted, terms accepted) the four sections fold into one "Setup" row with Show.
+ *
+ * Upholds AGENTS.md §3.1 rule 5: the key is the user's own, pasted or created in their account,
+ * with no fallback; and the only Navigation SDK call here (the terms dialog) is disabled until a
+ * key is saved, so nothing reaches the SDK before `applyApiKey()` (DESIGN.md §1.4).
+ *
+ * State: `refresh` re-reads the key, terms and permission state after each result and whenever
+ * the Activity resumes (the user may have changed things in Android settings).
  */
 @Composable
 private fun SetupSections(activity: Activity, deps: PhoneDeps) {
@@ -185,6 +232,7 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
     }
     if (complete && !showSetup) return
 
+    // Step 0 (DESIGN.md §13 item 1): the user's own key, or nothing. No built-in or fallback key exists (AGENTS.md §3.1 rule 5; DESIGN.md §1.4).
     Section("Google Maps API key") {
         if (hasKey) Text("✓ Your key is saved.", color = MaterialTheme.colorScheme.primary)
         else Text("No key yet: the map, search and navigation won't work until you add one.",
@@ -196,15 +244,18 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
         OutlinedTextField(keyText, { keyText = it }, label = { Text("API key") }, singleLine = true,
             visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Save stores the key Keystore-encrypted; keyChanged() makes the SDK and Places re-apply it on next use (DESIGN.md §1.4).
             Button(enabled = keyText.isNotBlank(), onClick = {
                 scope.launch { deps.settings.setMapsApiKey(keyText); deps.navigator.keyChanged(); keyText = ""; refresh++ }
             }) { Text("Save key") }
+            // Remove leaves the app with no key at all: map, search and navigation stop until one is added again (rule 5).
             if (hasKey) OutlinedButton(onClick = {
                 scope.launch { deps.settings.setMapsApiKey(null); deps.navigator.keyChanged(); refresh++ }
             }) { Text("Remove") }
         }
     }
 
+    // Steps 1 to 3 (DESIGN.md §13 item 1; docs/SETTINGS.md §2 "Permissions"): foreground grants in one request, background location after.
     Section("Permissions") {
         PermLine("Location (needed)", st.fine)
         PermLine("Location all the time (recommended)", st.background)
@@ -218,6 +269,7 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
                 Button(onClick = { askedOnce = true; permLauncher.launch(missing.toTypedArray()) }) { Text("Allow") }
                 if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
             }
+            // Background location is asked for on its own, after the foreground grant: Android 10+ refuses it in the same request.
             !st.background -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     askedOnce = true
@@ -243,6 +295,7 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
             style = MaterialTheme.typography.bodySmall)
     }
 
+    // Step 4 (DESIGN.md §13 item 1). The dialog is a Navigation SDK call, so the button stays disabled until a key is saved: no SDK call before applyApiKey() (DESIGN.md §1.4; AGENTS.md §3.1 rule 5).
     Section("Navigation terms") {
         if (termsOk) {
             Text("✓ Accepted" + (termsAcceptedAt?.let { " on " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it)) } ?: "") +
@@ -268,9 +321,11 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
         }
     }
 
+    // Step 5 (DESIGN.md §13 item 1): developer mode and Unknown sources are only for sideloaded developer builds; a Play install needs neither.
     Section("Android Auto") {
-        Text("This app is sideloaded. In Android Auto settings, tap the version number repeatedly to enable developer mode, " +
-            "then turn on \"Unknown sources\" in developer settings. Choose AutoNavAlerts as your navigation app on the car screen.")
+        Text("Installed from Google Play? There is nothing to turn on: pick AutoNavAlerts as your navigation app on the car screen. " +
+            "A sideloaded developer build also needs Android Auto's developer mode (tap the version number repeatedly) " +
+            "and \"Unknown sources\" in its developer settings.")
         OutlinedButton(onClick = {
             runCatching { ctx.startActivity(Intent("com.google.android.projection.gearhead.SETTINGS").setPackage("com.google.android.projection.gearhead")) }
         }) { Text("Open Android Auto settings") }
@@ -285,13 +340,14 @@ private fun CarConnectionSection(activity: Activity) {
         Text(title, style = MaterialTheme.typography.titleSmall)
         steps.forEachIndexed { i, step -> Text("${i + 1}. $step", style = MaterialTheme.typography.bodyMedium) }
     }
+    // DESIGN.md §13 item 12; docs/SETTINGS.md §1.8a. Plain numbered steps: the one card allowed more than one line of help, because it's a manual, not a control.
     Steps("On a car (wired or wireless)", listOf(
-        "In Android Auto settings, tap Version about 10 times to turn on developer mode.",
-        "Android Auto ⋮ → Developer settings → tick Unknown sources (this app isn't from Play).",
-        "Android Auto → Customise Launcher → make sure AutoNavAlerts is ticked.",
+        "Installed from Google Play (the internal-testing link): nothing to turn on in Android Auto.",
+        "Sideloaded developer build only: in Android Auto settings tap Version about 10 times for developer mode, then ⋮ → Developer settings → tick Unknown sources.",
+        "Android Auto → Customise Launcher → make sure AutoNavAlerts is ticked (a sideloaded build is not kept in this list; that doesn't stop it appearing on the car).",
         "Open AutoNavAlerts on the phone once: Maps key saved, permissions allowed, navigation terms accepted.",
         "Connect to the car: a data cable for a wired car, or Bluetooth and Wi-Fi on for wireless. Open the car's app grid and pick AutoNavAlerts.",
-        "Not there? Android Auto only picks up a sideloaded app after a fresh install or update when it's next connected: disconnect and reconnect once.",
+        "Not there? Android Auto only picks up a newly installed or updated app when it next connects: disconnect and reconnect once.",
         "Still missing: Android settings → Apps → Android Auto → Force stop, then reconnect.",
         "Still missing: connect the phone once to a head unit on a computer (below), then reconnect the car.",
     ))
@@ -325,6 +381,7 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
     var stop by remember { mutableStateOf<MapsKeyCreator.Stop?>(null) }
     var token by remember { mutableStateOf<String?>(null) }
 
+    // Runs DESIGN.md §13.1 steps 1 to 5 with the token; [billing] is the account the user picked when they had several. Each step is safe to repeat, so Try again carries on.
     fun createWith(accessToken: String, billing: String? = null) {
         token = accessToken
         busy = true; stop = null; done = null
@@ -345,6 +402,7 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
         }
     }
 
+    // Maps a Google Identity failure to the message and buttons DESIGN.md §13.1 "Errors" asks for.
     fun signInProblem(e: Exception): MapsKeyCreator.Stop {
         val code = (e as? ApiException)?.statusCode
         // An unregistered app comes back as DEVELOPER_ERROR, or as INTERNAL_ERROR with UNREGISTERED_ON_API_CONSOLE.
@@ -384,6 +442,7 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
 
     Text("Let the app make your own key in your own Google Cloud account, using a Google account on this phone.",
         style = MaterialTheme.typography.bodySmall)
+    // An unregistered app disables the button for the rest of the visit: pressing again only showed the account picker and failed the same way (DESIGN.md §13.1 Errors).
     Button(enabled = !busy && stop !is MapsKeyCreator.Stop.NotSetUp, onClick = { confirm = true }) {
         Text(if (busy) "Creating key…" else "Create a key with my Google account")
     }
@@ -411,6 +470,7 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
         }
     }
 
+    // The guided set-up (DESIGN.md §13.2) opens by itself when sign-in isn't registered; otherwise it's collapsed under a toggle.
     var guided by remember { mutableStateOf(false) }
     LaunchedEffect(stop) { if (stop is MapsKeyCreator.Stop.NotSetUp) guided = true }
     TextButton(onClick = { guided = !guided }) {
@@ -418,6 +478,7 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
     }
     if (guided) GuidedKeySetup(activity, deps, onSaved = { done = "✓ Key saved."; stop = null; onCreated() })
 
+    // Says what will be made in the user's Google Cloud, and that Google may charge, before anything starts (DESIGN.md §13.1).
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
         title = { Text("Create your Maps key?") },
@@ -439,6 +500,7 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
 private data class PermState(
     val fine: Boolean, val background: Boolean, val notifications: Boolean, val mic: Boolean, val contacts: Boolean, val carSpeed: Boolean,
 ) {
+    /** The permissions "Allow" still has to ask for, in one request; background location is asked for separately. */
     fun missingForeground(): List<String> = buildList {
         if (!fine) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
         if (!notifications && Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -447,6 +509,7 @@ private data class PermState(
     }
 
     companion object {
+        /** Reads the current grants; a permission that doesn't exist on this Android version counts as granted. */
         fun read(ctx: Context) = PermState(
             fine = granted(ctx, Manifest.permission.ACCESS_FINE_LOCATION),
             background = Build.VERSION.SDK_INT < 29 || granted(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION),
@@ -461,11 +524,13 @@ private data class PermState(
     }
 }
 
+/** One ✓ / ✗ line in the Permissions section (docs/SETTINGS.md §2 "Permission lines"). */
 @Composable
 private fun PermLine(label: String, ok: Boolean) {
     Text((if (ok) "✓ " else "✗ ") + label, color = if (ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
 }
 
+/** Opens this app's page in Android settings, for when Android has stopped showing the permission prompt. */
 private fun openAppSettings(ctx: Context) {
     ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", ctx.packageName, null))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -512,11 +577,13 @@ private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> U
             OutlinedButton(onClick = { open(MapsKeyCreator.CREDENTIALS_URL) }) { Text("Open") }
         }
         Text("Package: ${activity.packageName}", style = MaterialTheme.typography.bodySmall)
+        // The SHA-1 of the certificate this APK is signed with, read from PackageManager, so the key's restriction matches this build (DESIGN.md §13.3).
         Text("SHA-1: $sha1", style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { copy("Package name", activity.packageName) }) { Text("Copy package") }
             OutlinedButton(onClick = { copy("SHA-1", sha1) }) { Text("Copy SHA-1") }
         }
+        // Only a string shaped like a Google key (AIza + 35 characters) is saved (DESIGN.md §13.2 step 5).
         Step(5, "Copy the key in Google Cloud, then come back here.") {
             Button(onClick = {
                 val clip = activity.getSystemService(ClipboardManager::class.java).primaryClip
@@ -534,6 +601,11 @@ private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> U
 
 // --- POI sets ----------------------------------------------------------------------------------
 
+/**
+ * The POIs tab (DESIGN.md §13 item 3; docs/SETTINGS.md §3): only sets imported by hand (source
+ * FILE), one [SetCard] each, with Import file. Camera sets never appear here; they are on the
+ * Cameras tab. Tapping a card swaps the whole tab for [SetEditor] until Back.
+ */
 @Composable
 fun PoiSetsScreen(deps: PhoneDeps) {
     // Only files imported by hand; camera sets live on the Cameras tab (DESIGN.md §13).
@@ -545,6 +617,7 @@ fun PoiSetsScreen(deps: PhoneDeps) {
     var confirmDelete by remember { mutableStateOf<PoiSetEntity?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> importUri = uri }
 
+    // The editor replaces the list rather than navigating: one Activity, no NavHost.
     editing?.let { set -> SetEditor(deps, set, onDone = { editing = null }); return }
 
     Column {
@@ -632,6 +705,13 @@ private fun DeleteSetDialog(deps: PhoneDeps, set: PoiSetEntity, onClose: (String
     )
 }
 
+/**
+ * The import flow (DESIGN.md §13 item 4, §5; docs/SETTINGS.md §3.2): shows the set names the
+ * file, or each file in a zip, will get; the CSV column wizard for a `.csv` (§5.7); then imports
+ * and reports the result. There is no set-name prompt: names come from the file names and every
+ * file in a zip becomes its own set (AGENTS.md §3.1 rule 9). [onClose] gets the result message,
+ * or null when cancelled.
+ */
 @Composable
 private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) {
     val ctx = LocalContext.current
@@ -642,6 +722,7 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
     var busy by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<String?>(null) }
     val isCsv = fileName.endsWith(".csv", true)
+    // The first 4 rows of a CSV, for the wizard's preview and to detect the delimiter and header row.
     val preview = remember {
         if (isCsv) ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.use { r -> r.lineSequence().take(4).toList() } ?: emptyList() else emptyList()
     }
@@ -661,6 +742,7 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
                 val names = if (zipFiles.isNotEmpty()) zipFiles else listOf(fileName)
                 Text(if (names.size > 1) "${names.size} sets will be created, one per file:" else "Will be imported as:",
                     style = MaterialTheme.typography.bodyMedium)
+                // A zip can hold dozens of files; 12 names are enough to see what will happen.
                 names.take(12).forEach { Text("• " + deps.pois.setNameFor(it), style = MaterialTheme.typography.bodySmall) }
                 if (names.size > 12) Text("…and ${names.size - 12} more", style = MaterialTheme.typography.bodySmall)
                 if (isCsv) {
@@ -680,6 +762,7 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
             Button(enabled = !busy && result == null, onClick = {
                 busy = true
                 scope.launch {
+                    // Delimiter and header are detected from the preview; a blank column box means "no such column" (docs/SETTINGS.md §3.2).
                     val profile = if (isCsv) CsvProfile(
                         delimiter = CsvImporter.detectDelimiter(preview.joinToString("\n")),
                         hasHeader = preview.firstOrNull()?.any { it.isLetter() } == true,
@@ -697,12 +780,21 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
     )
 }
 
+/** One numbered column box of the CSV wizard (0 = first column; blank = not present). */
 @Composable
 private fun ColField(label: String, value: String, onChange: (String) -> Unit) {
     OutlinedTextField(value, onChange, label = { Text(label) }, singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.size(width = 86.dp, height = 64.dp))
 }
 
+/**
+ * Set detail (DESIGN.md §13 item 5; docs/SETTINGS.md §3.3), used by the POIs and Cameras tabs:
+ * name, Show on map / Alerts / Sound, icon (built-in, user, or from a file), the 1st and 2nd
+ * alert stages, the read-only passing alert, and the three spoken templates with Test speak.
+ * Distances are edited in the user's units and stored in metres. Save checks the §11.1 rules
+ * first; the passing alert has no controls because it is compulsory while sound is on (§11.1).
+ * The set is not written until Save; Back discards the edits.
+ */
 @Composable
 private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -740,6 +832,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
                 OutlinedButton(onClick = { pickIcon = !pickIcon }) { Text("Choose") }
                 OutlinedButton(onClick = { iconPicker.launch(arrayOf("image/*")) }) { Text("From file") }
             }
+            // PGW icons carry the credit their licence asks for (docs/SETTINGS.md §3.3 Icon).
             if (IconRepository.isPgwIcon(set.defaultIconId)) {
                 Text(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_CREDIT, style = MaterialTheme.typography.bodySmall)
             }
@@ -759,9 +852,11 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         val sliderNote = "Seconds: from the Alerts slider ($leadSeconds s / ${halfSecondsLabel(leadSeconds)})"
         StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(firstAlert = it) }
         StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(secondAlert = it) }
+        // Compulsory and fixed (DESIGN.md §11.1; AGENTS.md §3.2): shown so the user knows it exists, with nothing to change.
         Section("Passing alert (1 s ahead, at least 20 yd)") {
             Text("Always on while sound is enabled for this set.", style = MaterialTheme.typography.bodySmall)
         }
+        // Only these five placeholders exist (DESIGN.md §7.2; AGENTS.md §3.2).
         Section("Spoken text") {
             Text("Placeholders: {category} {speed} {units} {distance} {direction}", style = MaterialTheme.typography.bodySmall)
             TemplateField(deps, "1st alert", set.firstTemplate, units) { set = set.copy(firstTemplate = it) }
@@ -821,6 +916,11 @@ private fun StageEditor(
     }
 }
 
+/**
+ * The template editor (DESIGN.md §13 item 7): the text, a live preview rendered against a sample
+ * 30 mph fixed camera 400 m ahead, and Test speak through the real [NavTts] so the audio route
+ * can be checked. Priority 10 and POI id -1: a plain utterance, no chime, tied to no camera.
+ */
 @Composable
 private fun TemplateField(deps: PhoneDeps, label: String, value: String, units: Units, onChange: (String) -> Unit) {
     val sample = TemplateValues(category = "Fixed camera", speed = 30, speedUnit = SpeedUnit.MPH, distanceM = 400.0, direction = "ahead")
@@ -834,6 +934,13 @@ private fun TemplateField(deps: PhoneDeps, label: String, value: String, units: 
 
 // --- Camera database (PGW) ---------------------------------------------------------------------
 
+/**
+ * The Cameras tab (DESIGN.md §13 item 8, §6; docs/SETTINGS.md §4): the PocketGPSWorld login (the
+ * user's own; the download stays on this phone, AGENTS.md §3.1 rule 6), the download format
+ * (OV2 or iGO), the database state with Sync now / Force re-download / auto-update / Wi-Fi only,
+ * the camera sets grouped by type ([CameraSets]), and the manual download page. Tapping a set
+ * swaps the tab for [SetEditor].
+ */
 @Composable
 fun CameraDbScreen(deps: PhoneDeps) {
     val ctx = LocalContext.current
@@ -868,6 +975,7 @@ fun CameraDbScreen(deps: PhoneDeps) {
                 if (!hasLogin) Button(enabled = user.isNotBlank() && pass.isNotBlank(), onClick = {
                     scope.launch {
                         deps.settings.setPgwCredentials(user.trim(), pass)
+                        // A new login must not reuse the old session cookies (DESIGN.md §6.1).
                         deps.pgw.forgetSession()
                         status = runCatching { deps.pgw.ensureLoggedIn(); "Logged in." }.getOrElse { "Login failed: ${it.message}" }
                         pass = ""; refresh++
@@ -879,6 +987,7 @@ fun CameraDbScreen(deps: PhoneDeps) {
             }
             status?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
         }
+        // DESIGN.md §5.2a: switching formats replaces the sets on the next sync, so the per-set icon and alert choices are lost.
         Section("Download format") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PgwDownload.entries.forEach { d ->
@@ -902,6 +1011,7 @@ fun CameraDbScreen(deps: PhoneDeps) {
             if (state.lastSyncMs > 0) Text("Last sync: ${df.format(Date(state.lastSyncMs))}", style = MaterialTheme.typography.bodySmall)
             state.lastResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Sync now only downloads when the feed shows a newer version; Force re-download always does (docs/SETTINGS.md §4).
                 Button(enabled = hasLogin, onClick = { deps.scheduler.syncNow(force = false) }) { Text("Sync now") }
                 OutlinedButton(enabled = hasLogin, onClick = { deps.scheduler.syncNow(force = true) }) { Text("Force re-download") }
             }
@@ -944,6 +1054,11 @@ private fun cameraGroups(sets: List<PoiSetEntity>): List<CameraGroup> {
 private fun speedOrder(name: String): Int =
     Regex("""· (\d+)""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: Int.MAX_VALUE
 
+/**
+ * The camera-set groups on the Cameras tab (DESIGN.md §13 item 8; docs/SETTINGS.md §4.1): a
+ * summary line, then one card per type with its icon, totals, an expand arrow and a group switch
+ * (on while any set in the group is on; turns them all). Expanded, the sets show as [SetCard]s.
+ */
 @Composable
 private fun CameraSets(
     deps: PhoneDeps, groups: List<CameraGroup>, message: String?,
@@ -987,6 +1102,13 @@ private fun CameraSets(
 
 // --- Reports (final review and submission happen only here, never on the car screen) ----------
 
+/**
+ * The Reports tab (DESIGN.md §8.5, §13 item 2; docs/SETTINGS.md §5): the end-of-drive review.
+ * Final review and sending happen here, on the phone, and nowhere else (AGENTS.md §3.1 rule 8):
+ * the car only captures. Send and Send all are disabled while the phone is connected to Android
+ * Auto, a car session is open, or it moved faster than 5 mph in the last 2 minutes
+ * (`DrivingState.blockedReason()`); the submit worker refuses to run then too. No auto-send.
+ */
 @Composable
 fun ReportsScreen(activity: Activity, deps: PhoneDeps) {
     val reports by deps.reports.reports.collectAsState(initial = emptyList())
@@ -994,6 +1116,7 @@ fun ReportsScreen(activity: Activity, deps: PhoneDeps) {
     val scope = rememberCoroutineScope()
     var tick by remember { mutableStateOf(0) }
     LaunchedEffect(carConnected) { tick++ }
+    // Recomputed when the car connects or disconnects and when the list changes; the moving gate is time-based, so it is read at those moments.
     val blocked = remember(carConnected, tick, reports) { deps.driving.blockedReason() }
     val drafts = reports.filter { it.status == ReportStatus.DRAFT || it.status == ReportStatus.FAILED }
 
@@ -1004,6 +1127,7 @@ fun ReportsScreen(activity: Activity, deps: PhoneDeps) {
                 "Don't report warning signs or Traffic Master cameras; only report mobiles when a unit is actually there.",
                 style = MaterialTheme.typography.bodySmall)
             blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            // Send all: queues every draft and failed report; the worker sends them once the drive is over (DESIGN.md §8.5).
             if (drafts.size > 1) Button(enabled = blocked == null, onClick = {
                 scope.launch { drafts.forEach { deps.reports.queueForSending(it) }; ReportSubmitWorker.enqueue(activity) }
             }) { Text("Send all ${drafts.size}") }
@@ -1016,6 +1140,15 @@ fun ReportsScreen(activity: Activity, deps: PhoneDeps) {
     }
 }
 
+/**
+ * One report (DESIGN.md §8.5 "Review on the phone"; docs/SETTINGS.md §5): the header with its
+ * status, then, while it is a draft or failed, the editable review: type chips (pre-filled from
+ * the spoken comment), position with 10 m nudges and Show on map, speed limit with its source,
+ * direction of travel (±5°, ±45°, Reverse; One way / Both ways), the comment with Play recording
+ * and retry transcription, then Send / Save / Discard / Browser. Chip and nudge edits are saved
+ * at once through [CameraReportRepository.saveReview]; the comment text waits for Save or Send.
+ * Send is disabled while [blocked] is set (AGENTS.md §3.1 rule 8).
+ */
 @Composable
 private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraReportEntity, blocked: String?) {
     val scope = rememberCoroutineScope()
@@ -1047,6 +1180,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
             // Position, with fine nudges
             Text("Position: %.5f, %.5f".format(r.lat, r.lon), style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                // 10 m in degrees: about 111 195 m per degree of latitude; a degree of longitude shrinks with cos(lat).
                 val dLat = 10.0 / 111_195.0
                 val dLon = 10.0 / (111_195.0 * kotlin.math.cos(Math.toRadians(r.lat)))
                 listOf("N" to (dLat to 0.0), "S" to (-dLat to 0.0), "E" to (0.0 to dLon), "W" to (0.0 to -dLon)).forEach { (l, d) ->
@@ -1066,6 +1200,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
             }
             Text("Speed limit: ${r.speedLimit?.let { "$it mph" } ?: "not set"} ($src)", style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // UK limits in mph; PgwReportSubmitter maps them to the form's own speed codes (DESIGN.md §8.5 table).
                 listOf(20, 30, 40, 50, 60, 70).forEach { v ->
                     FilterChip(r.speedLimit == v, { save(r.copy(speedLimit = v, limitSource = LimitSource.USER)) }, label = { Text("$v") })
                 }
@@ -1074,6 +1209,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
             // Direction
             Text("Direction of travel: ${r.heading?.roundToInt()?.let { "$it° (${compass(it)})" } ?: "unknown"}", style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                // Turning the heading makes an "any direction" report one-way in that direction (DESIGN.md §8.5 "direction of travel").
                 fun turn(by: Int) = save(r.copy(heading = (((r.heading ?: 0f) + by) % 360 + 360) % 360, directionType =
                     if (r.directionType == DirectionType.ANY) DirectionType.ONE_WAY else r.directionType))
                 OutlinedButton(onClick = { turn(-45) }) { Text("−45°") }
@@ -1115,6 +1251,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
                 OutlinedButton(onClick = { scope.launch { deps.reports.saveReview(r) } }) { Text("Save") }
                 OutlinedButton(onClick = { scope.launch { deps.reports.discard(r) } }) { Text("Discard") }
                 TextButton(onClick = {
+                    // The fallback when the form can't be automated (DESIGN.md §8.5): the fields on the clipboard, the Submit page in the browser. SendEntry is the button, not a field.
                     val s = deps.reports.toSubmission(r)
                     val text = s.formFields().filter { it.first != "SendEntry" }.joinToString("\n") { "${it.first}: ${it.second}" }
                     activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Camera report", text))
@@ -1125,10 +1262,20 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
     }
 }
 
+/** Eight-point compass name for a heading in degrees (338° to 22° is N). */
 private fun compass(deg: Int): String = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")[((deg + 22) % 360) / 45]
 
 // --- Settings ----------------------------------------------------------------------------------
 
+/**
+ * The Settings tab (DESIGN.md §13 item 9; docs/SETTINGS.md §1): one scrolling column of cards in
+ * this order: the setup sections (folded into one row once complete), Car screen, Alerts, Speed
+ * and location source, Routing, Speed limits (OpenStreetMap), Bench testing (debug builds only),
+ * Backup, Diagnostics and Connecting to a car (both folded behind Show), About. Each control
+ * carries at most one short line of help; the full explanation is docs/SETTINGS.md. Every change
+ * is written to [SettingsStore] at once; the car screen and the alert engine observe the same
+ * flow, so there is no Save button.
+ */
 @Composable
 fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
     val s by deps.settings.settings.collectAsState(initial = AppSettings())
@@ -1137,6 +1284,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
     Column(Modifier.verticalScroll(rememberScrollState())) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
         SetupSections(activity, deps)
+        // docs/SETTINGS.md §1.1 Units and §1.4 Speed panel share one card (DESIGN.md §13 item 9). Satellite is the same setting as the car's Satellite button.
         Section("Car screen") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(s.units == Units.IMPERIAL, { set { it.copy(units = Units.IMPERIAL) } }, label = { Text("mph, miles, yards") })
@@ -1145,6 +1293,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
             SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
         }
+        // docs/SETTINGS.md §1.2. Voice silences the POI alerts only; the directions are always spoken (DESIGN.md §12.3).
         Section("Alerts") {
             SwitchRow("Voice", s.voiceOn) { v -> set { it.copy(voiceOn = v) } }
             SwitchRow("Chime before the passing alert", s.chimeOn) { v -> set { it.copy(chimeOn = v) } }
@@ -1153,6 +1302,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             SwitchRow("Announce speed limit changes ahead", s.announceLimitChanges) { v -> set { it.copy(announceLimitChanges = v) } }
             Text("Spoken once per change, from the OpenStreetMap limits on the phone.", style = MaterialTheme.typography.bodySmall)
         }
+        // docs/SETTINGS.md §1.3; DESIGN.md §10.6, §10.7.
         Section("Speed and location source") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(s.speedSource == SpeedSource.CAR_WHEN_AVAILABLE,
@@ -1162,19 +1312,23 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             }
             Text("The car's own speed and GPS through Android Auto when it shares them, else the phone.", style = MaterialTheme.typography.bodySmall)
         }
+        // docs/SETTINGS.md §1.4b; DESIGN.md §8.3a.
         Section("Routing") {
             SwitchRow("Avoid tolls", s.avoidTolls) { v -> set { it.copy(avoidTolls = v) } }
             SwitchRow("Energy-efficient routes (EV)", s.evEfficientRoutes) { v -> set { it.copy(evEfficientRoutes = v) } }
             Text("With EV routes on, the preview offers Fastest and Energy-efficient (Routes API on your key) and you pick before Go.",
                 style = MaterialTheme.typography.bodySmall)
         }
+        // docs/SETTINGS.md §1.4a; DESIGN.md §8.4a.
         Section("Speed limits (OpenStreetMap)") { OsmLimitsSection(activity, deps, s) { b -> set(b) } }
+        // docs/SETTINGS.md §1.6: the Simulate drive exists only in debug builds (TESTING.md §5).
         if (io.autonav.alerts.BuildConfig.DEBUG) Section("Bench testing (debug builds)") {
             Text("Speed of the Simulate drive on the car screen; 1× is real time.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(1f, 2f, 4f).forEach { v -> FilterChip(s.simulationSpeed == v, { set { it.copy(simulationSpeed = v) } }, label = { Text("${v.roundToInt()}×") }) }
             }
         }
+        // docs/SETTINGS.md §1.7; DESIGN.md §13.4. The file holds the key and PGW password in plain text, so the card warns before the button.
         Section("Backup") {
             val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
                 if (uri != null) scope.launch {
@@ -1213,6 +1367,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                             Text("Maps API key: " + if (p.hasMapsKey) "included" else "not included")
                             Text("PocketGPSWorld login: " + (p.pgwUser?.let { "included ($it)" } ?: "not included"))
                             Text("Camera set settings: ${p.sets} sets, ${p.matchingSets} of them match sets on this phone")
+                            // Terms are never restored: Google's terms are accepted per install (DESIGN.md §13.4 step 4).
                             Text("This replaces your current settings. Navigation terms still need accepting on this phone.",
                                 style = MaterialTheme.typography.bodySmall)
                         }
@@ -1223,6 +1378,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                             preview = null
                             scope.launch {
                                 restoreMessage = runCatching { deps.backup.restore(text) }.fold({ r ->
+                                    // A restored key is applied the same way as a pasted one (DESIGN.md §1.4, §13.4 step 4).
                                     if (r.mapsKey) deps.navigator.keyChanged()
                                     val parts = buildList {
                                         if (r.settings) add("settings")
@@ -1260,6 +1416,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             }
             if (showCar) CarConnectionSection(activity)
         }
+        // docs/SETTINGS.md §1.9: the build stamp (DESIGN.md §1.3) and the licences; nothing to set.
         Section("About") {
             Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
             Text("Build ${io.autonav.alerts.BuildConfig.GIT_COMMIT}" + if (io.autonav.alerts.BuildConfig.DEBUG) " (debug)" else "",
@@ -1307,6 +1464,7 @@ private fun OsmLimitsSection(
         Button(onClick = { deps.speedLimits.download(s.osmWifiOnly) }) {
             Text(if (stats == null) "Download speed limits for the UK" else "Update speed limits")
         }
+        // The Geofabrik extract is about 1.1 GB to download and about 30 MB once reduced to limits (DESIGN.md §8.4a).
         Text((if (s.osmWifiOnly) "About 1.1 GB on Wi-Fi only" else "About 1.1 GB, over mobile data too") + ", in the background; about 30 MB kept on the phone.",
             style = MaterialTheme.typography.bodySmall)
     }
@@ -1323,6 +1481,7 @@ private fun OsmLimitsSection(
 /** Over-limit warning threshold: −5% to +20% in 0.1% steps (DESIGN.md §11 step 9). */
 @Composable
 private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
+    // The setting is a fraction (-0.001 is -0.1%); the slider works in tenths of a percent, -50 to +200.
     var v by remember(current) { mutableStateOf((current * 1000).roundToInt().toFloat()) } // tenths of a percent
     val pct = v / 10.0
     Text("Over-limit warning: ${pctLabel(pct / 100)}", style = MaterialTheme.typography.bodyLarge)
@@ -1337,10 +1496,12 @@ private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
     androidx.compose.material3.Slider(
         value = v, onValueChange = { v = Math.round(it).toFloat() },
         onValueChangeFinished = { onChange(v / 1000.0) },
+        // 249 steps between -50 and +200 make each step one tenth of a percent (DESIGN.md §11 step 9).
         valueRange = -50f..200f, steps = 249,
     )
     Row(Modifier.fillMaxWidth()) {
         Text("−5%", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        // The default (DESIGN.md §11 step 9; docs/SETTINGS.md §1.2).
         TextButton(onClick = { v = -1f; onChange(-0.001) }) { Text("Reset to −0.1%") }
         Text("+20%", style = MaterialTheme.typography.bodySmall)
     }
@@ -1430,6 +1591,7 @@ private fun DiagnosticsSection(
         }) { Text("Clear both logs") }
         Button(onClick = {
             scope.launch {
+                // The snapshot is also written to alert-debug, so the file shows what the engine saw at that moment (DESIGN.md §15.5).
                 val text = withContext(Dispatchers.Default) {
                     runCatching { deps.diagnostics.snapshot() }.getOrElse { "snapshot failed: $it" }
                 }
@@ -1486,6 +1648,7 @@ private fun DiagLogCard(activity: Activity, deps: PhoneDeps, ch: EventLog.Channe
     var reload by remember { mutableIntStateOf(0) }
     LaunchedEffect(refresh, show, reload) {
         withContext(Dispatchers.IO) {
+            // A forced write first, else the last 15 s batch wouldn't be in the file yet (DESIGN.md §15.5).
             if (show) deps.eventLog.flush("view")
             size = deps.eventLog.sizeBytes(ch)
             oldest = deps.eventLog.oldest(ch)
@@ -1537,6 +1700,7 @@ private fun MonoLines(lines: List<String>, maxHeight: Dp) {
     )
 }
 
+/** "512 B", "37 KB", "1.2 MB" for a file size. */
 private fun sizeText(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"

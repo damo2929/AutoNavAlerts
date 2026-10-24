@@ -10,13 +10,22 @@ import io.autonav.alerts.core.geo.LatLngPoint
 /**
  * The next change of speed limit on the road the car is on (DESIGN.md §8.4a, "Limit changes
  * ahead"). The limit file has no road names, so without a route the road is followed by
- * connectivity: from the piece under the car to its end, the piece joined there (within 20 m,
- * heading within 45°, straightest first), and so on up to [Config.maxM] or until the limit
- * differs. With a route, its polyline ahead is sampled every [Config.sampleM] instead, which is
- * exact and treats a turn onto a 30 road as the limit about to apply.
+ * connectivity: from the piece under the car to its end, the piece joined there (within 40 m,
+ * heading within 45°, straightest first, [LimitIndex.joinFrom]), and so on up to [Config.maxM] or
+ * until the limit differs, stopping at the first fork (owner, 2026-10-23: past a slip or a
+ * roundabout exit the branch can't be known without a route). With a route, its polyline ahead is
+ * sampled every [Config.sampleM] instead, which is exact and treats a turn onto a 30 road as the
+ * limit about to apply.
+ *
+ * No Android, no threads of its own. The app's `SpeedLimitRepository` wraps it: [nextChange] is
+ * evaluated once a second by `NavSession` (never per fix) for the announcement and the map
+ * marker; [roadAhead] is asked by `AlertCoordinator` for the free-drive road the engine matches
+ * cameras against (once a second, and at once after a 10° turn, at most four times a second, §11
+ * step 4). Degrees in; metres and mph out.
  */
 class LimitLookahead(private val index: LimitIndex, private val config: Config = Config()) {
     data class Config(
+        // 600 m ahead, sampled every 25 m along a route (§8.4a "Limit changes ahead").
         val maxM: Double = 600.0,
         val sampleM: Double = 25.0,
         /** A cap on the connectivity walk, so a data loop can't spin. */
@@ -24,9 +33,13 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
     )
 
     /** [lat]/[lon]: where the new limit starts (the joining point on the road, or the route sample), for the map marker (§8.4a). */
+    /** [newMph] the limit about to apply; [distanceM] along the road or route to where it starts; [viaRoute] which walk found it. */
     data class Change(val newMph: Int, val distanceM: Double, val viaRoute: Boolean, val lat: Double = Double.NaN, val lon: Double = Double.NaN)
 
     /**
+     * The next change ahead, or null: no piece under the car (no data, or a road with no posted
+     * limit), no change within [Config.maxM], or a fork before it in free drive.
+     *
      * @param routeAhead the route from the car onward (first point at the car), or null in free drive.
      */
     fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>? = null): Change? =
@@ -36,6 +49,7 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
     private fun alongRoad(lat: Double, lon: Double, headingDeg: Double): Change? {
         var piece = index.pieceAt(lat, lon, headingDeg) ?: return null
         val mph0 = index.mphOf(piece)
+        // Pieces have a drawing direction; we walk whichever way agrees with the heading.
         var forward = Geo.absAngleDiffDeg(index.bearingOf(piece), headingDeg) <= 90.0
         var end = index.endOf(piece, forward)
         var out = outBearing(piece, forward)
@@ -50,6 +64,7 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
             if (mph != mph0) return Change(mph, d, viaRoute = false, lat = end.lat, lon = end.lon)
             val start = index.startOf(next)
             val stop = index.endOf(next, true)
+            // The next piece is walked from whichever of its ends touched the join.
             forward = Geo.distanceM(end.lat, end.lon, start.lat, start.lon) <= Geo.distanceM(end.lat, end.lon, stop.lat, stop.lon)
             d += index.lengthOf(next)
             piece = next
@@ -89,6 +104,8 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
     private fun outBearing(piece: Int, forward: Boolean) =
         if (forward) index.bearingOf(piece) else Geo.normalizeDeg(index.bearingOf(piece) + 180.0)
 
+    // With a route the limit under each sample point is looked up with the route's own bearing there,
+    // so a side road at a junction doesn't match (§8.4a "With a route").
     private fun alongRoute(lat: Double, lon: Double, headingDeg: Double, route: List<LatLngLike>): Change? {
         val mph0 = index.limitAt(lat, lon, headingDeg) ?: return null
         val n = route.size

@@ -32,7 +32,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToInt
 
-/** Everything saved the moment Report is tapped (DESIGN.md §8.5). */
+/** Everything saved the moment Report is tapped (DESIGN.md §8.5 "Car flow" step 1): position, heading (degrees true, null if unknown), speed in m/s and the time. */
 data class ReportSnapshot(
     val lat: Double,
     val lon: Double,
@@ -41,11 +41,18 @@ data class ReportSnapshot(
     val timeMs: Long,
 )
 
+/** The alert engine's latest fix, frozen at the tap (car GPS when fresh, otherwise the phone, §10.7). */
 fun Fix.toSnapshot() = ReportSnapshot(lat, lon, heading, speedMps, System.currentTimeMillis())
 
 /**
- * Camera reports: captured in one tap on the car screen, buffered as drafts, reviewed on the phone
- * after the drive, and sent to PGW only when the user presses Send and isn't driving.
+ * Camera reports (DESIGN.md §8.5): captured in one tap on the car screen, buffered as drafts, reviewed on the
+ * phone after the drive, and sent to PocketGPSWorld only when the user presses Send and isn't driving. A Hilt
+ * singleton; Room calls run on Dispatchers.IO through the DAOs. Callers: `HomeScreen` ([capture], [justPassed],
+ * [localPoiOf]), `VoiceCommentScreen` ([attachAudio], [undo]), `NavSession` ([remindIfDrafts] when guidance
+ * ends or the car disconnects), the phone's Reports tab ([saveReview], [queueForSending], [discard],
+ * [transcribe], [toSubmission]) and `ReportSubmitWorker` ([pending], [update], [markSent], [toSubmissionWithId]).
+ * Upholds hard rule 8 (AGENTS.md §3.1): the car only captures; review, edits and Send exist on the phone only,
+ * and nothing is ever sent from the car or while driving (`DrivingState` guards the worker and the button).
  */
 @Singleton
 class CameraReportRepository @Inject constructor(
@@ -53,13 +60,22 @@ class CameraReportRepository @Inject constructor(
     private val db: AppDatabase,
     private val pois: PoiRepository,
 ) {
+    /** The Reports tab's list: everything not discarded, newest first. */
     val reports: Flow<List<CameraReportEntity>> = db.reports().observe()
 
+    /** Where a report's recording lives: private storage, `files/report-audio/report-<id>.pcm`, deleted once sent or discarded (§8.5 "Privacy"). */
     fun audioFile(id: Long) = File(File(context.filesDir, "report-audio").apply { mkdirs() }, "report-$id.pcm")
 
-    /** One-tap capture. Adds a provisional "My reports" POI (expires in 24 h unless reviewed). */
+    /**
+     * One-tap capture (§8.5 "Car flow" step 1): saves the snapshot as a DRAFT with [limit] (mph) and where it came
+     * from, and [relatedPoiId] for the nearest known camera, and adds a provisional "My reports" POI at the spot,
+     * one-way in the direction of travel, which expires in 24 h unless the review makes it permanent. The caller
+     * then tells `AlertCoordinator.quietHere` to keep the new marker silent until the car is 300 m away.
+     * Returns the report id. The type is not asked for in the car: it stays UNSPECIFIED until the comment or review.
+     */
     suspend fun capture(snap: ReportSnapshot, limit: Int?, limitSource: LimitSource, relatedPoiId: Long?): Long {
         val setId = pois.reportsSetId()
+        // A heading at the tap makes the report one-way in that direction (§8.5 "saved as one-way"); none means ANY.
         val dir = if (snap.heading != null) DirectionType.ONE_WAY else DirectionType.ANY
         val poiId = pois.addReportPoi(
             PoiEntity(
@@ -82,17 +98,23 @@ class CameraReportRepository @Inject constructor(
     /** The marker POI a report put on the map, if it still has one. */
     suspend fun localPoiOf(id: Long): Long? = db.reports().get(id)?.localPoiId
 
-    /** Stores the recorded comment and transcribes it in the background. */
+    /** Stores the recorded comment (§8.5 step 2) and transcribes it; the caller runs this off the main thread so the car screen isn't held. */
     suspend fun attachAudio(id: Long, pcm: File) {
         val r = db.reports().get(id) ?: return
         db.reports().update(r.copy(audioPath = pcm.path, transcription = "PENDING"))
         transcribe(id)
     }
 
+    /**
+     * Speech to text for a report's recording (§8.5 "Speech to text"), also the review screen's retry. A result is
+     * appended to any comment already typed, and sets the type by [guessKind] if it is still UNSPECIFIED;
+     * a failure leaves the audio for playback and marks the transcription FAILED.
+     */
     suspend fun transcribe(id: Long) {
         val r = db.reports().get(id) ?: return
         val pcm = r.audioPath?.let(::File) ?: return
         val text = Transcriber.transcribe(context, pcm)
+        // Re-read: the user may have edited the report on the phone while recognition ran.
         val now = db.reports().get(id) ?: return
         db.reports().update(
             if (text != null) now.copy(
@@ -103,7 +125,7 @@ class CameraReportRepository @Inject constructor(
         )
     }
 
-    /** Undo straight after reporting. */
+    /** Undo from the 5 s alert after the tap (§8.5 step 3): the marker, the recording and the row all go. */
     suspend fun undo(id: Long) {
         val r = db.reports().get(id) ?: return
         r.localPoiId?.let { pois.deletePoi(it) }
@@ -111,7 +133,13 @@ class CameraReportRepository @Inject constructor(
         db.reports().delete(id)
     }
 
-    /** Saves review edits and applies them to the local "My reports" POI. */
+    /**
+     * Saves review edits from the phone (§8.5 "Review on the phone") and applies them to the local "My reports"
+     * POI: a "camera not there" removes our marker and hides the existing camera (`hiddenByReport`); a WRONG_*
+     * report about an existing camera needs no marker of its own; anything else moves and relabels the marker
+     * with the reviewed position, limit and direction, and makes it permanent unless it is a mobile site or
+     * still unspecified (those keep their 24 h expiry).
+     */
     suspend fun saveReview(r: CameraReportEntity) {
         db.reports().update(r)
         val local = r.localPoiId?.let { pois.poi(it) }
@@ -132,28 +160,36 @@ class CameraReportRepository @Inject constructor(
         }
     }
 
-    /** Queues a reviewed report; the worker only sends when not driving. */
+    /** Send on the phone: saves the review and marks the report QUEUED; `ReportSubmitWorker` sends it once the phone isn't driving (§8.5). */
     suspend fun queueForSending(r: CameraReportEntity) {
         saveReview(r)
         db.reports().update(r.copy(status = ReportStatus.QUEUED, lastError = null))
     }
 
+    /** Discard on the phone: a draft's marker goes, the recording is deleted (§8.5 "Privacy"), the row stays as DISCARDED. */
     suspend fun discard(r: CameraReportEntity) {
         if (r.status == ReportStatus.DRAFT) r.localPoiId?.let { pois.deletePoi(it) }
         r.audioPath?.let { File(it).delete() }
         db.reports().update(r.copy(status = ReportStatus.DISCARDED, audioPath = null))
     }
 
+    /** Plain save (the worker's SENDING / FAILED moves). */
     suspend fun update(r: CameraReportEntity) = db.reports().update(r)
+    /** Reports waiting to be sent, for the worker. */
     suspend fun pending(): List<CameraReportEntity> = db.reports().withStatus(ReportStatus.QUEUED)
+    /** Reports not yet reviewed, for the end-of-drive reminder. */
     suspend fun drafts(): List<CameraReportEntity> = db.reports().withStatus(ReportStatus.DRAFT)
 
+    /** The worker's success path: SENT, and the recording deleted (§8.5 "Audio files are deleted once the report is sent"). */
     suspend fun markSent(r: CameraReportEntity) {
         r.audioPath?.let { File(it).delete() }
         db.reports().update(r.copy(status = ReportStatus.SENT, lastError = null, audioPath = null))
     }
 
-    /** End of drive: "N camera reports to check" (DESIGN.md §8.5). */
+    /**
+     * End of drive: the "N camera reports to check" notification that opens the phone's Reports tab (DESIGN.md
+     * §8.5 "End of drive"). Nothing is shown when there are no drafts or no notification permission.
+     */
     suspend fun remindIfDrafts() {
         val n = drafts().size
         if (n == 0) return
@@ -173,14 +209,20 @@ class CameraReportRepository @Inject constructor(
             .setContentIntent(pi).setAutoCancel(true).build())
     }
 
-    /** Like [toSubmission], filling idCam from the related camera's PGW id when known. */
+    /** Like [toSubmission], filling idCam from the related camera's PGW id when known (`Poi.sourceId`, carried in the OV2 download's names, §5.2a; the iGO download has none). */
     suspend fun toSubmissionWithId(r: CameraReportEntity): PgwSubmission {
         val id = r.relatedPoiId?.let { pois.poi(it) }?.sourceId
         val base = toSubmission(r, id)
         return base
     }
 
-    /** Maps a report onto PGW's form fields (DESIGN.md §8.5). */
+    /**
+     * Maps a report onto PGW's form fields (DESIGN.md §8.5 "Mapping our report types" and the field table):
+     * Action 1 add, 2 change, 3 remove, 4 mobile seen again (2–4 only with a known camera id, else an add with the
+     * details in the comment); Type 0 not sure, 2 mobile, 4 SPECS, 5 red light, 10 RedSpeed. The comment carries
+     * the transcript plus "Reported via AutoNavAlerts; heading …; road …"; the country is picked from the position.
+     * Pure, so the phone's "Open in browser" fallback can show the same fields (§8.5 "Fallback").
+     */
     fun toSubmission(r: CameraReportEntity, pgwCameraId: String? = null): PgwSubmission {
         val (action, type) = when (r.kind) {
             ReportKind.UNSPECIFIED -> 1 to 0
@@ -201,11 +243,18 @@ class CameraReportRepository @Inject constructor(
             if (r.limitSource == LimitSource.GOOGLE) append("; limit from Google")
             r.road?.let { append("; road ").append(it) }
         }
+        // mapCountry2: 0 United Kingdom, 1 Ireland (§8.5 field table). A rough box for the island of Ireland (west of
+        // 5.3°W, 51.4–55.5°N) less its north-east corner (north of 54°N and east of 8.2°W), which is Northern Ireland.
         val country = if (r.lon < -5.3 && r.lat in 51.4..55.5 && !(r.lat > 54.0 && r.lon > -8.2)) 1 else 0
         return PgwSubmission(action, pgwCameraId, r.lat, r.lon, type, r.speedLimit, r.heading?.roundToInt(), r.directionType, details, country)
     }
 
-    /** The closest camera behind you within 300 m: the one you've just passed. */
+    /**
+     * The closest camera behind you within 300 m: the one you've just passed, so a tap right after a camera can
+     * mean "not there" or "mobile seen again" about it (§8.5 "the nearest camera already in the database").
+     * [candidates] are (poi id, (lat, lon)) from the alert cache; "behind" is a bearing more than 90° off the heading.
+     * Null without a heading.
+     */
     fun justPassed(fix: Fix, candidates: List<Pair<Long, Pair<Double, Double>>>): Long? {
         val h = fix.heading ?: return null
         return candidates.filter { (_, ll) ->
@@ -217,7 +266,7 @@ class CameraReportRepository @Inject constructor(
     companion object {
         private const val CHANNEL = "camera_reports"
 
-        /** Guesses the report type from the spoken comment (confirmed at review). */
+        /** Guesses the report type from the spoken comment (§8.5 step 3: "mobile", "van" → Mobile; "average", "specs" → Average speed; "red light"; "not there", "gone" → Camera not there; otherwise Not sure), confirmed at review. Order matters: "not there" is tested before anything else. */
         fun guessKind(text: String): ReportKind {
             val t = text.lowercase()
             return when {
@@ -232,6 +281,7 @@ class CameraReportRepository @Inject constructor(
             }
         }
 
+        /** The "My reports" marker's name per type, shown on the map and said as `{category}` when the set has no category (§7.2). */
         fun label(kind: ReportKind) = when (kind) {
             ReportKind.UNSPECIFIED -> "Camera (type to check)"
             ReportKind.MOBILE_SEEN -> "Mobile camera (reported)"

@@ -12,12 +12,21 @@ import java.nio.ByteOrder
 import kotlin.math.roundToInt
 
 /**
- * The compact on-phone file of OpenStreetMap limits (DESIGN.md §8.4a): a sorted tile index, then
- * each tile's roads as a limit, a point count, a first point in micro-degrees and 16-bit steps.
+ * The compact on-phone file of OpenStreetMap limits (DESIGN.md §8.4a "File"): magic `ANSL`,
+ * version, road count, the Geofabrik data date, then a sorted index of tiles (key, offset, length),
+ * then each tile's roads as a limit (mph, 1 byte), a point count (2 bytes), a first point in
+ * micro-degrees (2 × 4 bytes) and each next point as a 16-bit difference (2 × 2 bytes). A road
+ * with a step too long for 16 bits is split; a two-point road may instead be flagged (0x80) and
+ * carry its second point in full. Big-endian throughout.
+ *
+ * No Android, no threads of its own. [Writer] is driven by the app's `SpeedLimitWorker` on
+ * WorkManager's thread while the shapefiles stream in; [Reader] is opened by
+ * `SpeedLimitRepository` on IO and read by [LimitIndex.build]. About 29 MB for the UK.
  */
 object OsmLimitFile {
     private const val MAGIC = 0x414E534C // "ANSL"
     private const val VERSION = 1
+    /** The largest point-to-point step a 16-bit difference holds: about 3.6 km in micro-degrees. */
     private const val MAX_STEP = Short.MAX_VALUE.toInt()
 
     /**
@@ -29,6 +38,7 @@ object OsmLimitFile {
         private val sizes = HashMap<Long, Int>()
         private val out = DataOutputStream(spill.outputStream().buffered(1 shl 16))
         private val run = ByteArrayOutputStream()
+        /** Roads written so far (each run of a split road counts once per tile copy). */
         var roads = 0L
             private set
 
@@ -44,6 +54,7 @@ object OsmLimitFile {
             while (start < n - 1) {
                 if (big(start)) { writeRun(mph, lat, lon, start, start + 1, twoPointsWide = true); start++; continue }
                 var end = start + 1
+                // A run is at most 60,000 points so its count fits the 16-bit field with room.
                 while (end < n - 1 && !big(end) && end - start < 60_000) end++
                 writeRun(mph, lat, lon, start, end, twoPointsWide = false)
                 start = end
@@ -69,6 +80,8 @@ object OsmLimitFile {
         }
 
         /** Writes the file (to [file], replacing it). [dataDate] is the extract's date, e.g. "2026-10-11". */
+        // Memory stays small by design (§8.4a "Low memory"): the spill is scanned once per pass of at
+        // most [passBytes] of tiles, and only that pass's bytes are held.
         fun write(file: File, dataDate: String) {
             out.close()
             val keys = sizes.keys.sorted()
@@ -130,6 +143,7 @@ object OsmLimitFile {
         private val keys: LongArray
         private val offsets: IntArray
         private val lengths: IntArray
+        /** From the header: the road count and the extract's date ("2026-10-11"), shown in Settings → Speed limits. */
         val roads: Long
         val dataDate: String
 
@@ -146,6 +160,7 @@ object OsmLimitFile {
             for (i in 0 until n) { keys[i] = b.long; offsets[i] = b.int; lengths[i] = b.int }
         }
 
+        /** Tiles in the file. */
         val tiles: Int get() = keys.size
 
         /** The key of the [i]th tile in the file (for sampling and tools). */
@@ -159,6 +174,7 @@ object OsmLimitFile {
          * limit in mph. Nothing is kept; the tile's bytes are read once.
          */
         fun forEachSegment(tile: Long, fn: (lat1: Int, lon1: Int, lat2: Int, lon2: Int, mph: Int) -> Unit) {
+            // One seek-and-read per tile under the lock; decoding happens outside it, so readers don't block each other.
             val bytes = synchronized(this) {
                 val i = keys.binarySearch(tile)
                 if (i < 0) return

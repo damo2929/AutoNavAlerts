@@ -23,16 +23,30 @@ import com.google.android.gms.maps.model.MarkerOptions
  * number in dark text on a light-grey square, where the change starts. One marker, its image made
  * once per value; [show] moves or redraws it only when the value or the position changed (no shake,
  * hard rule 3). Called once a second at most; map calls are posted to the main thread.
+ *
+ * Lifecycle: created by `NavSession.onCreateScreen`, given the map in `MapSurface.onMapReady`,
+ * fed from the session's once-a-second `tickLimitAhead` (never per fix, §8.4a) and cleared in the
+ * session's `onDestroy`. It replaced the panel's "→ 30" chevron: one element per job (hard rule 2).
+ * The number is in the display units; it reads upright at any map rotation (the marker isn't flat).
+ *
+ * @param density the car display's density, for the 30 dp square.
  */
 class LimitChangeMarker(private val density: Float) {
+    /** The map to draw on; null before the map is ready or after the surface is released. */
     var map: GoogleMap? = null
     private val main = Handler(Looper.getMainLooper())
     private var marker: Marker? = null
     private var shownValue: Int? = null
     private var shownAt: LatLng? = null
+    /** One image per limit value, made on first use and kept (a few values over a drive). */
     private val images = HashMap<Int, BitmapDescriptor>()
 
-    /** Shows [value] at ([lat], [lon]), or clears the marker with a null [value]. */
+    /**
+     * Shows [value] at ([lat], [lon]), or clears the marker with a null [value].
+     *
+     * @param value the new limit in the display units (mph or km/h), or null for no change ahead.
+     * @param lat latitude and [lon] longitude in degrees of where the new limit starts.
+     */
     fun show(value: Int?, lat: Double, lon: Double) {
         if (value == null || lat.isNaN() || lon.isNaN()) { clear(); return }
         val at = LatLng(lat, lon)
@@ -54,6 +68,7 @@ class LimitChangeMarker(private val density: Float) {
         }
     }
 
+    /** Removes the marker: no change ahead, limits off, no heading, or the session ending. No-op when already clear. */
     fun clear() {
         if (shownValue == null && marker == null) return
         shownValue = null
@@ -61,6 +76,8 @@ class LimitChangeMarker(private val density: Float) {
         main.post { marker?.remove(); marker = null }
     }
 
+    // The look of §8.4a (owner, 2026-10-23): only the number, dark on a light-grey square, no ring and
+    // no icon, so it can't be read as a camera or as the current limit.
     private fun draw(value: Int): Bitmap {
         val side = (30 * density).toInt()
         val bmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
@@ -80,6 +97,7 @@ class LimitChangeMarker(private val density: Float) {
     private companion object {
         val BACKING = Color.rgb(0xDA, 0xDC, 0xE0)
         val TEXT = Color.rgb(0x20, 0x21, 0x24)
+        /** The change's point must move more than this (metres) before the marker is moved. */
         const val MOVE_M = 15.0
         /** Under every camera marker (they start at 1). */
         const val Z = 0.5f

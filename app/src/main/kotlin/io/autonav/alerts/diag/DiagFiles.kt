@@ -21,9 +21,14 @@ import javax.inject.Singleton
 /**
  * Getting the diagnostics off the phone (DESIGN.md §15.5, §13): Save through the system file
  * picker and Share through the `${applicationId}.diag` FileProvider (`res/xml/diag_paths.xml`).
- * Nothing leaves the phone unless the user does one of these.
+ * Nothing leaves the phone unless the user does one of these (§15.5 Privacy).
+ *
+ * Plain helpers with no state, called from the phone's Diagnostics screen on the main thread
+ * (the copy in [writeTo] is small: two files of at most 1 MB each, or one recording). The
+ * caller flushes [EventLog] or [DriveRecorder] first so the export has the last 15 s.
  */
 object DiagFiles {
+    /** The FileProvider authority declared in the manifest; the application id keeps it unique per install. */
     const val AUTHORITY = BuildConfig.APPLICATION_ID + ".diag"
 
     /** `autonavalerts-debug-nav-2026-10-13.log`, for the file picker. */
@@ -36,6 +41,7 @@ object DiagFiles {
         out.use { o -> files.forEach { f -> f.inputStream().use { it.copyTo(o) } } }
     }
 
+    /** A content URI another app may read for one file under `files/diag/` (the provider's paths file). */
     fun uriFor(context: Context, file: File): Uri = FileProvider.getUriForFile(context, AUTHORITY, file)
 
     /** A share-sheet chooser for one or more files under `files/diag/`. */
@@ -61,6 +67,7 @@ fun interface DiagnosticsSnapshot {
     fun snapshot(): String
 }
 
+/** Hilt wiring for the engine snapshot, so the phone app can inject it without depending on the alerts package. */
 @Module
 @InstallIn(SingletonComponent::class)
 object DiagModule {

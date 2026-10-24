@@ -5,11 +5,18 @@ package io.autonav.alerts.core.contacts
 
 import java.security.MessageDigest
 
-/** Name matching, postcodes and the geocode cache key for contacts' addresses (DESIGN.md §8.3). */
+/**
+ * Name matching, postcodes and the geocode cache key for contacts' addresses (DESIGN.md §8.3).
+ * No Android, no threads of its own: the app's `ContactsSource` calls it while the car's Search
+ * screen is typed into (every keystroke, local and quick) and when an address is geocoded on IO.
+ * Nothing here stores or logs an address: [key] is what the `contact_geocode` table is keyed by.
+ */
 object ContactMatch {
     /** Shortest query that searches contacts. */
+    // 2 characters, one fewer than Places needs (§8.3 "Matching a name").
     const val MIN_QUERY = 2
 
+    // Outward code (area letters, district digit, optional letter or digit) then inward code (digit, two letters).
     private val UK_POSTCODE = Regex("""\b([A-Z]{1,2}[0-9][A-Z0-9]?)\s*([0-9][A-Z]{2})\b""", RegexOption.IGNORE_CASE)
 
     /**
@@ -21,6 +28,7 @@ object ContactMatch {
         if (q.length < MIN_QUERY) return null
         val n = name.trim().lowercase()
         if (n.startsWith(q)) return 0
+        // "smith" matches "Dave Smith": any later word may start with the query; the first word was tried above.
         return if (n.split(Regex("""[\s\-'.]+""")).drop(1).any { it.startsWith(q) }) 1 else null
     }
 
@@ -36,6 +44,7 @@ object ContactMatch {
     fun key(address: String): String =
         MessageDigest.getInstance("SHA-256").digest(normalise(address).toByteArray()).joinToString("") { "%02x".format(it) }
 
+    // Postcodes are compared without spaces or case (§8.3 "Choosing the result").
     /**
      * Which geocode result to use for a contact's address: the one with the same postcode if
      * there's exactly one, else the only result, else null (ask the user).

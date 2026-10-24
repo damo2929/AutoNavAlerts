@@ -43,7 +43,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToInt
 
-/** A POI with its set/category resolved, ready for the engine, markers and messages. */
+/**
+ * A POI with its set/category resolved, ready for the engine, markers and messages. Built once
+ * per cache reload by [AlertCoordinator.resolve], never per fix: [alert] is the engine's view of
+ * it (stages already resolved against the lead-time slider, §11.1), [iconId] the marker's icon
+ * (§7.1), [alertsOn] whether the set and category have alerts on (§4.2).
+ */
 data class ResolvedPoi(
     val poi: PoiEntity,
     val set: PoiSetEntity,
@@ -52,13 +57,21 @@ data class ResolvedPoi(
     val alert: AlertPoi,
     val alertsOn: Boolean,
 ) {
+    /** `{category}` in a template: the category's name, or the set's when the POI has none (§7.2). */
     val categoryName: String get() = category?.name ?: set.name
+    // The three stage templates (§7.2): the category's where it has one, else the set's.
     val firstTemplate get() = category?.firstTemplate ?: set.firstTemplate
     val secondTemplate get() = category?.secondTemplate ?: set.secondTemplate
     val passingTemplate get() = category?.passingTemplate ?: set.passingTemplate
 }
 
-/** What the car UI shows for an alert. */
+/**
+ * What the car UI shows for an alert (the banner, §12.1; the host `Alert` fallback; the heads-up
+ * notification, §12.2; the cluster step, §12.4): one per engine event, [kind] the stage, [display]
+ * the short text, [spoken] the words the TTS gets, [distanceM] the distance at the event (metres,
+ * 0 for a zone event with none), [timeMs] epoch ms when it was made. The dispatcher passes it on
+ * as is; `NavSession` and the banner read it on the main thread.
+ */
 data class ActiveAlert(
     val poiId: Long,
     val kind: AlertKind,
@@ -76,7 +89,10 @@ data class ActiveAlert(
     fun limitShown(imperial: Boolean): Int? = speedLimit?.let { speedUnit.toDisplay(it, imperial) }
 }
 
-/** What the trace needs to know about a POI it is writing about. */
+/**
+ * What the trace needs to know about a POI it is writing about: its set's name, its stored
+ * [bearing] (degrees true, null for none) and its [dirType] (ANY / ONE_WAY / BOTH, §11 step 3).
+ */
 data class TraceInfo(val setName: String, val bearing: Float?, val dirType: DirectionType)
 
 /**
@@ -90,12 +106,14 @@ class AlertTraceLog(
     private val fix: () -> Fix?,
     private val sink: (tag: String, msg: String) -> Unit,
 ) : AlertTrace {
+    /** One stage fired on an approach and, once NavTts reports back, whether it was heard. */
     private class StageRec(val kind: AlertKind, val d: Double) {
         var spoken: Boolean? = null
         var delayMs: Long? = null
         var outcome: String? = null
     }
 
+    /** Everything seen for one POI since it came into the lookahead, for the PASSED line. */
     private class Passage {
         var enterD: Double? = null
         var enterHdg: Double? = null
@@ -108,11 +126,18 @@ class AlertTraceLog(
     }
 
     private val passages = HashMap<Long, Passage>()
+    /** The last stage line and the last suppression, for the bench's engine snapshot. */
     @Volatile var lastStage: String? = null
         private set
     @Volatile var lastSuppress: String? = null
         private set
 
+    /**
+     * The engine's verdict for a POI changed (§11 step 10): `enter` when it becomes AHEAD_OK, else
+     * `leave` (if it was) and `suppressed reason=` with the geometry that failed. [d] metres,
+     * [offAxisDeg] the bearing-to-POI against the heading, [headingDeg] degrees true or null,
+     * [poiBearing] the camera's stored bearing, [lateralM] against [allowedM] the corridor test.
+     */
     @Synchronized
     override fun verdict(
         poiId: Long, verdict: Verdict, d: Double, offAxisDeg: Double, headingDeg: Double?,
@@ -140,6 +165,7 @@ class AlertTraceLog(
         p.lastD = d
     }
 
+    /** A stage fired: the `Trace stage` line with distance, speed, heading, camera bearing and how late it was. */
     @Synchronized
     override fun stage(event: AlertEvent) {
         val f = fix()
@@ -175,6 +201,10 @@ class AlertTraceLog(
         rec.outcome = outcome
     }
 
+    /**
+     * The engine forgot the POI (passed, stale, behind, pruned; §11 step 7): the `stateClear` line and
+     * the one-line `PASSED` passage summary (§15.5), which answers what was done as the car passed it.
+     */
     @Synchronized
     override fun cleared(poiId: Long, reason: ClearReason) {
         sink("Trace", "stateClear poi=$poiId reason=$reason")
@@ -202,6 +232,7 @@ class AlertTraceLog(
         sink("PASSED", sb.toString())
     }
 
+    /** A facing-away camera was dimmed or undimmed on the map (§8.1, hard rule 1: dimmed, never hidden). */
     @Synchronized
     override fun dimmed(poiId: Long, dimmed: Boolean, mismatchDeg: Double, headingAccuracyDeg: Double) {
         sink("Trace", "${if (dimmed) "dim" else "undim"} poi=$poiId bearingDiff=${mismatchDeg.toInt()} headingAcc=${headingAccuracyDeg.toInt()}")
@@ -214,6 +245,7 @@ class AlertTraceLog(
         passages.keys.retainAll(keep)
     }
 
+    /** Session end: forget every passage. */
     @Synchronized
     fun reset() = passages.clear()
 
@@ -225,6 +257,7 @@ class AlertTraceLog(
     }
 
     companion object {
+        /** The verdict as the `suppressed reason=` word of §15.5. */
         fun reasonOf(v: Verdict): String = when (v) {
             Verdict.WRONG_DIRECTION -> "direction"
             Verdict.OFF_ROAD -> "offRoad"
@@ -257,6 +290,26 @@ class AlertTraceLog(
  * publishes active alerts for the dispatcher and the per-fix marker redraw. One engine for the
  * whole session: settings change it in place, never recreate it (§11 step 9). Mute only silences
  * speech; the candidates keep their real `soundOn` so the passing card still shows (§12.3).
+ *
+ * What it does, per fix: reloads the candidates when the car enters a new grid cell (§4.3),
+ * places the car on the route (`GuidanceController.locateCar`, §11 step 4), runs the core
+ * `AlertEngine` with the right route matcher (the SDK's route, else the OSM road ahead, else the
+ * straight corridor), publishes the verdicts for the marker layer (§8.1), feeds the live
+ * distances to the speech queue's staleness rule, renders each event's templates (§7.2: only
+ * `{category} {speed} {units} {distance} {direction}`) and hands it to [AlertDispatcher].
+ *
+ * Rules upheld here (AGENTS.md §3.2; DESIGN.md §11, §11.1, §12.3): the three stages come from
+ * the one global lead-time slider ([resolve], [leadStages]: N s and N/2 s, floors as the set has
+ * them); the engine's events are never dropped and PASSING is never dropped (every event is
+ * dispatched; the dispatcher and NavTts serialise speech, never this class); mute, set mute and
+ * a report's quiet spot only clear `speak`, the engine and the cards are unchanged.
+ *
+ * Lifecycle: a Hilt singleton. `NavSession` calls [start] with `App.appScope` when the car
+ * session is created and [stop] when it ends. The fix collector is one coroutine on that scope
+ * with `conflate()`, so fixes are handled one at a time and in order (§2 "one thread for the
+ * engine"); the engine itself is guarded by [engineLock] because [stop] and a reload touch it
+ * from other threads. Room reads in [reload] run on the collector (Dispatchers.Default via the
+ * repository's suspend functions). The StateFlows are read on the main thread by the screens.
  */
 @Singleton
 class AlertCoordinator @Inject constructor(
@@ -270,6 +323,7 @@ class AlertCoordinator @Inject constructor(
     private val tts: NavTts,
     private val speedLimits: SpeedLimitRepository,
 ) {
+    /** The cache by POI id, for rendering an event and for the trace's names. */
     @Volatile private var byId: Map<Long, ResolvedPoi> = emptyMap()
 
     /** The trace writes to alert-debug; its PASSED summary needs the set name and the current fix. */
@@ -278,6 +332,7 @@ class AlertCoordinator @Inject constructor(
         fix = { _lastFix.value },
         sink = { tag, msg -> eventLog.record(EventLog.Channel.ALERT, tag, msg) },
     )
+    /** The engine's fixed numbers (§11: 45°, 3 km lookahead, 5 km zone gap); `overspeedPct` is updated in place. */
     private val engineConfig = AlertEngine.Config(overspeedPct = io.autonav.alerts.settings.DEFAULT_OVERSPEED)
     private val engine = AlertEngine(engineConfig, trace)
     /** The engine isn't thread-safe: fixes run on the collector, stop() on the caller's thread. */
@@ -289,14 +344,17 @@ class AlertCoordinator @Inject constructor(
     private val reachM = maxOf(engineConfig.maxLookaheadM, engineConfig.zoneGapM)
     /** Bumped by every invalidation, so a reload that started before one doesn't undo it. */
     private val cacheGen = java.util.concurrent.atomic.AtomicInteger()
+    /** The collector started by [start]; null when stopped. */
     private var job: Job? = null
 
+    /** The grid cell the cache was built around; MIN_VALUE forces a reload on the next fix. */
+    /** POIs reported here moments ago (§8.5): kept out of the candidates until the car is [QUIET_UNTIL_M] away. */
     @Volatile private var cacheCentre: Long = Long.MIN_VALUE
     private val quiet: MutableSet<Long> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     @Volatile private var cache: List<ResolvedPoi> = emptyList()
     /** The cache's alerting POIs as the engine takes them, built once per reload, not per fix. */
     @Volatile private var alertable: List<AlertPoi> = emptyList()
-    /** The latest settings, kept by the collector so a fix doesn't re-read DataStore (10 Hz). */
+    /** The latest settings, kept by the collector so a fix doesn't re-read DataStore on every fix. */
     @Volatile private var latest: io.autonav.alerts.settings.AppSettings? = null
     /** The global lead-time slider (§11.1), applied when the cache is resolved. */
     @Volatile private var leadSeconds: Int = io.autonav.alerts.settings.DEFAULT_ALERT_LEAD_SECONDS
@@ -313,15 +371,21 @@ class AlertCoordinator @Inject constructor(
     /** Every candidate's verdict from the last fix (§8.1, §11 step 10): the marker layer's one source of truth. */
     val verdicts: StateFlow<Map<Long, Verdict>> = _verdicts
 
+    /** The alert being shown; cleared 12 s after its event when nothing new fires (the banner's 8 s plus slack). */
     private val _active = MutableStateFlow<ActiveAlert?>(null)
     val active: StateFlow<ActiveAlert?> = _active
 
+    /** The last fix the engine ran on, for the session's once-a-second limit lookahead and the snapshot. */
     private val _lastFix = MutableStateFlow<Fix?>(null)
     val lastFix: StateFlow<Fix?> = _lastFix
 
     /** Sets muted from the car alert's action, until the given time. */
     private val setMutes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
+    /**
+     * Starts the location source and the collectors (repository changes, settings, fixes) on
+     * [scope]. Idempotent. `NavSession` passes `App.appScope`; the session's end calls [stop].
+     */
     fun start(scope: CoroutineScope) {
         if (job != null) return
         tts.spokenCallback = { poiId, kind, spoken, delayMs, outcome -> trace.onSpoken(poiId, kind, spoken, delayMs, outcome) }
@@ -333,6 +397,7 @@ class AlertCoordinator @Inject constructor(
                     val prev = latest
                     latest = it
                     guidance.simulationSpeed = it.simulationSpeed
+                    // The one setting covers car speed and car GPS (§10.6, §10.7).
                     carData.enabled = it.speedSource == io.autonav.alerts.settings.SpeedSource.CAR_WHEN_AVAILABLE
                     if (it.overspeedPct != engine.overspeedPct) {
                         engine.overspeedPct = it.overspeedPct
@@ -353,11 +418,15 @@ class AlertCoordinator @Inject constructor(
                 }
             }
             // One fix at a time; fixes that arrive meanwhile are dropped except the newest, so a
-            // reload (Room queries) is never cancelled half-way by the next fix at 10 Hz.
+            // reload (Room queries) is never cancelled half-way by the next fix.
             location.fixes.conflate().collect { fix -> onFix(fix) }
         }
     }
 
+    /**
+     * Session end: cancels the collectors, stops the location source, resets the engine's per-POI
+     * state and the trace. The cache itself is kept, so the next session starts with markers.
+     */
     fun stop() {
         job?.cancel()
         job = null
@@ -377,19 +446,28 @@ class AlertCoordinator @Inject constructor(
         alertsLog("quiet poi=$poiId")
     }
 
+    /** The car alert's "Mute 30 min" for one set (§12.1 fallback `Alert`): speech only, the cards still show (§12.3). */
     fun muteSet(setId: Long, minutes: Int = 30) {
         setMutes[setId] = System.currentTimeMillis() + minutes * 60_000L
         alertsLog("mute set=$setId minutes=$minutes")
     }
 
+    /** An `Alerts …` line in alert-debug (§15.5). */
     private fun alertsLog(msg: String) = eventLog.record(EventLog.Channel.ALERT, "Alerts", msg)
 
+    /**
+     * One fix through the engine (§11), on the collector. Reloads the cache when the cell changed,
+     * runs the engine under [engineLock], publishes verdicts and facing-away sets only when they
+     * differ (no churn for the marker layer), then renders and dispatches every event, highest
+     * priority first, with `speak` from sound-on, global mute and set mute.
+     */
     private suspend fun onFix(fix: Fix) {
         _lastFix.value = fix
         val cell = Grid.cellOf(fix.lat, fix.lon)
         if (cell != cacheCentre) reload(cell, fix.lat)
         val s = latest ?: settings.current().also { latest = it }
         val now = System.currentTimeMillis()
+        // Mute (timed) and the Voice switch both silence speech only (§12.3).
         val globallyMuted = s.mutedUntilMs > now || !s.voiceOn
         if (quiet.isNotEmpty()) cache.forEach { r ->
             if (r.poi.id in quiet && Geo.distanceM(fix.lat, fix.lon, r.poi.lat, r.poi.lon) > QUIET_UNTIL_M) quiet.remove(r.poi.id)
@@ -416,6 +494,8 @@ class AlertCoordinator @Inject constructor(
             return
         }
         val renderer = AlertTemplateRenderer(s.units)
+        // Several events in one fix (a 1st and 2nd crossed together, a zone event with a stage): all are
+        // dispatched, PASSING first by priority; nothing is dropped here (§11 step 7).
         for (e in events.sortedByDescending { it.priority }) {
             val r = byId[e.poiId]
             val alert = render(renderer, e, r, fix) ?: continue
@@ -427,6 +507,11 @@ class AlertCoordinator @Inject constructor(
         }
     }
 
+    /**
+     * The event's display and spoken text from its stage template (§7.2) and the POI's values; zone
+     * events use the fixed zone templates (§11 step 8). Null for kinds the engine never emits. An
+     * over-limit stage gets the "you are over the limit" suffix in speech only (§11 step 9).
+     */
     private fun render(renderer: AlertTemplateRenderer, e: AlertEvent, r: ResolvedPoi?, fix: Fix): ActiveAlert? {
         val now = System.currentTimeMillis()
         val template = when (e.kind) {
@@ -457,6 +542,7 @@ class AlertCoordinator @Inject constructor(
         )
     }
 
+    /** `{direction}` (§7.2): "ahead" within 25° either side of the heading, else left or right; "ahead" with no heading. */
     private fun directionWord(fix: Fix, poi: PoiEntity): String {
         val h = fix.heading ?: return "ahead"
         val d = Geo.angleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, poi.lat, poi.lon), h)
@@ -467,11 +553,16 @@ class AlertCoordinator @Inject constructor(
         }
     }
 
+    /** Forces a reload on the next fix (data changed, sets toggled, the slider moved). Any thread. */
     private fun invalidateCache() {
         cacheGen.incrementAndGet()
         cacheCentre = Long.MIN_VALUE
     }
 
+    /**
+     * Rebuilds the candidates around [cell] (§4.3): every POI in the cells within [reachM], resolved
+     * against its set and category and the current lead seconds. On the collector; Room on IO.
+     */
     private suspend fun reload(cell: Long, lat: Double) {
         val gen = cacheGen.get()
         val (rows, cols) = Grid.reachCells(lat, reachM)
@@ -537,6 +628,8 @@ class AlertCoordinator @Inject constructor(
      * The free-drive road ahead and when it was walked (DESIGN.md §11 step 4): once a second, and at
      * once when the heading has turned [ROAD_TURN_DEG] since the walk (a turn at a junction), though
      * no more than every [ROAD_TURN_MIN_MS] so a wandering heading can't re-walk on every fix.
+     *
+     * Collector-only state (no lock needed): when the road ahead was last walked and the heading then.
      */
     private var road: Pair<Long, RoadAheadMatcher?> = 0L to null
     private var roadHeading = 0.0
@@ -564,8 +657,14 @@ class AlertCoordinator @Inject constructor(
 
     companion object {
         private const val TAG = "AlertCoordinator"
+        /** A just-reported POI is quiet until the car is this far from it (DESIGN.md §8.5). */
         private const val QUIET_UNTIL_M = 300.0
 
+        /**
+         * A POI's engine view (§4.2 resolution: the category overrides the set for sound, alerts, icon
+         * and zone role; the stages are the set's, with the slider's seconds in TIME mode, §11.1). The
+         * limit is converted to m/s here once, so the engine never sees units. Pure; JVM-tested.
+         */
         fun resolve(p: PoiEntity, set: PoiSetEntity, cat: PoiCategoryEntity?, leadSeconds: Int? = null): ResolvedPoi {
             val soundOn = cat?.soundEnabled ?: set.soundEnabled
             val alertsOn = set.enabled && set.alertsEnabled && (cat?.alertsEnabled ?: true)
@@ -604,7 +703,12 @@ class AlertCoordinator @Inject constructor(
         private const val ROAD_TURN_DEG = 10.0
         private const val ROAD_TURN_MIN_MS = 250L
 
-        /** PGW mobile and pending-mobile sites (any format), and mobile camera reports. */
+        /**
+         * PGW mobile and pending-mobile sites (any format), and mobile camera reports.
+         *
+         * Recognised by the PGW category code, the file stem of the set's format, the category name, or the
+         * pending-mobile source, so every import route marks the same sets mobile (§11 step 4).
+         */
         fun isMobileSite(set: PoiSetEntity, cat: PoiCategoryEntity?): Boolean {
             val code = cat?.sourceCode?.lowercase().orEmpty()
             val stem = set.format?.substringAfter(':', "")?.lowercase().orEmpty()
@@ -613,6 +717,7 @@ class AlertCoordinator @Inject constructor(
                 cat?.name?.contains("mobile", ignoreCase = true) == true
         }
 
+        /** A short distance for cards and rows: tens of yards or metres under 1000, else tenths of a mile or km. */
         fun distanceLabel(m: Double, imperial: Boolean): String =
             if (imperial) {
                 val yd = m / Geo.METRES_PER_YARD

@@ -38,13 +38,27 @@ private val TURN_CARD = CarColor.createCustom(0xFF07786D.toInt(), 0xFF07786D.toI
  * a route: Google's X on the host's travel-estimate card does, and arrival ends guidance by itself
  * (§9.3). The host's trip feed is the session's `TripPublisher`, not this screen's (§9.3), so it
  * never stalls while another screen is up.
+ *
+ * It is the root screen for the whole session: `NavSession.onCreateScreen` creates it and every
+ * other screen is pushed over it, so `popToRoot()` always lands on the map. A
+ * `NavigationTemplate`, which keeps the map (our surface) behind it and gives the host the
+ * `RoutingInfo` and `TravelEstimate` it draws as its turn card and travel-estimate card. All on
+ * the main thread (the collector runs on `lifecycleScope`).
+ *
+ * Hard rules it upholds: one element per job (rule 2): no stop action, no message card for the
+ * next camera (the banner on the map is the only alert surface, §12.1), zoom and recenter only on
+ * the host's strip when the surface can't take taps; and no shake (rule 3): the template is
+ * re-sent only when what the host's cards display has changed ([TripMapper.displayKey]), never
+ * on every `NavInfo`.
  */
 class HomeScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
+    /** The SDK's latest turn-by-turn update, or null with no route. */
     private var navInfo: NavInfo? = null
     private var guiding = false
     /** The last travel estimate, sent again while rerouting so the host's card and its X stay (§8). */
     private var lastEstimate: androidx.car.app.navigation.model.TravelEstimate? = null
+    /** Why navigation can't run (no key, terms, permission…), shown as the set-up message card. */
     private var unavailable: NavUnavailable? = null
     private var lastInvalidate = 0L
     /** What the last sent template showed ([TripMapper.displayKey] with guiding and unavailable). */
@@ -55,6 +69,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         lifecycle.addObserver(this)
     }
 
+    /** Collects the turn-by-turn feed, the guiding flag and the SDK's availability for the life of the screen. */
     override fun onCreate(owner: LifecycleOwner) {
         lifecycleScope.launch {
             combine(
@@ -63,6 +78,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
                 navInfo = info
                 guiding = g
                 unavailable = u
+                // A stopped route must not leave its last estimate for the next one (§9.3 stopGuidance resets).
                 if (!g) lastEstimate = null
                 // Only when what the cards show changes (DESIGN.md §8, no shake): re-sending the same
                 // template every second rebuilt the host's travel-estimate card and lost presses on its X.
@@ -76,6 +92,8 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         lifecycleScope.launch { deps.navigator().ensureNavigator(); invalidateThrottled() }
     }
 
+    // At most one re-send a second, and only for a change the collector has already found: a burst
+    // of changed updates is folded into one re-send with the newest content, never dropped.
     private fun invalidateThrottled() {
         val now = System.currentTimeMillis()
         if (now - lastInvalidate >= 1_000) {
@@ -90,6 +108,12 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         }
     }
 
+    /**
+     * The `NavigationTemplate` for the current state: the set-up message when navigation can't
+     * run, the turn card and travel estimate while en route, a loading turn card with the last
+     * estimate while rerouting (so the host's card and its X never blink out, §8), the last
+     * estimate alone before a restored route's first update, and nothing in free drive.
+     */
     override fun onGetTemplate(): Template {
         val b = NavigationTemplate.Builder()
             // The turn card in Google Maps' teal (DESIGN.md §8, "Looking like Google Maps").
@@ -109,6 +133,8 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
                     }
                     .build(),
             )
+            // Pan mode is handled on the surface (onScroll turns follow off, §8 "Gestures"); the host
+            // only needs a listener to offer Pan at all.
             .setPanModeListener { }
 
         val info = navInfo
@@ -136,6 +162,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
         return b.build()
     }
 
+    // What the driver can do about it, on the phone: the car screen never asks for a key or terms itself (§13).
     private fun setupText(u: NavUnavailable) = when (u) {
         NavUnavailable.NO_API_KEY -> "Add your Google Maps API key in the phone app's Settings."
         NavUnavailable.TERMS_NOT_ACCEPTED -> "Open the phone app once and accept the navigation terms."
@@ -181,14 +208,19 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
             CarToast.makeText(carContext, "Waiting for a GPS fix", CarToast.LENGTH_SHORT).show()
             return
         }
+        // Everything is captured at the moment of the tap (§8.5 step 1), before any screen or coroutine.
         val snap = fix.toSnapshot()
         val (limit, source) = session.currentLimit()
         val candidates = deps.alerts().nearby.value.map { it.poi.id to (it.poi.lat to it.poi.lon) }
+        // The camera this report is about, for "not there" or "seen again": the one being alerted
+        // (last 20 s), else one just passed; none for a new site.
         val related = deps.alerts().active.value?.takeIf { System.currentTimeMillis() - it.timeMs < 20_000 }?.poiId?.takeIf { it >= 0 }
             ?: deps.reports().justPassed(fix, candidates)
         lifecycleScope.launch {
             val id = deps.reports().capture(snap, limit, source, related)
+            // The new "My reports" marker stays quiet until the car is 300 m away (§8.5), or it would alert at once.
             deps.reports().localPoiOf(id)?.let { deps.alerts().quietHere(it) }
+            // No car microphone (car API < 5 or no permission): the report is saved without a comment (§8.5).
             if (io.autonav.alerts.reports.CarVoiceRecorder.available(carContext)) {
                 screenManager.push(VoiceCommentScreen(carContext, session, id))
             } else {

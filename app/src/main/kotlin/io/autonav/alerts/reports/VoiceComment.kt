@@ -30,14 +30,20 @@ import kotlin.math.sqrt
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
- * Records a spoken comment from the car's microphone (DESIGN.md §8.5): up to 15 s, stopping after
- * 2 s of silence once speech has started, or 6 s if nothing is said. Output is raw 16 kHz mono PCM.
+ * Records a spoken comment from the car's microphone (DESIGN.md §8.5 "Recording"): up to 15 s, stopping after
+ * 2 s of silence once speech has started, or 6 s if nothing is said, or on Done ([stop]). Output is raw 16 kHz
+ * mono 16-bit PCM, the format `CarAudioRecord` delivers, written straight to [out] in the app's private
+ * storage. One instance per report, made by `VoiceCommentScreen` after the "say a comment after the tone"
+ * prompt, which runs [recordBlocking] on Dispatchers.IO since the car reads block.
+ * No microphone (car API < 5 or no permission): [available] is false and the prompt is skipped.
  */
 class CarVoiceRecorder(private val carContext: CarContext, private val out: File) {
     private val stopRequested = AtomicBoolean(false)
+    /** True once a frame louder than [LOUD_RMS] was heard; a recording with none is deleted (Skip, or silence). */
     @Volatile var heardSpeech = false
         private set
 
+    /** The Done button (§8.5): the read loop stops at the next frame. */
     fun stop() = stopRequested.set(true)
 
     /** Blocks the calling (background) thread until recording ends. Returns the file, or null if nothing was said. */
@@ -76,6 +82,7 @@ class CarVoiceRecorder(private val carContext: CarContext, private val out: File
         return out
     }
 
+    /** Root mean square of one frame of little-endian 16-bit samples: the "is anyone speaking" measure. */
     private fun rms(b: ByteArray, n: Int): Double {
         var sum = 0.0
         var i = 0
@@ -89,31 +96,44 @@ class CarVoiceRecorder(private val carContext: CarContext, private val out: File
 
     companion object {
         private const val TAG = "CarVoice"
+        /** The 15 s cap (§8.5). */
         private const val MAX_MS = 15_000L
+        /** Give up if nothing has been said in 6 s (not in §8.5: it keeps a silent car from waiting the full 15 s). */
         private const val NO_SPEECH_MS = 6_000L
+        /** Stop 2 s after the last loud frame once speech has started (§8.5). */
         private const val SILENCE_MS = 2_000L
+        /** RMS above which a frame counts as speech; set by ear on the bench, well above car cabin noise at 16-bit scale. */
         private const val LOUD_RMS = 900.0
 
-        /** Car mic needs car API 5 and the RECORD_AUDIO permission (granted on the phone). */
+        /** Car mic needs car API 5 and the RECORD_AUDIO permission (granted on the phone) (§8.5 "No microphone"). */
         fun available(carContext: CarContext): Boolean =
             carContext.carAppApiLevel >= CarAppApiLevels.LEVEL_5 &&
                 ContextCompat.checkSelfPermission(carContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
 }
 
-/** Speech-to-text from a saved PCM recording, on the phone (Android 13+). Must be started on the main thread. */
+/**
+ * Speech-to-text from a saved PCM recording, on the phone (DESIGN.md §8.5 "Speech to text"): Android's
+ * `SpeechRecognizer` fed the file through `EXTRA_AUDIO_SOURCE`, which exists from Android 13 (API 33), on-device
+ * first where offered. Called by `CameraReportRepository.transcribe` in the background once the recording ends,
+ * and by the phone's review screen for "retry transcription" and [play]. The recogniser itself is created and
+ * driven on the main thread (Android requires it); the suspend API hides that.
+ */
 object Transcriber {
     private const val TAG = "Transcriber"
 
+    /** Android 13+ with any recognition service installed; otherwise the audio is kept for playback and typing at review (§8.5). */
     fun supported(context: Context): Boolean =
         Build.VERSION.SDK_INT >= 33 && SpeechRecognizer.isRecognitionAvailable(context)
 
+    /** The first recognised phrase, or null. Tries on-device recognition first (§8.5 "ideally on-device"), then the default service if that fails. */
     suspend fun transcribe(context: Context, pcm: File): String? {
         if (!supported(context) || !pcm.exists()) return null
         val onDevice = Build.VERSION.SDK_INT >= 33 && runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }.getOrDefault(false)
         return run(context, pcm, onDevice) ?: if (onDevice) run(context, pcm, false) else null
     }
 
+    /** One recognition pass; resolves with the top result, or null on any error, and tidies the recogniser and the file descriptor either way. */
     private suspend fun run(context: Context, pcm: File, onDevice: Boolean): String? = suspendCancellableCoroutine { cont ->
         val main = Handler(Looper.getMainLooper())
         main.post {
@@ -140,6 +160,7 @@ object Transcriber {
                 override fun onPartialResults(partialResults: Bundle?) = Unit
                 override fun onEvent(eventType: Int, params: Bundle?) = Unit
             })
+            // The recording's own format: mono 16-bit PCM at CarAudioRecord's 16 kHz, from a file not the mic.
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, pfd)
@@ -153,7 +174,7 @@ object Transcriber {
         }
     }
 
-    /** Plays a recording back on the phone (review screen). */
+    /** Plays a recording back on the phone (the review screen's Play recording, §8.5). A static AudioTrack: the clip is at most 15 s, under half a megabyte. */
     fun play(pcm: File) {
         if (!pcm.exists()) return
         val data = pcm.readBytes()
@@ -165,6 +186,7 @@ object Transcriber {
             .setBufferSizeInBytes(data.size.coerceAtLeast(1024))
             .build()
         track.write(data, 0, data.size)
+        // The marker is in frames (2 bytes each for 16-bit mono): it fires at the end, where the track releases itself.
         track.setNotificationMarkerPosition(data.size / 2)
         track.setPlaybackPositionUpdateListener(object : AudioTrack.OnPlaybackPositionUpdateListener {
             override fun onMarkerReached(t: AudioTrack?) { t?.release() }
