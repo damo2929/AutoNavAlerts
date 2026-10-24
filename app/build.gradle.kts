@@ -31,7 +31,8 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0"
+        // -PversionName=… stamps a build (e.g. 0.0.1-2026-10-24); the default is the development version.
+        versionName = (project.findProperty("versionName") as String?) ?: "0.1.0"
         // The git commit the build came from, shown in Settings → About; "-dirty" when the tree had changes.
         val commit = providers.exec { commandLine("git", "rev-parse", "--short=9", "HEAD"); isIgnoreExitValue = true }
             .standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }

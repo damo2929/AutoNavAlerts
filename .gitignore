@@ -20,3 +20,4 @@ __pycache__/
 
 # Settings backups hold the Maps key and PocketGPSWorld login in plain text: never in the repo
 autonavalerts-settings-*.json
+dist/
