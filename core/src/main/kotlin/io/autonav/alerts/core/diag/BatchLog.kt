@@ -140,11 +140,7 @@ class BatchLog(
         private val HEADER_TIME = Regex("""^--- (\d{2}:\d{2}:\d{2})""")
 
         /** The rotation of [file]: `debug-nav.log` → `debug-nav.1.log`. */
-        fun rotated(file: File): File {
-            val n = file.name
-            val base = if (n.endsWith(".log")) n.dropLast(4) else n
-            return File(file.parentFile, "$base.1.log")
-        }
+        fun rotated(file: File): File = File(file.parentFile, "${file.name.removeSuffix(".log")}.1.log")
 
         /** Current file plus its rotation, oldest first, only those that exist. */
         fun files(file: File): List<File> = listOf(rotated(file), file).filter { it.isFile }

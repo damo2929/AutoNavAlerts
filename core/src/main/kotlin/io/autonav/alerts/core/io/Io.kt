@@ -5,6 +5,8 @@ package io.autonav.alerts.core.io
 
 import java.io.EOFException
 import java.io.InputStream
+import org.w3c.dom.Element
+import org.w3c.dom.NodeList
 import java.security.MessageDigest
 import javax.xml.parsers.DocumentBuilderFactory
 
@@ -40,6 +42,15 @@ fun secureDocumentBuilderFactory(): DocumentBuilderFactory = DocumentBuilderFact
     runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
     isExpandEntityReferences = false
 }
+
+/** The elements of a `getElementsByTagName` result, in document order. */
+fun NodeList.elements(): List<Element> = List(length) { item(it) as Element }
+
+/** The first [tag] element anywhere below this one, or null. */
+fun Element.child(tag: String): Element? = getElementsByTagName(tag).item(0) as Element?
+
+/** The text of the first [tag] element below this one, as the document has it, or null when there is none. */
+fun Element.childText(tag: String): String? = child(tag)?.textContent
 
 /** SHA-256 of the UTF-8 bytes as 64 lower-case hex digits. */
 fun String.sha256Hex(): String =

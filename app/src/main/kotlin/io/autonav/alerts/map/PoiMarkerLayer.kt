@@ -10,11 +10,9 @@ import com.google.android.gms.maps.model.BitmapDescriptor
 import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
-import com.google.android.gms.maps.model.Marker
 import com.google.android.gms.maps.model.MarkerOptions
-import io.autonav.alerts.alerts.ActiveAlert
+import io.autonav.alerts.alerts.MarkerState
 import io.autonav.alerts.alerts.ResolvedPoi
-import io.autonav.alerts.core.alerts.Fix
 import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.poi.DirectionType
@@ -42,62 +40,95 @@ import java.util.concurrent.atomic.AtomicBoolean
  * (rule 3): a redraw with nothing changed touches no marker.
  *
  * @param basePx the marker icon's side in pixels (36 dp on the car display); ACTIVE is 1.3× it.
+ * @param toDescriptor and [arrowOf] hand marker and arrow images to the map; the defaults are the
+ *   production ones, and the JVM tests pass fakes (§15.1 "PoiMarkerLayer diff").
  */
 class PoiMarkerLayer(
     private val icons: IconRepository,
     private val basePx: Int,
+    private val toDescriptor: (android.graphics.Bitmap) -> BitmapDescriptor = BitmapDescriptorFactory::fromBitmap,
+    private val arrowOf: (DirectionType, Emphasis, Int) -> BitmapDescriptor = icons::arrow,
     /** The whole car surface in pixels (`MapSurface.surfaceSize`); null falls back to the visible region. */
     private val screenSize: () -> android.util.Size? = { null },
 ) {
+    /**
+     * The map calls the layer makes (DESIGN.md §15.1 "PoiMarkerLayer diff"): `GoogleMap` and `Marker`
+     * are SDK classes a JVM test can't build, so the tests draw on a fake through this; production wraps [map].
+     */
+    internal interface MarkerMap {
+        val zoom: Float
+        fun screenBounds(): LatLngBounds?
+        fun addMarker(options: MarkerOptions): Drawn?
+    }
+
+    /** One drawn marker: the four `Marker` calls the diff makes. */
+    internal interface Drawn {
+        fun remove()
+        fun setIcon(icon: BitmapDescriptor)
+        fun setZIndex(z: Float)
+        fun setRotation(degrees: Float)
+    }
+
     /** What is drawn for one POI and the state it was drawn with, so a redraw changes only what differs (§8.1 step 4). */
     private class Shown(
-        val marker: Marker, var emphasis: Emphasis, var iconKey: String,
-        var arrow: Marker?, var arrowRotation: Float, var arrowDir: DirectionType,
+        val marker: Drawn, var emphasis: Emphasis, var iconKey: String,
+        var arrow: Drawn?, var arrowRotation: Float, var arrowDir: DirectionType,
     )
 
     private val main = Handler(Looper.getMainLooper())
     private val shown = HashMap<Long, Shown>()
     /** A main-thread draw is queued; a second fix before it runs only replaces [latest] (conflation, §8.1 step 5). */
     private val pending = AtomicBoolean(false)
-    private class State(
-        val pois: List<ResolvedPoi>, val fix: Fix?, val active: ActiveAlert?, val facingAway: Set<Long>,
-        val verdicts: Map<Long, Verdict>,
-    )
-    @Volatile private var latest: State? = null
+    @Volatile private var latest: MarkerState? = null
     /** Marker images handed to the map once and reused, keyed by icon, limit and emphasis. */
     private val descriptors = HashMap<String, BitmapDescriptor>()
     /** The map to draw on. Setting a different map forgets the old markers (they went with it) and its descriptors. */
     var map: GoogleMap? = null
+        set(value) {
+            if (field !== value) target = value?.let { m ->
+                object : MarkerMap {
+                    override val zoom get() = m.cameraPosition.zoom
+                    override fun screenBounds() = screenBounds(m)
+                    override fun addMarker(options: MarkerOptions) = m.addMarker(options)?.let { mk ->
+                        object : Drawn {
+                            override fun remove() = mk.remove()
+                            override fun setIcon(icon: BitmapDescriptor) = mk.setIcon(icon)
+                            override fun setZIndex(z: Float) { mk.zIndex = z }
+                            override fun setRotation(degrees: Float) { mk.rotation = degrees }
+                        }
+                    }
+                }
+            }
+            field = value
+        }
+
+    /** What the draw goes through: [map] in production, a fake in the tests. A different one forgets what was drawn. */
+    internal var target: MarkerMap? = null
         set(value) {
             if (field !== value) { shown.clear(); descriptors.clear() }
             field = value
         }
 
     /**
-     * Called on every fix (any thread). [verdicts] (from `AlertCoordinator.verdicts`) drives the
-     * emphasis; when it's empty (not wired yet) [facingAway] alone marks the dimmed cameras.
-     *
-     * @param pois the nearby POIs from the grid cache with their set, category and resolved icon.
-     * @param fix the fix the engine used (position in degrees), or null before the first fix: then
-     *   no range clip, no distance ranking and no ACTIVE.
-     * @param active the alert being shown, whose POI is drawn ACTIVE for 15 s.
+     * Called on every fix (any thread) with the coordinator's [MarkerState]: the nearby POIs from the
+     * grid cache with their set, category and resolved icon; the fix the engine used (position in
+     * degrees), or null before the first fix (then no range clip, no distance ranking and no ACTIVE);
+     * the alert being shown, whose POI is drawn ACTIVE for 15 s; and the verdicts, which drive the
+     * emphasis (when empty, not wired yet, `facingAway` alone marks the dimmed cameras).
      */
-    fun redraw(
-        pois: List<ResolvedPoi>, fix: Fix?, active: ActiveAlert?, facingAway: Set<Long> = emptySet(),
-        verdicts: Map<Long, Verdict> = emptyMap(),
-    ) {
-        latest = State(pois, fix, active, facingAway, verdicts)
+    fun redraw(state: MarkerState) {
+        latest = state
         if (pending.compareAndSet(false, true)) main.post { pending.set(false); drawLatest() }
     }
 
     // One redraw on the main thread for the newest state: pick (§8.1 step 1), rank and cap (step 2),
     // work out each marker's state (step 3), diff against what's drawn (step 4).
     private fun drawLatest() {
-        val m = map ?: return
+        val m = target ?: return
         val state = latest ?: return
-        val pois = state.pois; val fix = state.fix; val active = state.active
-        val zoom = m.cameraPosition.zoom
-        val bounds = screenBounds(m) ?: return
+        val pois = state.nearby; val fix = state.lastFix; val active = state.active
+        val zoom = m.zoom
+        val bounds = m.screenBounds() ?: return
         var south = bounds.southwest.latitude; var north = bounds.northeast.latitude
         var west = bounds.southwest.longitude; var east = bounds.northeast.longitude
         // Clipped to MAX_RANGE_M around the car (§8.1): the tilted camera's top corners sit near the horizon.
@@ -155,13 +186,7 @@ class PoiMarkerLayer(
             val arrowWanted = hasArrow(r)
             val bearing = r.poi.bearing ?: 0f
             if (existing == null) {
-                val marker = m.addMarker(
-                    MarkerOptions().position(LatLng(r.poi.lat, r.poi.lon))
-                        .icon(descriptor(r, iconKey, emphasis))
-                        .anchor(0.5f, 0.5f)
-                        .zIndex(z)
-                        .title(r.categoryName),
-                ) ?: continue
+                val marker = m.addMarker(options(r, descriptor(r, iconKey, emphasis), z).title(r.categoryName)) ?: continue
                 val arrow = if (arrowWanted) addArrow(m, r, emphasis, bearing, z) else null
                 shown[r.poi.id] = Shown(marker, emphasis, iconKey, arrow, bearing, r.poi.directionType)
                 continue
@@ -169,27 +194,30 @@ class PoiMarkerLayer(
             // Still visible: change only what differs (§8.1 step 4); in steady driving that's 0–3 markers a fix.
             if (existing.emphasis != emphasis || existing.iconKey != iconKey) {
                 existing.marker.setIcon(descriptor(r, iconKey, emphasis))
-                existing.marker.zIndex = z
+                existing.marker.setZIndex(z)
                 existing.arrow?.let { a ->
                     if (existing.emphasis != emphasis || existing.arrowDir != r.poi.directionType) a.setIcon(arrowDescriptor(r.poi.directionType, emphasis))
-                    a.zIndex = z - 0.5f
+                    a.setZIndex(z - 0.5f)
                 }
                 existing.emphasis = emphasis
                 existing.iconKey = iconKey
                 existing.arrowDir = r.poi.directionType
             }
-            if (arrowWanted && existing.arrow == null) {
-                existing.arrow = addArrow(m, r, emphasis, bearing, z)
-                existing.arrowRotation = bearing
-            } else if (!arrowWanted && existing.arrow != null) {
+            // The arrow comes or goes with the bearing in the data; a bearing that changed turns the one there.
+            if (arrowWanted != (existing.arrow != null)) {
                 existing.arrow?.remove()
-                existing.arrow = null
+                existing.arrow = if (arrowWanted) addArrow(m, r, emphasis, bearing, z) else null
+                existing.arrowRotation = bearing
             } else if (existing.arrow != null && existing.arrowRotation != bearing) {
-                existing.arrow?.rotation = bearing
+                existing.arrow?.setRotation(bearing)
                 existing.arrowRotation = bearing
             }
         }
     }
+
+    /** What every marker of a POI shares (§8.1): at the POI, centred on it, at [z]. */
+    private fun options(r: ResolvedPoi, icon: BitmapDescriptor, z: Float) =
+        MarkerOptions().position(LatLng(r.poi.lat, r.poi.lon)).icon(icon).anchor(0.5f, 0.5f).zIndex(z)
 
     /**
      * The whole screen's bounds (DESIGN.md §8.1): its four corners projected onto the map. Not
@@ -216,7 +244,7 @@ class PoiMarkerLayer(
      * "ahead" (DESIGN.md §8.1); the layer has no direction test of its own. `facingAway` is the
      * engine's own set, kept as a belt-and-braces for a POI the verdict map hasn't seen.
      */
-    private fun emphasisOf(r: ResolvedPoi, state: State): Emphasis {
+    private fun emphasisOf(r: ResolvedPoi, state: MarkerState): Emphasis {
         val active = state.active
         if (active?.poiId == r.poi.id && System.currentTimeMillis() - active.timeMs < 15_000) return Emphasis.ACTIVE
         return when (state.verdicts[r.poi.id]) {
@@ -231,19 +259,12 @@ class PoiMarkerLayer(
 
     // Flat and rotated to the true bearing: the follow camera is heading-up, so the icon itself stays
     // upright and the arrow is a second marker beneath it (§8.1 "direction arrow").
-    private fun addArrow(m: GoogleMap, r: ResolvedPoi, emphasis: Emphasis, bearing: Float, z: Float): Marker? =
-        m.addMarker(
-            MarkerOptions().position(LatLng(r.poi.lat, r.poi.lon))
-                .icon(arrowDescriptor(r.poi.directionType, emphasis))
-                .flat(true)
-                .rotation(bearing)
-                .anchor(0.5f, 0.5f)
-                .zIndex(z - 0.5f),
-        )
+    private fun addArrow(m: MarkerMap, r: ResolvedPoi, emphasis: Emphasis, bearing: Float, z: Float): Drawn? =
+        m.addMarker(options(r, arrowDescriptor(r.poi.directionType, emphasis), z - 0.5f).flat(true).rotation(bearing))
 
     private fun arrowDescriptor(dir: DirectionType, emphasis: Emphasis): BitmapDescriptor {
         val iconPx = if (emphasis == Emphasis.ACTIVE) (basePx * 1.3f).toInt() else basePx
-        return icons.arrow(dir, emphasis, (iconPx * ARROW_SCALE).toInt())
+        return arrowOf(dir, emphasis, (iconPx * ARROW_SCALE).toInt())
     }
 
     // One descriptor per (icon, limit badge, emphasis), handed to the map once; a crude cap keeps the
@@ -251,7 +272,7 @@ class PoiMarkerLayer(
     private fun descriptor(r: ResolvedPoi, iconKey: String, emphasis: Emphasis): BitmapDescriptor {
         if (descriptors.size > 256) descriptors.clear()
         return descriptors.getOrPut("$iconKey:$emphasis") {
-            BitmapDescriptorFactory.fromBitmap(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx))
+            toDescriptor(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx))
         }
     }
 

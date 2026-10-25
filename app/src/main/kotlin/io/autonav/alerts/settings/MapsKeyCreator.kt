@@ -69,8 +69,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
     fun signingSha1(): String {
         val pm = context.packageManager
         val cert = if (Build.VERSION.SDK_INT >= 28) {
-            val info = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
-                ?: error("No signing information for this app")
+            val info = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo ?: error("No signing information for this app")
             (if (info.hasMultipleSigners()) info.apkContentsSigners else info.signingCertificateHistory).first()
         } else {
             @Suppress("DEPRECATION")
@@ -99,13 +98,13 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
 
         // §13.1 step 3, plus the Routes API for energy-efficient routes (§8.3a "Key and billing").
         progress("Turning on the Navigation SDK, Maps SDK for Android, Places API (New) and Routes API…")
-        val services = listOf(navigationService(api, projectNumber), MAPS_ANDROID, PLACES, ROUTES)
+        val services = listOf(navigationService(api, projectNumber), "maps-android-backend.googleapis.com", "places.googleapis.com", "routes.googleapis.com")
         enableServices(api, projectNumber, projectId, services)
 
         // §13.1 step 4: reuse the key named for this package and SHA-1 (adding any API it lacks), else create it.
         progress("Creating a key only this app can use…")
         val keyName = findKey(api, projectNumber)?.also { allowServices(api, it, services) } ?: createKey(api, projectNumber, services)
-        val key = api.get("https://apikeys.googleapis.com/v2/$keyName/keyString").getString("keyString")
+        val key = api.send("GET", "https://apikeys.googleapis.com/v2/$keyName/keyString").getString("keyString")
         Created(key, projectId)
     }
 
@@ -113,7 +112,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
 
     /** The first ACTIVE project carrying our label (§13.1 "Find project"), or null. */
     private fun findProject(api: Api): JSONObject? {
-        val r = api.get("$CRM/projects:search?query=" + java.net.URLEncoder.encode("labels.$LABEL_KEY:$LABEL_VALUE", "UTF-8"))
+        val r = api.send("GET", "$CRM/projects:search?query=" + java.net.URLEncoder.encode("labels.$LABEL_KEY:$LABEL_VALUE", "UTF-8"))
         val list = r.optJSONArray("projects") ?: return null
         return list.objects().firstOrNull { it.optString("state") == "ACTIVE" }
     }
@@ -122,13 +121,10 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
     private suspend fun createProject(api: Api): JSONObject {
         // Project ids are global across Google Cloud, so a random suffix avoids a clash with anyone else's.
         val id = "autonavalerts-" + (1..6).map { "abcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
-        val body = JSONObject()
-            .put("projectId", id)
-            .put("displayName", "AutoNavAlerts")
-            .put("labels", JSONObject().put(LABEL_KEY, LABEL_VALUE))
-        val op = api.post("$CRM/projects", body)
+        val body = JSONObject().put("projectId", id).put("displayName", "AutoNavAlerts").put("labels", JSONObject().put(LABEL_KEY, LABEL_VALUE))
+        val op = api.send("POST", "$CRM/projects", body)
         api.waitFor("$CRM/${op.getString("name")}")
-        return api.get("$CRM/projects/$id")
+        return api.send("GET", "$CRM/projects/$id")
     }
 
     // --- Billing ---------------------------------------------------------------------------------
@@ -138,10 +134,10 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
      * [Stop.ChooseBilling]; none → [Stop.NoBilling] (accounts can't be created by API, they need a payment method).
      */
     private fun ensureBilling(api: Api, projectId: String, chosen: String?) {
-        val info = api.get("$BILLING/projects/$projectId/billingInfo")
+        val info = api.send("GET", "$BILLING/projects/$projectId/billingInfo")
         if (info.optBoolean("billingEnabled")) return
         val account = chosen ?: run {
-            val list = api.get("$BILLING/billingAccounts").optJSONArray("billingAccounts") ?: JSONArray()
+            val list = api.send("GET", "$BILLING/billingAccounts").optJSONArray("billingAccounts") ?: JSONArray()
             val open = list.objects().filter { it.optBoolean("open") }
                 .map { BillingAccount(it.getString("name"), it.optString("displayName", it.getString("name"))) }
             when (open.size) {
@@ -150,18 +146,18 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
                 else -> throw Stop.ChooseBilling(open)
             }
         }
-        api.put("$BILLING/projects/$projectId/billingInfo", JSONObject().put("billingAccountName", account))
+        api.send("PUT", "$BILLING/projects/$projectId/billingInfo", JSONObject().put("billingAccountName", account))
     }
 
     // --- APIs ------------------------------------------------------------------------------------
 
     /** The Navigation SDK is `navigationsdk.googleapis.com` (checked 2026-10-12); if that ever changes, search by title. */
     private fun navigationService(api: Api, projectNumber: String): String {
-        runCatching { api.get("$SERVICE_USAGE/projects/$projectNumber/services/$NAVIGATION_GUESS") }
+        runCatching { api.send("GET", "$SERVICE_USAGE/projects/$projectNumber/services/$NAVIGATION_GUESS") }
             .onSuccess { return NAVIGATION_GUESS }
         var page: String? = null
         do {
-            val r = api.get("$SERVICE_USAGE/projects/$projectNumber/services?pageSize=200" + (page?.let { "&pageToken=$it" } ?: ""))
+            val r = api.send("GET", "$SERVICE_USAGE/projects/$projectNumber/services?pageSize=200" + (page?.let { "&pageToken=$it" } ?: ""))
             for (s in (r.optJSONArray("services") ?: JSONArray()).objects()) {
                 if (s.optJSONObject("config")?.optString("title").equals("Navigation SDK", ignoreCase = true)) {
                     return s.getJSONObject("config").getString("name")
@@ -176,8 +172,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
     /** `services:batchEnable` for the four APIs, waiting for the long-running operation (§13.1 "Enable APIs"). */
     private suspend fun enableServices(api: Api, projectNumber: String, projectId: String, services: List<String>) {
         try {
-            val op = api.post("$SERVICE_USAGE/projects/$projectNumber/services:batchEnable",
-                JSONObject().put("serviceIds", JSONArray(services)))
+            val op = api.send("POST", "$SERVICE_USAGE/projects/$projectNumber/services:batchEnable", JSONObject().put("serviceIds", JSONArray(services)))
             api.finish(op, SERVICE_USAGE)
         } catch (e: Stop.Refused) {
             // Usually terms to accept or access to request: send the user to the project's API library.
@@ -192,7 +187,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
 
     /** An existing key with our display name, skipping deleted ones (they linger with a `deleteTime`), or null. */
     private fun findKey(api: Api, projectNumber: String): String? {
-        val list = api.get("$API_KEYS/projects/$projectNumber/locations/global/keys").optJSONArray("keys") ?: return null
+        val list = api.send("GET", "$API_KEYS/projects/$projectNumber/locations/global/keys").optJSONArray("keys") ?: return null
         return list.objects().firstOrNull { it.optString("displayName") == keyDisplayName && !it.has("deleteTime") }?.getString("name")
     }
 
@@ -206,13 +201,13 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
             .put("androidKeyRestrictions", JSONObject().put("allowedApplications", JSONArray().put(app)))
             .put("apiTargets", JSONArray(services.map { JSONObject().put("service", it) }))
         val body = JSONObject().put("displayName", keyDisplayName).put("restrictions", restrictions)
-        val op = api.post("$API_KEYS/projects/$projectNumber/locations/global/keys", body)
+        val op = api.send("POST", "$API_KEYS/projects/$projectNumber/locations/global/keys", body)
         return api.finish(op, API_KEYS).getJSONObject("response").getString("name")
     }
 
     /** An existing key gets any API it lacks (e.g. the Routes API added in 2026-10). */
     private suspend fun allowServices(api: Api, keyName: String, services: List<String>) {
-        val key = api.get("$API_KEYS/$keyName")
+        val key = api.send("GET", "$API_KEYS/$keyName")
         val restrictions = key.optJSONObject("restrictions") ?: JSONObject()
         val targets = restrictions.optJSONArray("apiTargets") ?: JSONArray()
         val have = targets.objects().map { it.optString("service") }.toSet()
@@ -220,7 +215,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         if (missing.isEmpty()) return
         missing.forEach { targets.put(JSONObject().put("service", it)) }
         restrictions.put("apiTargets", targets)
-        val op = api.patch("$API_KEYS/$keyName?updateMask=restrictions", JSONObject().put("restrictions", restrictions))
+        val op = api.send("PATCH", "$API_KEYS/$keyName?updateMask=restrictions", JSONObject().put("restrictions", restrictions))
         api.finish(op, API_KEYS)
     }
 
@@ -231,18 +226,13 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
 
     /** The REST calls with `Authorization: Bearer <token>`; every reply is parsed as JSON and every error becomes a [Stop.Refused]. */
     private inner class Api(private val token: String) {
-        fun get(url: String) = send("GET", url)
-        fun post(url: String, body: JSONObject) = send("POST", url, body)
-        fun put(url: String, body: JSONObject) = send("PUT", url, body)
-        fun patch(url: String, body: JSONObject) = send("PATCH", url, body)
-
         /** The finished operation: [op] itself when it came back done, else polled at `<base>/<op name>` with [waitFor]. */
         suspend fun finish(op: JSONObject, base: String): JSONObject = if (op.optBoolean("done")) op else waitFor("$base/${op.getString("name")}")
 
         /** Polls a long-running operation every 2 s, up to 60 times (about 2 minutes, §13.1); an operation that finishes with an error stops the run with its message. */
         suspend fun waitFor(opUrl: String): JSONObject {
             repeat(60) {
-                val op = get(opUrl)
+                val op = send("GET", opUrl)
                 if (op.optBoolean("done")) {
                     op.optJSONObject("error")?.let { throw Stop.Refused(it.optString("message", "Google Cloud reported an error"), null) }
                     return op
@@ -253,7 +243,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         }
 
         /** Runs one request ([body] as JSON for POST, PUT and PATCH); a non-2xx reply becomes [Stop.Refused] with Google's own message and, when its details carry one, a help link (§13.1 "Error messages"). */
-        private fun send(method: String, url: String, body: JSONObject? = null): JSONObject {
+        fun send(method: String, url: String, body: JSONObject? = null): JSONObject {
             val request = Request.Builder().url(url).method(method, body?.toString()?.toRequestBody(json)).header("Authorization", "Bearer $token").build()
             http.newCall(request).execute().use { r ->
                 val text = r.body.string()
@@ -262,16 +252,6 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
                 val message = err?.optString("message")?.takeIf { it.isNotBlank() } ?: "HTTP ${r.code}"
                 throw Stop.Refused(message, helpUrl(err))
             }
-        }
-
-        /** Google's error details often carry a link to the page that fixes the problem. */
-        private fun helpUrl(err: JSONObject?): String? {
-            val details = err?.optJSONArray("details") ?: return null
-            for (d in details.objects()) {
-                val links = d.optJSONArray("links") ?: continue
-                if (links.length() > 0) return links.getJSONObject(0).optString("url").ifBlank { null }
-            }
-            return null
         }
     }
 
@@ -290,6 +270,15 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         const val CONSOLE_PLACES = "https://console.cloud.google.com/apis/library/places.googleapis.com"
         const val CONSOLE_ROUTES = "https://console.cloud.google.com/apis/library/routes.googleapis.com"
 
+        /** Google's error details often carry a link to the page that fixes the problem. Internal for `MapsKeyCreatorTest`. */
+        internal fun helpUrl(err: JSONObject?): String? {
+            val details = err?.optJSONArray("details") ?: return null
+            // The first detail with any links decides, as the loop it replaces did.
+            val links = (0 until details.length()).map { details.getJSONObject(it) }
+                .firstNotNullOfOrNull { d -> d.optJSONArray("links")?.takeIf { it.length() > 0 } } ?: return null
+            return links.getJSONObject(0).optString("url").ifBlank { null }
+        }
+
         /** A Google API key: "AIza" then 35 letters, digits, '-' or '_'. The check behind "Paste key from clipboard" (§13.2 step 5). */
         fun looksLikeKey(text: String) = Regex("AIza[0-9A-Za-z_-]{35}").matches(text.trim())
         // The four Google Cloud APIs the run uses (§13.1 "The calls"); they must also be enabled in the maintainer's project that owns the OAuth client (§13.3).
@@ -300,10 +289,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         // The project label that marks a project as ours, so a repeat run reuses it (§13.1 step 1).
         private const val LABEL_KEY = "autonavalerts"
         private const val LABEL_VALUE = "maps-key"
-        // The services to enable and to restrict the key to (§13.1 step 3; Routes from §8.3a).
+        // The Navigation SDK service, the first of the four to enable and restrict the key to (§13.1 step 3; the rest are listed in [create]).
         private const val NAVIGATION_GUESS = "navigationsdk.googleapis.com"
-        private const val MAPS_ANDROID = "maps-android-backend.googleapis.com"
-        private const val PLACES = "places.googleapis.com"
-        private const val ROUTES = "routes.googleapis.com"
     }
 }

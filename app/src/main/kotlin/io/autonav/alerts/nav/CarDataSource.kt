@@ -5,13 +5,11 @@ package io.autonav.alerts.nav
 
 import android.location.Location
 import android.os.SystemClock
-import android.util.Log
 import androidx.car.app.CarContext
 import androidx.car.app.hardware.CarHardwareManager
 import androidx.car.app.hardware.common.CarValue
 import androidx.car.app.hardware.common.OnCarDataAvailableListener
 import androidx.car.app.hardware.info.CarHardwareLocation
-import androidx.car.app.hardware.info.CarInfo
 import androidx.car.app.hardware.info.CarSensors
 import androidx.car.app.hardware.info.Speed
 import androidx.car.app.versioning.CarAppApiLevels
@@ -20,6 +18,7 @@ import io.autonav.alerts.core.diag.DriveLog
 import io.autonav.alerts.diag.DriveRecorder
 import io.autonav.alerts.diag.EventLog
 import kotlinx.coroutines.flow.MutableStateFlow
+import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -84,10 +83,8 @@ class CarDataSource @Inject constructor(
     /** Called for each car GPS fix. */
     @Volatile var onLocation: ((Location) -> Unit)? = null
 
-    private var speedListener: OnCarDataAvailableListener<Speed>? = null
-    private var locationListener: OnCarDataAvailableListener<CarHardwareLocation>? = null
-    private var info: CarInfo? = null
-    private var sensors: CarSensors? = null
+    /** How to take each listener off the host again, one per listener the host accepted; empty when stopped. */
+    private val unregister = ArrayList<() -> Unit>()
     /** The first report of each kind is logged in full (`CarData firstSpeed` / `firstLocation`, §15.5). */
     private var firstSpeedLogged = false
     private var firstLocationLogged = false
@@ -97,15 +94,14 @@ class CarDataSource @Inject constructor(
      * [SPEED_FRESH_MS] at [nowMs] (elapsedRealtime ms). Null means "use the phone" (§10.6 Fallback).
      */
     fun freshSpeed(nowMs: Long = SystemClock.elapsedRealtime()): CarSpeed? =
-        _speed.value?.takeIf { enabled && nowMs - it.atMs <= SPEED_FRESH_MS && it.rawMps != null }
+        _speed.value?.takeIf { speedUsable(enabled, it, nowMs) }
 
     /**
      * True while the car's GPS is the live feed (§10.7): enabled and a SUCCESS fix within
      * [LOCATION_FRESH_MS] of [nowMs] (elapsedRealtime ms). While true the phone's fixes are recorded
      * but not used.
      */
-    fun carLocationFresh(nowMs: Long = SystemClock.elapsedRealtime()): Boolean =
-        enabled && lastLocationMs > 0 && nowMs - lastLocationMs <= LOCATION_FRESH_MS
+    fun carLocationFresh(nowMs: Long = SystemClock.elapsedRealtime()): Boolean = locationFresh(enabled, lastLocationMs, nowMs)
 
     /**
      * Registers the speed and location listeners with the host. Needs car API level 3 and, for
@@ -113,16 +109,22 @@ class CarDataSource @Inject constructor(
      * which is logged as `unavailable speed`, and the phone's speed is used). Idempotent. Main thread.
      */
     fun start(carContext: CarContext) {
-        if (speedListener != null || locationListener != null) return
+        if (unregister.isNotEmpty()) return
         if (carContext.carAppApiLevel < CarAppApiLevels.LEVEL_3) {
-            Log.i(TAG, "Car API level ${carContext.carAppApiLevel} < 3: car speed and GPS not available")
             nav("unavailable api=${carContext.carAppApiLevel} (< 3)")
             return
         }
         val hw = runCatching { carContext.getCarService(CarHardwareManager::class.java) }
-            .onFailure { Log.w(TAG, "No car hardware manager: ${it.message}"); nav("unavailable noHardwareManager: ${it.message}") }
+            .onFailure { nav("unavailable noHardwareManager: ${it.message}") }
             .getOrNull() ?: return
-        val executor = ContextCompat.getMainExecutor(carContext)
+        listenTo(hw, ContextCompat.getMainExecutor(carContext))
+    }
+
+    /**
+     * Registers the speed and location listeners on [hw], delivered on [executor]; split from [start]
+     * so the JVM tests can hand in a fake car (DESIGN.md §15.1). Main thread.
+     */
+    internal fun listenTo(hw: CarHardwareManager, executor: Executor) {
         firstSpeedLogged = false
         firstLocationLogged = false
 
@@ -135,11 +137,9 @@ class CarDataSource @Inject constructor(
                 firstSpeedLogged = true
                 nav("firstSpeed raw=${raw ?: "-"} disp=${display ?: "-"} status=$rawStatus")
             }
-            if (raw == null && display == null) {
-                eventLog.onChange("carData.speedStatus", rawStatus, EventLog.Channel.NAV, "CarData") { "speedStatus=$rawStatus (no value)" }
-                return@OnCarDataAvailableListener
-            }
-            eventLog.onChange("carData.speedStatus", rawStatus, EventLog.Channel.NAV, "CarData") { "speedStatus=$rawStatus" }
+            val noValue = raw == null && display == null
+            eventLog.onChange("carData.speedStatus", rawStatus, EventLog.Channel.NAV, "CarData") { "speedStatus=$rawStatus${if (noValue) " (no value)" else ""}" }
+            if (noValue) return@OnCarDataAvailableListener
             // A car reporting raw 0 with SUCCESS would stop the engine's `moving` flag; say so once per run of zeros (§10.6).
             val zero = raw == 0f && rawStatus == CarValue.STATUS_SUCCESS
             eventLog.onChange("carData.zero", zero, EventLog.Channel.NAV, "CarData") {
@@ -154,13 +154,7 @@ class CarDataSource @Inject constructor(
                 ),
             )
         }
-        runCatching {
-            hw.carInfo.addSpeedListener(executor, sl)
-            info = hw.carInfo
-            speedListener = sl
-            Log.i(TAG, "Listening for car speed")
-            nav("listening speed")
-        }.onFailure { Log.w(TAG, "Car speed unavailable: ${it.message}"); nav("unavailable speed: ${it.message}") }
+        listen("speed", "listening speed", { hw.carInfo.addSpeedListener(executor, sl) }) { hw.carInfo.removeSpeedListener(sl) }
 
         val ll = OnCarDataAvailableListener<CarHardwareLocation> { h ->
             val v = h.location
@@ -178,13 +172,20 @@ class CarDataSource @Inject constructor(
             lastLocationMs = SystemClock.elapsedRealtime()
             if (enabled) onLocation?.invoke(loc)
         }
-        runCatching {
-            hw.carSensors.addCarHardwareLocationListener(CarSensors.UPDATE_RATE_FASTEST, executor, ll)
-            sensors = hw.carSensors
-            locationListener = ll
-            Log.i(TAG, "Listening for car GPS")
-            nav("listening location rate=fastest")
-        }.onFailure { Log.w(TAG, "Car GPS unavailable: ${it.message}"); nav("unavailable location: ${it.message}") }
+        listen("location", "listening location rate=fastest", { hw.carSensors.addCarHardwareLocationListener(CarSensors.UPDATE_RATE_FASTEST, executor, ll) }) {
+            hw.carSensors.removeCarHardwareLocationListener(ll)
+        }
+    }
+
+    /**
+     * Registers one listener with the host by [add]: `listening …` ([listening]) and its [remove] kept
+     * for [stop] when the host takes it, `unavailable <what>: <why>` when it refuses (§10.6, §15.5).
+     */
+    private fun listen(what: String, listening: String, add: () -> Unit, remove: () -> Unit) {
+        runCatching(add).onFailure { nav("unavailable $what: ${it.message}") }.onSuccess {
+            unregister += remove
+            nav(listening)
+        }
     }
 
     /** A `CarData …` line in debug-nav (§15.5). */
@@ -195,23 +196,22 @@ class CarDataSource @Inject constructor(
      * session and feed the next one. Safe to call without [start]. Main thread.
      */
     fun stop() {
-        speedListener?.let { l -> runCatching { info?.removeSpeedListener(l) } }
-        locationListener?.let { l -> runCatching { sensors?.removeCarHardwareLocationListener(l) } }
-        speedListener = null
-        locationListener = null
-        info = null
-        sensors = null
+        unregister.forEach { runCatching(it) }
+        unregister.clear()
         _speed.value = null
         lastLocationMs = 0L
         nav("stopped")
     }
 
-    // A sanity bound as well as the status check: 120 m/s is about 270 mph, so anything above is a bad value, not a car.
-    private fun CarValue<Float>.okValue(): Float? =
-        if (status == CarValue.STATUS_SUCCESS) value?.takeIf { it >= 0f && it < 120f } else null
-
     companion object {
-        private const val TAG = "CarData"
+        // The rules behind [freshSpeed], [carLocationFresh] and the value check, internal for `CarDataRulesTest`.
+        internal fun speedUsable(enabled: Boolean, s: CarSpeed, nowMs: Long) = enabled && nowMs - s.atMs <= SPEED_FRESH_MS && s.rawMps != null
+        internal fun locationFresh(enabled: Boolean, lastMs: Long, nowMs: Long) = enabled && lastMs > 0 && nowMs - lastMs <= LOCATION_FRESH_MS
+
+        // A sanity bound as well as the status check: 120 m/s is about 270 mph, so anything above is a bad value, not a car.
+        internal fun CarValue<Float>.okValue(): Float? =
+            if (status == CarValue.STATUS_SUCCESS) value?.takeIf { it >= 0f && it < 120f } else null
+
         /** A speed report older than this is stale and the phone's speed is used (DESIGN.md §10.6). */
         const val SPEED_FRESH_MS = 3_000L
         /** A car fix older than this hands location to the phone (DESIGN.md §10.7); also the hysteresis window. */

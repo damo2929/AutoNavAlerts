@@ -44,9 +44,7 @@ object Grid {
         for (dr in -rows..rows) {
             val r = r0 + dr
             if (r < 0 || r >= ROWS) continue
-            for (dc in -cols..cols) {
-                out += r * COLS + (c0 + dc).mod(COLS)
-            }
+            for (dc in -cols..cols) out += r * COLS + (c0 + dc).mod(COLS)
         }
         return out
     }

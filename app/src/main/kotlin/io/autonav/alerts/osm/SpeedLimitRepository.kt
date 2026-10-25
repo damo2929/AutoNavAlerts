@@ -79,11 +79,8 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      * (DESIGN.md §11 step 4); null without data under the car. Follows joins like [nextChange] but carries on
      * past forks by the straightest branch (§8.4a "The free-drive road ahead for cameras").
      */
-    fun roadAhead(lat: Double, lon: Double, headingDeg: Double, maxM: Double): List<LatLngLike>? {
-        val la = lookaheadAt(lat, lon) ?: return null
-        return runCatching { la.roadAhead(lat, lon, headingDeg, maxM) }
-            .onFailure { Log.w(TAG, "roadAhead: ${it.message}") }.getOrNull()
-    }
+    fun roadAhead(lat: Double, lon: Double, headingDeg: Double, maxM: Double): List<LatLngLike>? =
+        query(lat, lon, "roadAhead") { la -> la.roadAhead(lat, lon, headingDeg, maxM) }
 
     /**
      * The next change of limit on the road the car is on (DESIGN.md §8.4a, "Limit changes ahead"),
@@ -91,10 +88,13 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      * car, at least two points), else along the road by connectivity, stopping at the first fork.
      * Null with no data, no heading or no change within 600 m. Called once a second by `NavSession`, never per fix.
      */
-    fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>?): LimitLookahead.Change? {
+    fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>?): LimitLookahead.Change? =
+        query(lat, lon, "lookahead") { la -> la.nextChange(lat, lon, headingDeg, routeAhead?.takeIf { it.size >= 2 }) }
+
+    /** [ask] of the lookahead around the car; null while nothing is in memory, and null with a `<tag>: <error>` warning if it throws. */
+    private inline fun <T> query(lat: Double, lon: Double, tag: String, ask: (LimitLookahead) -> T): T? {
         val la = lookaheadAt(lat, lon) ?: return null
-        return runCatching { la.nextChange(lat, lon, headingDeg, routeAhead?.takeIf { it.size >= 2 }) }
-            .onFailure { Log.w(TAG, "lookahead: ${it.message}") }.getOrNull()
+        return runCatching { ask(la) }.onFailure { Log.w(TAG, "$tag: ${it.message}") }.getOrNull()
     }
 
     /**
@@ -171,9 +171,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      */
     fun download(wifiOnly: Boolean) {
         _progress.value = Progress("", if (wifiOnly) "Waiting for Wi-Fi" else "Waiting for a connection", 0, 0, false)
-        val req = OneTimeWorkRequestBuilder<SpeedLimitWorker>()
-            .setConstraints(network(wifiOnly).build())
-            .build()
+        val req = OneTimeWorkRequestBuilder<SpeedLimitWorker>().setConstraints(network(wifiOnly).build()).build()
         WorkManager.getInstance(context).enqueueUniqueWork(WORK, ExistingWorkPolicy.REPLACE, req)
     }
 

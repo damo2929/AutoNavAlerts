@@ -23,7 +23,7 @@ import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.App
 import io.autonav.alerts.BuildConfig
 import io.autonav.alerts.R
-import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.CarScreenHost
 import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.nav.RouteOption
@@ -55,7 +55,7 @@ import kotlinx.coroutines.withContext
 @Suppress("DEPRECATION")
 class RoutePreviewScreen(
     carContext: CarContext,
-    private val session: NavSession,
+    private val session: CarScreenHost,
     private val destination: Destination,
 ) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
@@ -125,9 +125,7 @@ class RoutePreviewScreen(
             val sel = deps.guidance().selected.value.coerceIn(0, choices.size - 1)
             choices.forEachIndexed { i, c ->
                 // A green tick on the selected route, an empty circle on the other: clear before Go.
-                val icon = if (choices.size == 1) null
-                    else if (i == sel) routeIcon(R.drawable.ic_route_selected, 0xFF34A853.toInt())
-                    else routeIcon(R.drawable.ic_route_option, 0xFFBDC1C6.toInt())
+                val icon = if (choices.size == 1) null else routeIcon(selected = i == sel)
                 // The card's width is the host's; keep the text short so it wraps less: the route's
                 // name goes on the title line beside the time, the traffic on the line below.
                 val name = if (c.efficient && choices.size > 1) "Energy-efficient" else c.label
@@ -176,8 +174,7 @@ class RoutePreviewScreen(
     private fun goTitle(): String {
         val go = carContext.getString(R.string.car_go)
         val choices = deps.guidance().choices.value
-        if (choices.size < 2) return go
-        val c = choices.getOrNull(deps.guidance().selected.value) ?: return go
+        val c = choices.getOrNull(deps.guidance().selected.value)?.takeIf { choices.size >= 2 } ?: return go
         return "$go · " + if (c.efficient) "Energy-efficient" else "Fastest"
     }
 
@@ -186,9 +183,9 @@ class RoutePreviewScreen(
      * its own copy of our resources, which after an update can still be the old APK's (it showed
      * other icons on the bench).
      */
-    private fun routeIcon(res: Int, color: Int): androidx.car.app.model.CarIcon {
-        val d = androidx.core.content.ContextCompat.getDrawable(carContext, res)!!.mutate()
-        androidx.core.graphics.drawable.DrawableCompat.setTint(d, color)
+    private fun routeIcon(selected: Boolean): androidx.car.app.model.CarIcon {
+        val d = androidx.core.content.ContextCompat.getDrawable(carContext, if (selected) R.drawable.ic_route_selected else R.drawable.ic_route_option)!!.mutate()
+        androidx.core.graphics.drawable.DrawableCompat.setTint(d, if (selected) 0xFF34A853.toInt() else 0xFFBDC1C6.toInt())
         val bmp = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
         d.setBounds(0, 0, 96, 96)
         d.draw(android.graphics.Canvas(bmp))
@@ -196,15 +193,7 @@ class RoutePreviewScreen(
     }
 
     /** First line after the distance: " · heavy traffic +12 min", so the routes can be compared (DESIGN.md §8.3a). */
-    private fun routeTraffic(r: io.autonav.alerts.nav.EcoRoutes.Route): String {
-        val delay = if (r.delayMinutes > 0) " +${r.delayMinutes} min" else ""
-        return when (r.traffic) {
-            io.autonav.alerts.nav.EcoRoutes.Traffic.LIGHT -> " · light traffic$delay"
-            io.autonav.alerts.nav.EcoRoutes.Traffic.SOME -> " · some traffic$delay"
-            io.autonav.alerts.nav.EcoRoutes.Traffic.HEAVY -> " · heavy traffic$delay"
-            io.autonav.alerts.nav.EcoRoutes.Traffic.UNKNOWN -> ""
-        }
-    }
+    private fun routeTraffic(r: io.autonav.alerts.nav.EcoRoutes.Route): String = trafficLine(r.traffic, r.delayMinutes)
 
     /**
      * Second line: how far to the first queue Google projects for when you get there, and about
@@ -251,5 +240,11 @@ class RoutePreviewScreen(
         /** The preview on screen, if any, for the debug bench's `--ez go true`. */
         @Volatile var showing: RoutePreviewScreen? = null
             private set
+
+        /** " · light traffic", " · heavy traffic +12 min" (the delay only when there is one), nothing when the traffic is unknown (§8.3a). */
+        internal fun trafficLine(traffic: io.autonav.alerts.nav.EcoRoutes.Traffic, delayMinutes: Int): String {
+            if (traffic == io.autonav.alerts.nav.EcoRoutes.Traffic.UNKNOWN) return ""
+            return " · ${traffic.name.lowercase()} traffic" + if (delayMinutes > 0) " +$delayMinutes min" else ""
+        }
     }
 }

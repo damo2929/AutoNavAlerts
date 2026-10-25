@@ -122,18 +122,10 @@ class SettingsBackup @Inject constructor(
         val byName = pois.sets().values.associateBy { it.name }
         // An icon from the file is taken only if it exists on this phone; a PGW icon arrives with the camera download (§13.4).
         val iconIds = (icons.builtinIds() + icons.userIds()).toSet()
-        val updated = ArrayList<PoiSetEntity>()
-        var notFound = 0
-        root.optJSONArray("poiSets")?.let { arr ->
-            for (i in 0 until arr.length()) {
-                val j = arr.optJSONObject(i) ?: continue
-                val set = byName[j.optString("name")]
-                if (set == null) { notFound++; continue }
-                updated += applySet(set, j, iconIds)
-            }
-        }
+        val (found, notFound) = root.optJSONArray("poiSets")?.objects().orEmpty().partition { byName.containsKey(it.optString("name")) }
+        val updated = found.map { applySet(byName.getValue(it.optString("name")), it, iconIds) }
         if (updated.isNotEmpty()) pois.updateSets(updated)
-        return Restored(restoredSettings, key != null, user != null && pass != null, updated.size, notFound)
+        return Restored(restoredSettings, key != null, user != null && pass != null, updated.size, notFound.size)
     }
 
     /** The three checks of §13.4 step 2: JSON, `"app": "AutoNavAlerts"`, and a `format` this version knows (1). */
@@ -155,10 +147,11 @@ class SettingsBackup @Inject constructor(
     }
 
     /** The set names in the file, for the preview's match count. */
-    private fun setNames(root: JSONObject): List<String> {
-        val arr = root.optJSONArray("poiSets") ?: return emptyList()
-        return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("name")?.takeIf(String::isNotEmpty) }
-    }
+    private fun setNames(root: JSONObject): List<String> =
+        root.optJSONArray("poiSets")?.objects().orEmpty().mapNotNull { it.optString("name").takeIf(String::isNotEmpty) }
+
+    /** The objects of a JSON array, in order; anything else in it is skipped. */
+    private fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJSONObject(it) }
 
     companion object {
         /** The file format this version writes and the highest it reads (§13.4 "format 1"). Bump when a field changes meaning. */

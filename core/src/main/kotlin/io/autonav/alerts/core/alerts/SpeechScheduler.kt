@@ -161,13 +161,13 @@ class SpeechScheduler(val config: Config = Config()) {
         // waiting (only the newest matters, never a camera stage); for a stage, the same POI's waiting stage.
         val rivals = when {
             u.kind == AlertKind.LIMIT_CHANGE || u.kind == AlertKind.GUIDANCE -> queue.filter { it.kind == u.kind }
-            isStage(u.kind) -> queue.filter { it.poiId == u.poiId && isStage(it.kind) }
+            u.kind.isStage -> queue.filter { it.poiId == u.poiId && it.kind.isStage }
             else -> emptyList()
         }
         for (e in rivals) {
             // Only a later stage replaces an earlier one (AlertKind lists FIRST, SECOND, PASSING in that
             // order); an earlier or repeated stage while a later one waits is dropped: the later says it all.
-            if (isStage(u.kind) && u.kind.ordinal <= e.kind.ordinal) {
+            if (u.kind.isStage && u.kind <= e.kind) {
                 record(Record(u, Outcome.STALE, nowMs, detail = "later stage waiting"))
                 out += Decision.Dropped(u, Outcome.STALE)
                 return out
@@ -284,12 +284,12 @@ class SpeechScheduler(val config: Config = Config()) {
         lastDoneMs = r.atMs
     }
 
+    // Removed before it is recorded: [record] looks at what is still queued for the POI.
     private fun dropStale(nowMs: Long) {
         val it = queue.iterator()
         while (it.hasNext()) {
             val u = it.next()
-            if (u.kind != AlertKind.FIRST && u.kind != AlertKind.SECOND && u.kind != AlertKind.GUIDANCE) continue
-            val below = u.staleBelowM ?: continue
+            val below = u.staleBelowM?.takeIf { u.kind == AlertKind.FIRST || u.kind == AlertKind.SECOND || u.kind == AlertKind.GUIDANCE } ?: continue
             val d = distances[u.poiId] ?: u.distanceM
             if (d < below) {
                 it.remove()
@@ -318,7 +318,7 @@ class SpeechScheduler(val config: Config = Config()) {
     }
 
     companion object {
-        /** The three camera stages: the only kinds that replace one another per POI. */
-        fun isStage(k: AlertKind) = k == AlertKind.FIRST || k == AlertKind.SECOND || k == AlertKind.PASSING
+        /** The three camera stages: the only kinds that replace one another per POI ([AlertKind.isStage]). */
+        fun isStage(k: AlertKind) = k.isStage
     }
 }

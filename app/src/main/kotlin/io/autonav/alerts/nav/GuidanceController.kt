@@ -26,12 +26,14 @@ import io.autonav.alerts.core.nav.EcoReaskPolicy
 import io.autonav.alerts.core.nav.GuidanceState
 import io.autonav.alerts.core.nav.RoutePolyline
 import io.autonav.alerts.diag.EventLog
+import io.autonav.alerts.util.view
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import javax.inject.Inject
@@ -63,16 +65,31 @@ data class RouteOption(val seconds: Int, val meters: Int, val delaySeverity: Int
  * vanishes on a drive can be traced. `HOST` is the normal end of a route: the X on the host's
  * travel-estimate card is the one cancel on the car screen (§8; owner, 2026-10-13), and it arrives
  * as `onStopNavigation`, the same callback a host-initiated stop uses. `ARRIVED`: the final
- * destination was reached, which ends guidance at once (owner, 2026-10-13). `SESSION_DESTROY` is
- * defined but not used: the car session ending keeps guidance running (§9.3); the owner decides
- * after the next drive's logs.
+ * destination was reached, which ends guidance at once (owner, 2026-10-13). The car session
+ * ending keeps guidance running (§9.3; owner, 2026-10-25), so there is no reason for it.
  */
-enum class StopReason { HOST, ARRIVED, KEY_CHANGED, SESSION_DESTROY }
+enum class StopReason { HOST, ARRIVED, KEY_CHANGED }
+
+/**
+ * What the screens see of the route (DESIGN.md §8, §8.3a, §9.3), published as one value so a
+ * collector never sees a destination without its choices: [destination] being previewed or
+ * guided (null after a stop or an abandoned preview); [choices] the driver can pick in the preview
+ * (fastest / energy-efficient; empty = the SDK's one route); [selected] the index into them of the
+ * route set in the SDK (0 with a single route); [routeNote] what kind of route is set, e.g.
+ * "Energy-efficient route (EV)"; [guiding] from `startGuidance` to `stopGuidance`.
+ */
+data class RouteView(
+    val destination: Destination? = null,
+    val choices: List<RouteChoice> = emptyList(),
+    val selected: Int = 0,
+    val routeNote: String? = null,
+    val guiding: Boolean = false,
+)
 
 /**
  * Destination, preview, guidance and route geometry on top of the [Navigator] (DESIGN.md §8,
- * §8.3a, §9.3). The route state lives in one core [GuidanceState], mirrored to the StateFlows the
- * screens collect; [stopGuidance] is the only way guidance ends and resets all of it.
+ * §8.3a, §9.3). The route state lives in one core [GuidanceState], mirrored to the [route] flow
+ * the screens collect; [stopGuidance] is the only way guidance ends and resets all of it.
  *
  * What it does: sets the destination and gets the routes ([setDestination], with the Routes API's
  * energy-efficient route when the EV option is on, §8.3a), lets the preview pick one ([select]),
@@ -100,16 +117,26 @@ class GuidanceController @Inject constructor(
     private val directions: DirectionsSpeaker,
     private val tts: io.autonav.alerts.alerts.NavTts,
 ) {
-    private val _routeNote = MutableStateFlow<String?>(null)
+    private val _route = MutableStateFlow(RouteView())
+    /** The route as the screens see it (DESIGN.md §8, §8.3a); the flows below are views of its fields. */
+    val route: StateFlow<RouteView> = _route
+    /** The destination being previewed or guided; null after a stop or an abandoned preview. */
+    val destination: StateFlow<Destination?> = route.view { it.destination }
+    /** Routes the driver can pick in the preview (fastest / energy-efficient); empty = the SDK's one route. */
+    val choices: StateFlow<List<RouteChoice>> = route.view { it.choices }
+    /** Index into [choices] of the route set in the SDK; 0 with a single route. */
+    val selected: StateFlow<Int> = route.view { it.selected }
     /** What kind of route is set, for the preview: e.g. "Energy-efficient route (EV)" (DESIGN.md §8.3a). */
-    val routeNote: StateFlow<String?> = _routeNote
+    val routeNote: StateFlow<String?> = route.view { it.routeNote }
+    /** True from [startGuidance] to [stopGuidance]; the screens and the trip publisher collect it. */
+    val guiding: StateFlow<Boolean> = route.view { it.guiding }
 
     /** The destination as the SDK has it; null with no route. Identity is compared to detect a route swap. */
     @Volatile private var waypoint: Waypoint? = null
 
-    /** The one source of truth for the route state (core, pure); the flows below mirror it. */
-    /** Pure decision for the EV re-ask: 60 s grace, at most once a minute, only after the SDK's reroute (§8.3a). */
+    /** The one source of truth for the route state (core, pure); [route] mirrors it. */
     @Volatile private var state = GuidanceState()
+    /** Pure decision for the EV re-ask: 60 s grace, at most once a minute, only after the SDK's reroute (§8.3a). */
     private val ecoPolicy = EcoReaskPolicy()
     /** A rerouting event has been seen and no route-changed event has followed it yet (§8.3a). */
     @Volatile private var ecoReaskPending = false
@@ -121,23 +148,12 @@ class GuidanceController @Inject constructor(
     /** Debug Simulate: the SDK's road-snapped positions become the alert engine's fixes (§10.7, §15.3). */
     private val simListener = RoadSnappedLocationProvider.LocationListener { loc -> location.inject(loc) }
 
-    /** The destination being previewed or guided; null after a stop or an abandoned preview. */
-    private val _destination = MutableStateFlow<Destination?>(null)
-    val destination: StateFlow<Destination?> = _destination
-
-    /** True from [startGuidance] to [stopGuidance]; the screens and the trip publisher collect it. */
-    private val _guiding = MutableStateFlow(false)
-    val guiding: StateFlow<Boolean> = _guiding
-
     private val _arrivals = MutableSharedFlow<String>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     /** The destination's title, once per arrival that ended guidance (DESIGN.md §8 "Arrival"). */
     val arrivals: SharedFlow<String> = _arrivals
 
     /** What is being guided, so Back on a preview opened while guiding can put it back (§8, owner 2026-10-13). */
-    private class Guided(
-        val waypoint: Waypoint, val destination: Destination?, val choices: List<RouteChoice>,
-        val selected: Int, val routeNote: String?, val token: String?,
-    )
+    private class Guided(val waypoint: Waypoint, val view: RouteView, val token: String?)
     @Volatile private var guided: Guided? = null
 
     /** The SDK's route as it gave it, refreshed on every route change; read by [routePointsAhead]. */
@@ -180,7 +196,7 @@ class GuidanceController @Inject constructor(
      */
     fun locateCar(lat: Double, lon: Double, headingDeg: Double?) {
         val p = polyline ?: return
-        if (!_guiding.value) return
+        if (!_route.value.guiding) return
         // With the heading: a route that doubles back along this road (the SDK's U-turn route from a
         // parked car) must not pin the car to the leg going the other way (bench, 2026-10-13).
         p.locate(lat, lon, headingDeg)
@@ -188,8 +204,7 @@ class GuidanceController @Inject constructor(
         // nothing about the road the car is on, so the engine falls back to its free-drive corridor
         // (DESIGN.md §11 step 4; bench 2026-10-13: cameras on the driven A61 were 1.2 km from the route).
         val carOff = p.carDistanceM(lat, lon)
-        val offRoute = carOff > CAR_OFF_ROUTE_M
-        carOffRoute = offRoute
+        val offRoute = (carOff > CAR_OFF_ROUTE_M).also { carOffRoute = it }
         eventLog.onChange("guidance.carOffRoute", offRoute, EventLog.Channel.NAV, "Guidance") {
             if (offRoute) "carOffRoute d=${carOff.toInt()} m: free-drive matching until the SDK reroutes" else "carOnRoute d=${carOff.toInt()} m"
         }
@@ -202,7 +217,7 @@ class GuidanceController @Inject constructor(
      */
     val routeMatcher = RouteMatcher { lat, lon ->
         val p = polyline ?: return@RouteMatcher null
-        if (!_guiding.value || carOffRoute) return@RouteMatcher null
+        if (!_route.value.guiding || carOffRoute) return@RouteMatcher null
         // Capped at 10 km: a POI far from any route segment only needs to fail the 50 m / 100 m test.
         p.distanceToRouteM(lat, lon).coerceAtMost(10_000.0)
     }
@@ -219,20 +234,18 @@ class GuidanceController @Inject constructor(
         if (pts.size < 2) return emptyList()
         val here = location.lastLocation.value ?: return emptyList()
         val i = p.nearestSegment(here.latitude, here.longitude, p.carIndex).coerceIn(0, pts.size - 2)
-        val a = pts[i]; val b = pts[i + 1]
         // 100 m, looser than the engine's 50 m off-route rule: the lookahead only needs the road the car is
         // about to be on, and a slightly wide snap is better than no limit change at a junction.
-        if (Geo.distanceToSegmentM(here.latitude, here.longitude, a.latitude, a.longitude, b.latitude, b.longitude) > 100.0) return emptyList()
-        val out = ArrayList<LatLngLike>(AHEAD_POINTS + 1)
-        out += LatLngPoint(here.latitude, here.longitude)
-        var m = 0.0
-        var prevLat = here.latitude; var prevLon = here.longitude
-        for (j in i + 1 until pts.size) {
-            val q = pts[j]
-            out += LatLngPoint(q.latitude, q.longitude)
-            m += Geo.distanceM(prevLat, prevLon, q.latitude, q.longitude)
-            prevLat = q.latitude; prevLon = q.longitude
-            if (m >= AHEAD_M || out.size > AHEAD_POINTS) break
+        if (Geo.distanceToSegmentM(here.latitude, here.longitude, pts[i].latitude, pts[i].longitude, pts[i + 1].latitude, pts[i + 1].longitude) > 100.0) return emptyList()
+        val out = buildList<LatLngLike> {
+            var prev: LatLngLike = LatLngPoint(here.latitude, here.longitude).also(::add)
+            var m = 0.0
+            for (q in pts.subList(i + 1, pts.size)) {
+                val point = LatLngPoint(q.latitude, q.longitude).also(::add)
+                m += Geo.distanceM(prev.lat, prev.lon, point.lat, point.lon)
+                prev = point
+                if (m >= AHEAD_M || size > AHEAD_POINTS) break
+            }
         }
         return if (out.size >= 2) out else emptyList()
     }
@@ -256,9 +269,8 @@ class GuidanceController @Inject constructor(
         this.waypoint = waypoint
         val status = route(nav, waypoint, dest)
         return if (status == Navigator.RouteStatus.OK) {
-            _destination.value = dest
-            refreshRoutePoints(nav)
-            state = state.previewing().withChoices(_choices.value, _selected.value, _routeNote.value)
+            _route.update { it.copy(destination = dest) }
+            state = state.previewing().withChoices(_route.value)
             null
         } else {
             "No route: ${status.name.lowercase().replace('_', ' ')}"
@@ -272,28 +284,16 @@ class GuidanceController @Inject constructor(
      */
     @Volatile var debugTwoChoices = false
 
-    private val _choices = MutableStateFlow<List<RouteChoice>>(emptyList())
-    /** Routes the driver can pick in the preview (fastest / energy-efficient); empty = the SDK's one route. */
-    val choices: StateFlow<List<RouteChoice>> = _choices
-    /** Index into [choices] of the route set in the SDK; 0 with a single route. */
-    private val _selected = MutableStateFlow(0)
-    val selected: StateFlow<Int> = _selected
-
     /**
      * Routes to [waypoint] (DESIGN.md §8.3a). With energy-efficient routes on and the Routes API
      * answering, both the fastest and the energy-efficient route become [choices] and the
      * energy-efficient one is set; otherwise the SDK's own route, with a [routeNote] saying why.
      */
     private suspend fun route(nav: Navigator, waypoint: Waypoint, dest: Destination): Navigator.RouteStatus {
-        _routeNote.value = null
-        _choices.value = emptyList()
+        _route.update { it.copy(routeNote = null, choices = emptyList()) }
         val s = settings.current()
         if (s.evEfficientRoutes) {
-            // The origin: the latest fix, or the phone's last known position right after a restart (§8.3a step 1).
-            val here = location.lastLocation.value ?: lastKnown()
-            val eco = if (here == null) EcoRoutes.Result.Unavailable("no GPS position yet")
-                else eco.route(here.latitude, here.longitude, dest, s.avoidTolls, lastHeading)
-            when (eco) {
+            when (val eco = askEco(dest, s.avoidTolls, lastHeading) ?: EcoRoutes.Result.Unavailable("no GPS position yet")) {
                 is EcoRoutes.Result.Routes -> {
                     // Debug only (bench): show two rows even when Google returns one route.
                     val same = (eco.same || eco.fastest == null) && !(BuildConfig.DEBUG && debugTwoChoices)
@@ -303,19 +303,28 @@ class GuidanceController @Inject constructor(
                     val pick = list.indexOfFirst { it.efficient }
                     val status = setToken(nav, waypoint, list[pick].route.token, "preview")
                     if (status == Navigator.RouteStatus.OK) {
-                        _choices.value = list
-                        _selected.value = pick
+                        _route.update { it.copy(choices = list, selected = pick) }
                         Log.i(TAG, "Route choices: ${list.joinToString { "${it.label} ${it.route.seconds}s ${it.route.meters}m" }}")
                         return status
                     }
                     Log.w(TAG, "The SDK refused the energy-efficient route: $status")
-                    _routeNote.value = "Fastest route (the energy-efficient route couldn't be used)"
+                    _route.update { it.copy(routeNote = "Fastest route (the energy-efficient route couldn't be used)") }
                 }
                 is EcoRoutes.Result.Unavailable ->
-                    _routeNote.value = "Fastest route (energy-efficient routing isn't available: ${eco.reason})"
+                    _route.update { it.copy(routeNote = "Fastest route (energy-efficient routing isn't available: ${eco.reason})") }
             }
         }
         return plainRoute(nav, waypoint, "preview")
+    }
+
+    /**
+     * The Routes API from the car (§8.3a step 1: the latest fix, or the phone's last known position
+     * right after a restart) to [dest] with the tolls option and the car's [heading]; null with no
+     * position at all. Shared by the preview and the re-ask.
+     */
+    private suspend fun askEco(dest: Destination, avoidTolls: Boolean, heading: Double?): EcoRoutes.Result? {
+        val here = location.lastLocation.value ?: lastKnown() ?: return null
+        return eco.route(here.latitude, here.longitude, dest, avoidTolls, heading)
     }
 
     /** The SDK's own route with the tolls option; every status is logged (DESIGN.md §15.5). */
@@ -326,8 +335,9 @@ class GuidanceController @Inject constructor(
 
     /**
      * One `setDestinations` request to [waypoint], made by [request] (the SDK's own routing or a Routes
-     * API token), awaited and logged with its status, time and point count ([logRouteStatus], §15.5).
-     * Cancelled while it runs (Back on the preview), it clears the route the SDK may still set ([clearIfNotGuiding]).
+     * API token), awaited and logged with its status, time and point count ([logRouteStatus], §15.5);
+     * on OK the route points are re-read ([refreshRoutePoints]). Cancelled while it runs (Back on the
+     * preview), it clears the route the SDK may still set ([clearIfNotGuiding]).
      */
     private suspend fun setDest(nav: Navigator, waypoint: Waypoint, why: String, request: (List<Waypoint>, RouteDescriptionLoadCallback) -> Unit): Navigator.RouteStatus {
         val t0 = SystemClock.elapsedRealtime()
@@ -336,13 +346,14 @@ class GuidanceController @Inject constructor(
             request(listOf(waypoint)) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
         }
         logRouteStatus(nav, status, t0, why)
+        if (status == Navigator.RouteStatus.OK) refreshRoutePoints(nav)
         return status
     }
 
     /** [state] with the preview's routes (§8.3a): how many, which is set, whether that is the energy-efficient one, and the note. */
-    private fun GuidanceState.withChoices(choices: List<RouteChoice>, selected: Int, note: String?) = copy(
-        choices = maxOf(1, choices.size), selectedIndex = selected,
-        selectedEfficient = choices.getOrNull(selected)?.efficient == true, routeNote = note,
+    private fun GuidanceState.withChoices(v: RouteView) = copy(
+        choices = maxOf(1, v.choices.size), selectedIndex = v.selected,
+        selectedEfficient = v.choices.getOrNull(v.selected)?.efficient == true, routeNote = v.routeNote,
     )
 
     /**
@@ -379,34 +390,27 @@ class GuidanceController @Inject constructor(
      */
     private suspend fun setToken(nav: Navigator, waypoint: Waypoint, token: String, why: String): Navigator.RouteStatus {
         val options = CustomRoutesOptions.Builder().setRouteToken(token).setTravelMode(CustomRoutesOptions.TravelMode.DRIVING).build()
-        val status = setDest(nav, waypoint, "token $why") { wps, done -> nav.setDestinations(wps, options, done) }
-        if (status == Navigator.RouteStatus.OK) state = state.tokenApplied(token)
-        return status
+        return setDest(nav, waypoint, "token $why") { wps, done -> nav.setDestinations(wps, options, done) }
+            .also { if (it == Navigator.RouteStatus.OK) state = state.tokenApplied(token) }
     }
 
     /** The driver picked a route in the preview: show it on the map; Go then guides along it. */
     suspend fun select(index: Int): Boolean {
         val nav = holder.navigator.value ?: return false
         val wp = waypoint ?: return false
-        val choice = _choices.value.getOrNull(index) ?: return false
-        if (index == _selected.value) return true
+        val choice = _route.value.choices.getOrNull(index) ?: return false
+        if (index == _route.value.selected) return true
         val ok = setToken(nav, wp, choice.route.token, "select") == Navigator.RouteStatus.OK
         if (ok) {
-            _selected.value = index
+            _route.update { it.copy(selected = index) }
             state = state.copy(selectedIndex = index, selectedEfficient = choice.efficient)
-            refreshRoutePoints(nav)
-        } else {
-            recoverRoute(nav, "select")
-        }
+        } else recoverRoute(nav, "select")
         return ok
     }
 
     /** The SDK's current route for the single-route preview row, or null without one. Main thread. */
-    fun currentRoute(): RouteOption? {
-        val nav = holder.navigator.value ?: return null
-        val td = nav.currentTimeAndDistance ?: return null
-        return RouteOption(td.seconds, td.meters, td.delaySeverity)
-    }
+    fun currentRoute(): RouteOption? =
+        holder.navigator.value?.currentTimeAndDistance?.let { RouteOption(it.seconds, it.meters, it.delaySeverity) }
 
     /**
      * Starts guidance along the set route. False, and nothing starts, with no route (DESIGN.md §9.3).
@@ -422,22 +426,17 @@ class GuidanceController @Inject constructor(
         setSdkVoice(nav, on = !ours)
         if (ours) directions.start() else log("Directions fallback sdkVoice reason=ttsUnhealthy")
         // The turn-by-turn feed: two steps of preview and bitmap manoeuvre images for the turn card and the cluster (§12.4).
-        nav.registerServiceForNavUpdates(
-            app.packageName, NavUpdatesService::class.java.name,
-            NavigationUpdatesOptions.Builder()
-                .setNumNextStepsToPreview(2)
-                .setGeneratedStepImagesType(NavigationUpdatesOptions.GeneratedStepImagesType.BITMAP)
-                .setDisplayMetrics(app.resources.displayMetrics)
-                .build(),
-        )
+        val updates = NavigationUpdatesOptions.Builder()
+            .setNumNextStepsToPreview(2)
+            .setGeneratedStepImagesType(NavigationUpdatesOptions.GeneratedStepImagesType.BITMAP)
+            .setDisplayMetrics(app.resources.displayMetrics)
+            .build()
+        nav.registerServiceForNavUpdates(app.packageName, NavUpdatesService::class.java.name, updates)
         nav.startGuidance()
         state = state.started(SystemClock.elapsedRealtime())
         ecoReaskPending = false
-        guided = Guided(
-            wp, _destination.value, _choices.value, _selected.value, _routeNote.value,
-            token = if (_choices.value.isNotEmpty()) state.lastAppliedToken else null,
-        )
-        _guiding.value = true
+        _route.update { it.copy(guiding = true) }
+        guided = Guided(wp, _route.value, token = state.lastAppliedToken.takeIf { _route.value.choices.isNotEmpty() })
         if (simulate && BuildConfig.DEBUG) {
             // The simulator moves the SDK's location only, so feed it to the alert engine too.
             location.setSimulated(true)
@@ -449,14 +448,12 @@ class GuidanceController @Inject constructor(
     }
 
     /** The Navigation SDK's own spoken guidance: off while we speak the directions (DESIGN.md §12.3). */
-    private fun setSdkVoice(nav: Navigator, on: Boolean) {
-        nav.setAudioGuidanceSettings(
-            AudioGuidanceSettings.builder()
-                .setGuidanceMode(if (on) AudioGuidanceSettings.GuidanceMode.VOICE_ALERTS_AND_GUIDANCE else AudioGuidanceSettings.GuidanceMode.SILENT)
-                .setBluetoothAudioEnabled(true)
-                .build(),
-        )
-    }
+    private fun setSdkVoice(nav: Navigator, on: Boolean) = nav.setAudioGuidanceSettings(
+        AudioGuidanceSettings.builder()
+            .setGuidanceMode(if (on) AudioGuidanceSettings.GuidanceMode.VOICE_ALERTS_AND_GUIDANCE else AudioGuidanceSettings.GuidanceMode.SILENT)
+            .setBluetoothAudioEnabled(true)
+            .build(),
+    )
 
     /**
      * Simulator speed multiplier (1 = real time).
@@ -473,9 +470,8 @@ class GuidanceController @Inject constructor(
      * Any thread (the key-change listener and the arrival listener both call it); the SDK calls are wrapped.
      */
     fun stopGuidance(reason: StopReason) {
-        log("stop caller=$reason guiding=${state.guiding} dest=${_destination.value?.title ?: "-"}")
-        val nav = holder.navigator.value
-        if (nav != null) {
+        log("stop caller=$reason guiding=${state.guiding} dest=${_route.value.destination?.title ?: "-"}")
+        holder.navigator.value?.let { nav ->
             if (_simulating.value) {
                 holder.roadSnappedProvider()?.removeLocationListener(simListener)
                 location.setSimulated(false)
@@ -500,11 +496,10 @@ class GuidanceController @Inject constructor(
         if (state.guiding) {
             state = state.previewAbandoned()
             val g = guided
-            if (g == null || waypoint === g.waypoint) { log("preview abandoned (guiding, route kept)"); return }
-            restoreGuided(g)
+            if (g == null || waypoint === g.waypoint) log("preview abandoned (guiding, route kept)") else restoreGuided(g)
             return
         }
-        log("preview abandoned dest=${_destination.value?.title ?: "-"}")
+        log("preview abandoned dest=${_route.value.destination?.title ?: "-"}")
         holder.navigator.value?.let { nav -> runCatching { nav.clearDestinations() } }
         state = state.previewAbandoned()
         clearRoute()
@@ -513,17 +508,13 @@ class GuidanceController @Inject constructor(
     /** Puts the guided route back after a preview: its token when it had one, else the SDK's route. */
     private fun restoreGuided(g: Guided) {
         waypoint = g.waypoint
-        _destination.value = g.destination
-        _choices.value = g.choices
-        _selected.value = g.selected
-        _routeNote.value = g.routeNote
-        state = state.withChoices(g.choices, g.selected, g.routeNote)
-        log("preview abandoned (restored guided route) dest=${g.destination?.title ?: "-"} token=${g.token != null}")
+        _route.value = g.view
+        state = state.withChoices(g.view)
+        log("preview abandoned (restored guided route) dest=${g.view.destination?.title ?: "-"} token=${g.token != null}")
         val nav = holder.navigator.value ?: return
         App.appScope.launch(Dispatchers.Main) {
-            var status = g.token?.let { setToken(nav, g.waypoint, it, "restore") }
-            if (status != Navigator.RouteStatus.OK) status = plainRoute(nav, g.waypoint, "restore")
-            if (status == Navigator.RouteStatus.OK && waypoint === g.waypoint) refreshRoutePoints(nav)
+            val status = g.token?.let { setToken(nav, g.waypoint, it, "restore") }
+            if (status != Navigator.RouteStatus.OK) plainRoute(nav, g.waypoint, "restore")
         }
     }
 
@@ -534,11 +525,7 @@ class GuidanceController @Inject constructor(
         polyline = null
         carOffRoute = false
         ecoReaskPending = false
-        _guiding.value = state.guiding
-        _destination.value = null
-        _choices.value = emptyList()
-        _selected.value = 0
-        _routeNote.value = null
+        _route.value = RouteView(guiding = state.guiding)
     }
 
     /** Re-reads the SDK's route segments into [routePoints] and a fresh [RoutePolyline] (never mutated in place). */
@@ -555,8 +542,7 @@ class GuidanceController @Inject constructor(
     private suspend fun recoverRoute(nav: Navigator, why: String) {
         val wp = waypoint ?: run { log("recoverRoute skipped: no waypoint ($why)"); return }
         log("recoverRoute after=$why")
-        val status = plainRoute(nav, wp, "recover")
-        if (status == Navigator.RouteStatus.OK) refreshRoutePoints(nav)
+        plainRoute(nav, wp, "recover")
     }
 
     /** The SDK's route, reroute and arrival listeners, once per Navigator (a key change makes a new one, §9.3). */
@@ -583,7 +569,7 @@ class GuidanceController @Inject constructor(
         // Arrival ends guidance at once (owner, 2026-10-13): the session says so with a toast.
         nav.addArrivalListener { event ->
             if (!event.isFinalDestination) return@addArrivalListener
-            val title = event.waypoint?.title ?: _destination.value?.title ?: ""
+            val title = event.waypoint?.title ?: _route.value.destination?.title ?: ""
             if (!state.guiding) { log("arrived \"$title\" ignored (not guiding)"); return@addArrivalListener }
             log("arrived \"$title\"")
             directions.arrived()
@@ -600,7 +586,7 @@ class GuidanceController @Inject constructor(
      */
     private fun maybeEcoReask(nav: Navigator) {
         val wp = waypoint ?: return
-        val dest = _destination.value ?: return
+        val dest = _route.value.destination ?: return
         val now = SystemClock.elapsedRealtime()
         val s = state
         when (val d = ecoPolicy.decide(now, s.guidanceStartedMs, s.lastEcoReaskMs, s.guiding, s.selectedEfficient, s.sdkRerouteCompleted)) {
@@ -609,10 +595,10 @@ class GuidanceController @Inject constructor(
         }
         state = state.ecoAsked(now)
         App.appScope.launch(Dispatchers.Main) {
-            val here = location.lastLocation.value ?: lastKnown() ?: run { log("ecoReask status=noPosition"); return@launch }
             val heading = lastHeading
+            val avoidTolls = settings.current().avoidTolls
             val t0 = SystemClock.elapsedRealtime()
-            val eco = eco.route(here.latitude, here.longitude, dest, settings.current().avoidTolls, heading)
+            val eco = askEco(dest, avoidTolls, heading) ?: run { log("ecoReask status=noPosition"); return@launch }
             when (eco) {
                 is EcoRoutes.Result.Unavailable -> log("ecoReask status=unavailable ms=${SystemClock.elapsedRealtime() - t0} reason=${eco.reason} hdg=${heading?.toInt() ?: "-"}")
                 is EcoRoutes.Result.Routes -> {
@@ -625,7 +611,7 @@ class GuidanceController @Inject constructor(
                     // The route may have changed while the Routes API answered (a new destination, a stop).
                     if (!state.guiding || waypoint !== wp) { log("ecoReask skip reason=routeChanged"); return@launch }
                     val status = setToken(nav, wp, eco.efficient.token, "ecoReask")
-                    if (status == Navigator.RouteStatus.OK) refreshRoutePoints(nav) else recoverRoute(nav, "ecoReask $status")
+                    if (status != Navigator.RouteStatus.OK) recoverRoute(nav, "ecoReask $status")
                 }
             }
         }

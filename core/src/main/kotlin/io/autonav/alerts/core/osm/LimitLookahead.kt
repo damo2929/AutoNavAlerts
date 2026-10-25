@@ -71,9 +71,7 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
     private fun startWalk(lat: Double, lon: Double, headingDeg: Double): Walk? {
         val piece = index.pieceAt(lat, lon, headingDeg) ?: return null
         // Pieces have a drawing direction; we walk whichever way agrees with the heading.
-        val walk = Walk(piece, Geo.absAngleDiffDeg(index.bearingOf(piece), headingDeg) <= 90.0)
-        walk.d = Geo.distanceM(lat, lon, walk.end.lat, walk.end.lon)
-        return walk
+        return Walk(piece, Geo.absAngleDiffDeg(index.bearingOf(piece), headingDeg) <= 90.0).apply { d = Geo.distanceM(lat, lon, end.lat, end.lon) }
     }
 
     private fun alongRoad(lat: Double, lon: Double, headingDeg: Double): Change? {
@@ -117,8 +115,7 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
     private fun alongRoute(lat: Double, lon: Double, headingDeg: Double, route: List<LatLngLike>): Change? {
         val mph0 = index.limitAt(lat, lon, headingDeg) ?: return null
         val n = route.size
-        val cum = DoubleArray(n)
-        for (i in 1 until n) cum[i] = cum[i - 1] + Geo.distanceM(route[i - 1].lat, route[i - 1].lon, route[i].lat, route[i].lon)
+        val cum = Geo.cumulativeM(route)
         var seg = 0
         var s = config.sampleM
         while (s <= config.maxM && s <= cum[n - 1]) {

@@ -5,12 +5,13 @@ package io.autonav.alerts.osm
 
 import android.util.Log
 import io.autonav.alerts.BuildConfig
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.IOException
 import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.TimeUnit
 import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
 
@@ -18,9 +19,10 @@ import java.util.zip.InflaterInputStream
  * A zip file on a web server, read with HTTP range requests (DESIGN.md §8.4a "Only the roads are fetched"):
  * its directory, and one entry streamed and inflated, without downloading the rest. This is how the
  * speed-limit download takes the two roads-layer files (about 1 GB) out of Geofabrik's 0.3–3 GB extracts.
- * A dropped connection is resumed from the same byte (up to [RETRIES] times). Blocking I/O on
- * `HttpURLConnection`: used only by `SpeedLimitWorker` on Dispatchers.IO. Nothing is cached in memory
- * beyond the central directory (§1.3 Memory). Plain zip and ZIP64 are both read.
+ * A dropped connection is resumed from the same byte (up to [RETRIES] times). Blocking I/O on one shared
+ * OkHttp client: used only by `SpeedLimitWorker` on Dispatchers.IO. Nothing is cached in memory
+ * beyond the central directory (§1.3 Memory). Plain zip and ZIP64 are both read. `RemoteZipTest` pins the
+ * requests a server sees.
  */
 class RemoteZip private constructor(val url: String, private val entries: Map<String, Entry>) {
     /** One central-directory record: [method] 0 stored or 8 deflate; [compressed] bytes; [headerOffset] of the local file header. */
@@ -96,6 +98,8 @@ class RemoteZip private constructor(val url: String, private val entries: Map<St
         /** Resumes before giving up on an entry. */
         private const val RETRIES = 8
         private val UA = "AutoNavAlerts/${BuildConfig.VERSION_NAME} (Android)"
+        /** One client for every request, with 30 s / 60 s timeouts; it follows redirects itself (a HEAD stays a HEAD). */
+        private val http = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
 
         /**
          * Follows redirects (Geofabrik's "-latest" links point at dated files, whose name gives the data date)
@@ -103,8 +107,7 @@ class RemoteZip private constructor(val url: String, private val entries: Map<St
          * central directory itself from where that points. Three or four small requests, nothing else fetched.
          */
         fun open(link: String): RemoteZip {
-            val url = resolve(link)
-            val size = head(url)
+            val (url, size) = head(link)
             // The EOCD record is 22 bytes plus a comment of up to 65,535, so the last 65,557 bytes must hold it.
             val tailLen = minOf(size, 65_557L)
             val tail = get(url, size - tailLen, size - 1).use { it.readBytes() }
@@ -157,43 +160,22 @@ class RemoteZip private constructor(val url: String, private val entries: Map<St
             return null
         }
 
-        /** A connection with our User-Agent and 30 s / 60 s timeouts. Redirects are off so [resolve] can follow them by HEAD and keep the final URL. */
-        private fun connect(url: String, method: String): HttpURLConnection =
-            (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = method
-                connectTimeout = 30_000
-                readTimeout = 60_000
-                instanceFollowRedirects = false
-                setRequestProperty("User-Agent", UA)
-            }
+        /** A request to [url] with our User-Agent. */
+        private fun request(url: String) = Request.Builder().url(url).header("User-Agent", UA)
 
-        /** Follows up to 5 redirects by HEAD and returns the final URL (the dated Geofabrik file). */
-        private fun resolve(link: String): String {
-            var u = link
-            repeat(5) {
-                val c = connect(u, "HEAD")
-                try {
-                    if (c.responseCode in 300..399) { u = URL(URL(u), c.getHeaderField("Location")).toString() } else return u
-                } finally { c.disconnect() }
-            }
-            return u
-        }
-
-        /** The file's size in bytes from a HEAD's Content-Length. */
-        private fun head(url: String): Long {
-            val c = connect(url, "HEAD")
-            try {
-                if (c.responseCode != 200) error("HTTP ${c.responseCode} for $url")
-                return c.contentLengthLong
-            } finally { c.disconnect() }
+        /** A HEAD on [link], redirects followed: the final URL (the dated Geofabrik file) and the file's size from its Content-Length (-1 without one). */
+        private fun head(link: String): Pair<String, Long> = http.newCall(request(link).head().build()).execute().use { resp ->
+            val url = resp.request.url.toString()
+            if (resp.code != 200) error("HTTP ${resp.code} for $url")
+            url to (resp.header("Content-Length")?.toLongOrNull() ?: -1L)
         }
 
         /** A `Range: bytes=from-to` GET; anything but 206 means the server didn't honour the range (Geofabrik does, §8.4a). */
         private fun get(url: String, from: Long, to: Long): InputStream {
-            val c = connect(url, "GET")
-            c.setRequestProperty("Range", "bytes=$from-$to")
-            if (c.responseCode != 206) { c.disconnect(); throw IOException("HTTP ${c.responseCode} (range not supported?) for $url") }
-            return c.inputStream
+            val resp = http.newCall(request(url).header("Range", "bytes=$from-$to").build()).execute()
+            if (resp.code == 206) return resp.body.byteStream()
+            resp.close()
+            throw IOException("HTTP ${resp.code} (range not supported?) for $url")
         }
     }
 }

@@ -77,11 +77,7 @@ object ShapefileRoads {
 
     /** Geofabrik stores km/h converted from the mph tag; back to whole mph (48 → 30). 0 = none. */
     // 5–90 mph: outside that it isn't a road limit (§8.4a "Limits").
-    fun mphFromKmh(kmh: Int): Int {
-        if (kmh <= 0) return 0
-        val mph = (kmh / Geo.KMH_PER_MPH).roundToInt()
-        return if (mph < 5 || mph > 90) 0 else mph
-    }
+    fun mphFromKmh(kmh: Int): Int = (kmh / Geo.KMH_PER_MPH).roundToInt().takeIf { kmh > 0 && it in 5..90 } ?: 0
 
     /**
      * Calls [onRoad] with each polyline part (lon/lat pairs, as in the file) of every record whose

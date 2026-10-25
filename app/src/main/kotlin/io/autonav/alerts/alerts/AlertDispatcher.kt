@@ -6,16 +6,16 @@ package io.autonav.alerts.alerts
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
-import android.content.pm.PackageManager
 import androidx.car.app.notification.CarAppExtender
 import androidx.car.app.notification.CarNotificationManager
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.R
 import io.autonav.alerts.core.alerts.AlertEvent
 import io.autonav.alerts.data.IconRepository
 import io.autonav.alerts.diag.EventLog
+import io.autonav.alerts.util.ensureChannel
+import io.autonav.alerts.util.notifyIfAllowed
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -57,16 +57,7 @@ class AlertDispatcher @Inject constructor(
 
     /** The `poi_alerts` channel (§12.2): high importance, no sound and no vibration, since the TTS does the speaking. */
     fun ensureChannel() {
-        val nm = context.getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "POI alerts", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "Speed camera and POI alerts"
-                    setSound(null, null)
-                    enableVibration(false)
-                },
-            )
-        }
+        ensureChannel(context, CHANNEL, "POI alerts", NotificationManager.IMPORTANCE_HIGH, ALERT_CHANNEL)
     }
 
     /**
@@ -90,9 +81,7 @@ class AlertDispatcher @Inject constructor(
     }
 
     /** Returns true when the heads-up notification was posted. */
-    private fun notify(alert: ActiveAlert): Boolean {
-        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false
-        ensureChannel()
+    private fun notify(alert: ActiveAlert): Boolean = notifyIfAllowed(context, CHANNEL, "POI alerts", NotificationManager.IMPORTANCE_HIGH, ALERT_CHANNEL) {
         val large = icons.bitmap(alert.iconId, 128)
         val n = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_action_report)
@@ -112,12 +101,18 @@ class AlertDispatcher @Inject constructor(
                     .build(),
             )
         // One id per POI, so a SECOND or PASSING updates the FIRST's notification instead of stacking (§12.2).
-        return runCatching { CarNotificationManager.from(context).notify(NOTIFICATION_BASE + (alert.poiId % 10_000).toInt(), n) }.isSuccess
-    }
+        runCatching { CarNotificationManager.from(context).notify(NOTIFICATION_BASE + (alert.poiId % 10_000).toInt(), n) }.isSuccess
+    } == true
 
     companion object {
         /** The notification channel id of §12.2. */
         const val CHANNEL = "poi_alerts"
+        /** The channel's look (§12.2): a description, no sound and no vibration, since the TTS does the speaking. */
+        private val ALERT_CHANNEL: NotificationChannel.() -> Unit = {
+            description = "Speed camera and POI alerts"
+            setSound(null, null)
+            enableVibration(false)
+        }
         /** Keeps alert ids clear of the app's other notifications (the speed-limit download's progress, §8.4a). */
         private const val NOTIFICATION_BASE = 20_000
     }

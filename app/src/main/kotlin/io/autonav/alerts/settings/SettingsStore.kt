@@ -190,18 +190,11 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     suspend fun setMapsApiKey(key: String?) = putSecret(K.mapsKey, key?.trim())
 
     /** The user's own PGW username and password (§6.1 step 1), or null when either is missing. There is no built-in or default account (§6.4). */
-    suspend fun pgwCredentials(): Pair<String, String>? {
-        val u = getSecret(K.pgwUser) ?: return null
-        val p = getSecret(K.pgwPass) ?: return null
-        return u to p
-    }
+    suspend fun pgwCredentials(): Pair<String, String>? = getSecret(K.pgwUser)?.let { u -> getSecret(K.pgwPass)?.let { p -> u to p } }
 
     /** Saves or clears the login. The session cookies are dropped with it, so the next sync logs in afresh (§13.4 "PGW login"). */
-    suspend fun setPgwCredentials(user: String?, password: String?) {
-        putSecret(K.pgwUser, user)
-        putSecret(K.pgwPass, password)
-        putSecret(K.pgwCookies, null)
-    }
+    suspend fun setPgwCredentials(user: String?, password: String?) =
+        listOf(K.pgwUser to user, K.pgwPass to password, K.pgwCookies to null).forEach { (k, v) -> putSecret(k, v) }
 
     /** The persisted PGW session, one cookie per line, as `PgwClient` serialises it (§6.1 step 2.1). */
     suspend fun pgwCookies(): String? = getSecret(K.pgwCookies)
@@ -254,11 +247,9 @@ private fun int(key: String, json: String, range: IntRange, get: (AppSettings) -
 private fun double(key: String, json: String, range: ClosedFloatingPointRange<Double>, get: (AppSettings) -> Double, set: AppSettings.(Double) -> AppSettings) =
     Field(doublePreferencesKey(key), json, get, set, { it }, { it }, { j, k -> j.optDouble(k).takeIf { !it.isNaN() } }, { it }, { it.coerceIn(range) })
 
-private fun long(key: String, get: (AppSettings) -> Long, set: AppSettings.(Long) -> AppSettings) =
-    Field(longPreferencesKey(key), null, get, set, { it }, { it }, noJson, { it }, { it })
-
-private fun float(key: String, get: (AppSettings) -> Float, set: AppSettings.(Float) -> AppSettings) =
-    Field(floatPreferencesKey(key), null, get, set, { it }, { it }, noJson, { it }, { it })
+// A field stored as it is and kept out of the backup (mute-until, the simulator speed).
+private fun <T : Any> plain(key: Preferences.Key<T>, get: (AppSettings) -> T, set: AppSettings.(T) -> AppSettings) =
+    Field(key, null, get, set, { it }, { it }, noJson, { it }, { it })
 
 private inline fun <reified E : Enum<E>> enum(key: String, json: String, noinline get: (AppSettings) -> E, noinline set: AppSettings.(E) -> AppSettings) =
     Field(stringPreferencesKey(key), json, get, set, { it.name }, { enumOrNull<E>(it) }, { j, k -> enumOrNull<E>(j.optString(k)) }, { it.name }, { it })
@@ -285,8 +276,8 @@ internal val SETTINGS_FIELDS: List<Field<*, *>> = listOf(
     bool("pgw_auto", "pgwAutoSync", { it.pgwAutoSync }, { copy(pgwAutoSync = it) }),
     bool("pgw_wifi_only", "pgwWifiOnly", { it.pgwWifiOnly }, { copy(pgwWifiOnly = it) }),
     enum<PgwDownload>("pgw_download", "pgwDownload", { it.pgwDownload }, { copy(pgwDownload = it) }),
-    long("muted_until", { it.mutedUntilMs }, { copy(mutedUntilMs = it) }),
-    float("sim_speed", { it.simulationSpeed }, { copy(simulationSpeed = it) }),
+    plain(longPreferencesKey("muted_until"), { it.mutedUntilMs }, { copy(mutedUntilMs = it) }),
+    plain(floatPreferencesKey("sim_speed"), { it.simulationSpeed }, { copy(simulationSpeed = it) }),
     bool("drive_recording", null, { it.driveRecordingOn }, { copy(driveRecordingOn = it) }),
 )
 

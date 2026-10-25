@@ -8,7 +8,6 @@ import android.content.Context
 import android.location.Location
 import android.os.HandlerThread
 import android.os.SystemClock
-import android.util.Log
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -80,31 +79,15 @@ data class LocationStats(
  * path. `LocationSource` is one enum (core.location; core.alerts aliases it), so it passes straight through.
  */
 object EstimateMapper {
-    /** The estimator's speed source as the engine names it (DISPLACEMENT is the engine's DERIVED). */
-    fun speedSource(s: SpeedSource): io.autonav.alerts.core.alerts.SpeedSource = when (s) {
-        SpeedSource.GPS -> io.autonav.alerts.core.alerts.SpeedSource.GPS
-        SpeedSource.DISPLACEMENT -> io.autonav.alerts.core.alerts.SpeedSource.DERIVED
-        SpeedSource.CAR_RAW -> io.autonav.alerts.core.alerts.SpeedSource.CAR_RAW
-        SpeedSource.SIMULATED -> io.autonav.alerts.core.alerts.SpeedSource.SIMULATED
-        SpeedSource.NONE -> io.autonav.alerts.core.alerts.SpeedSource.NONE
-    }
+    /** The estimator's speed source as the engine names it: the same names, except DISPLACEMENT, the engine's DERIVED. */
+    fun speedSource(s: SpeedSource): io.autonav.alerts.core.alerts.SpeedSource =
+        if (s == SpeedSource.DISPLACEMENT) io.autonav.alerts.core.alerts.SpeedSource.DERIVED else io.autonav.alerts.core.alerts.SpeedSource.valueOf(s.name)
 
-    /** The estimator's heading source as the engine names it (track / gps / blend / held / none). */
-    fun headingSource(h: HeadingSource): io.autonav.alerts.core.alerts.HeadingSource = when (h) {
-        HeadingSource.GPS -> io.autonav.alerts.core.alerts.HeadingSource.GPS
-        HeadingSource.TRACK -> io.autonav.alerts.core.alerts.HeadingSource.TRACK
-        HeadingSource.BLEND -> io.autonav.alerts.core.alerts.HeadingSource.BLEND
-        HeadingSource.HELD -> io.autonav.alerts.core.alerts.HeadingSource.HELD
-        HeadingSource.NONE -> io.autonav.alerts.core.alerts.HeadingSource.NONE
-    }
+    /** The estimator's heading source as the engine names it (track / gps / blend / held / none): the same names. */
+    fun headingSource(h: HeadingSource): io.autonav.alerts.core.alerts.HeadingSource = io.autonav.alerts.core.alerts.HeadingSource.valueOf(h.name)
 
-
-    /** The recorder's `src` column for a feed. */
-    fun recorderSrc(l: LocationSource): String = when (l) {
-        LocationSource.PHONE -> DriveLog.SRC_PHONE
-        LocationSource.CAR -> DriveLog.SRC_CAR
-        LocationSource.SIM -> DriveLog.SRC_SIM
-    }
+    /** The recorder's `src` column for a feed: `DriveLog.SRC_PHONE` / `SRC_CAR` / `SRC_SIM`, the feed's name in lower case. */
+    fun recorderSrc(l: LocationSource): String = l.name.lowercase()
 
     /**
      * The engine's fix. With a fresh car speed report ([carRawMps] non-null) the engine's speed is the
@@ -178,8 +161,8 @@ class AdaptiveLocationSource @Inject constructor(
     /** Whether the last fix was worse than [POOR_ACCURACY_M], so the flip is logged once each way. */
     private var accuracyPoor = false
     private var lastReset: String? = null
-    /** The rate actually requested from the phone. */
-    @Volatile private var phoneHz = -1
+    /** The one phone request (always at [GPS_HZ]) is in place. */
+    @Volatile private var phoneRequested = false
     @Volatile private var usingCarLocation = false
 
     /**
@@ -206,20 +189,13 @@ class AdaptiveLocationSource @Inject constructor(
     private val _stats = MutableStateFlow(LocationStats(GPS_HZ, 0.0, 0.0))
     val stats: StateFlow<LocationStats> = _stats
 
-    /** The fused provider's callback: runs on the `adaptive-location` thread's looper. */
-    private val callback = object : LocationCallback() {
+    /** The fused provider's callback: runs on the `adaptive-location` thread's looper. Internal so the JVM tests can deliver phone fixes (§15.1). */
+    internal val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
-            if (simulated) {
-                // Real GPS is recorded but not used during a simulated drive (§10.7).
-                result.locations.forEach { record(it, LocationSource.PHONE, used = false, estimate = null) }
-                return
-            }
-            // Car GPS takes priority while it's the live feed and fresh; the phone is only a backup (DESIGN.md §10.7).
-            if (usingCarLocation && carData.carLocationFresh()) {
-                result.locations.forEach { record(it, LocationSource.PHONE, used = false, estimate = null) }
-                return
-            }
-            result.locations.forEach { onLocation(it, LocationSource.PHONE) }
+            // Real GPS is recorded but not used during a simulated drive, nor while the car's GPS is the
+            // live feed and fresh: the phone is only a backup (DESIGN.md §10.7).
+            val unused = simulated || (usingCarLocation && carData.carLocationFresh())
+            for (loc in result.locations) if (unused) record(loc, LocationSource.PHONE, used = false, estimate = null) else onLocation(loc, LocationSource.PHONE)
         }
     }
 
@@ -287,7 +263,7 @@ class AdaptiveLocationSource @Inject constructor(
         running = false
         carData.onLocation = null
         usingCarLocation = false
-        phoneHz = -1
+        phoneRequested = false
         client.removeLocationUpdates(callback)
         thread?.quitSafely()
         thread = null
@@ -300,23 +276,12 @@ class AdaptiveLocationSource @Inject constructor(
     @SuppressLint("MissingPermission")
     private fun request() {
         val looper = thread?.looper ?: return
-        if (phoneHz == GPS_HZ) return
-        phoneHz = GPS_HZ
-        // 1 Hz → a 1000 ms interval: the natural GPS rate, which still refreshes the car map promptly after a restart (§10.2).
-        val interval = 1000L / GPS_HZ
+        if (phoneRequested) return
+        phoneRequested = true
+        val req = phoneRequest()
+        val interval = req.intervalMillis
         client.removeLocationUpdates(callback)
-        // The phone's own rate, never forced (DESIGN.md §10.2, owner 2026-10-24): asked at the natural
-        // GPS rate, and any faster fix the phone already delivers is taken rather than dropped.
-        val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
-            .setMinUpdateIntervalMillis(0)
-            .setMaxUpdateDelayMillis(0)
-            .setWaitForAccurateLocation(false)
-            .build()
-        runCatching { client.requestLocationUpdates(req, callback, looper) }
-            .onFailure {
-                Log.w(TAG, "Location request failed: ${it.message}")
-                navLog("request failed: ${it.message}")
-            }
+        runCatching { client.requestLocationUpdates(req, callback, looper) }.onFailure { navLog("request failed: ${it.message}") }
         navLog("request interval=${interval}ms min=0")
     }
 
@@ -355,9 +320,7 @@ class AdaptiveLocationSource @Inject constructor(
                 val flip = "${prevSource.name.lowercase()}→${source.name.lowercase()}"
                 reset("handover $flip")
                 navLog("source $flip (+$sinceOther ms)")
-            } else {
-                navLog("source ${source.name.lowercase()}")
-            }
+            } else navLog("source ${source.name.lowercase()}")
             lastSource = source
         }
         usingCarLocation = source == LocationSource.CAR
@@ -452,7 +415,17 @@ class AdaptiveLocationSource @Inject constructor(
     }
 
     companion object {
-        private const val TAG = "AdaptiveLocation"
+        /**
+         * The one phone request (DESIGN.md §10.2, owner 2026-10-24): 1 Hz → a 1000 ms interval, the natural
+         * GPS rate, which still refreshes the car map promptly after a restart; the phone's own rate, never
+         * forced, and any faster fix the phone already delivers is taken rather than dropped.
+         */
+        internal fun phoneRequest(): LocationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000L / GPS_HZ)
+            .setMinUpdateIntervalMillis(0)
+            .setMaxUpdateDelayMillis(0)
+            .setWaitForAccurateLocation(false)
+            .build()
+
         /** The natural GPS rate asked for; faster fixes the phone offers are accepted (DESIGN.md §10.2). */
         const val GPS_HZ = 1
         /** A gap between used fixes longer than this is logged (`Location gap ms=`; §10.6a resets the track on it too). */

@@ -85,11 +85,8 @@ object PgwPages {
     }
 
     /** Absolute URL of the generated zip, or null if the page has none (e.g. subscription expired). */
-    fun findZipLink(html: String): String? {
-        val m = PgwConfig.ZIP_LINK.find(html) ?: return null
-        val path = m.value.substringAfter("pocketgpsworld.com").trimStart('/')
-        return PgwConfig.BASE + path
-    }
+    fun findZipLink(html: String): String? =
+        PgwConfig.ZIP_LINK.find(html)?.let { PgwConfig.BASE + it.value.substringAfter("pocketgpsworld.com").trimStart('/') }
 
     /** Per-user hidden fields of the submission form (never logged or stored). */
     fun submitHiddenFields(html: String): Map<String, String> {

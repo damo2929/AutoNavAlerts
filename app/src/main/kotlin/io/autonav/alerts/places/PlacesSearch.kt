@@ -14,7 +14,6 @@ import com.google.android.libraries.places.api.net.FindAutocompletePredictionsRe
 import com.google.android.libraries.places.api.net.SearchByTextRequest
 import io.autonav.alerts.data.AppDatabase
 import io.autonav.alerts.data.PlaceEntity
-import io.autonav.alerts.data.PlaceKind
 import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.nav.NavigatorHolder
@@ -33,6 +32,9 @@ data class SearchHit(val placeId: String?, val title: String, val subtitle: Stri
 private suspend fun <T> Task<T>.awaitOrNull(): T? = suspendCancellableCoroutine { cont ->
     addOnCompleteListener { t -> cont.resume(if (t.isSuccessful) t.result else null) }
 }
+
+/** Whole metres from this fix to ([lat], [lon]), as `Location.distanceBetween` gives it: the rows' distance text (§8.2, §8.3). */
+internal fun Location.metresTo(lat: Double, lon: Double): Int = FloatArray(1).also { Location.distanceBetween(latitude, longitude, lat, lon, it) }[0].toInt()
 
 /**
  * Places search for the car's Search screen, and the recents it feeds (DESIGN.md §8 "Search", §8.2). A Hilt
@@ -88,8 +90,7 @@ class PlacesSearch @Inject constructor(
         val resp = client.searchByText(req).awaitOrNull() ?: run { log(0, t0, "error"); return emptyList() }
         val hits = resp.places.mapNotNull { p ->
             val loc = p.location ?: return@mapNotNull null
-            val d = near?.let { n -> FloatArray(1).also { Location.distanceBetween(n.latitude, n.longitude, loc.latitude, loc.longitude, it) }[0].toInt() }
-            SearchHit(p.id, p.displayName ?: "Place", p.formattedAddress, d, loc.latitude, loc.longitude)
+            SearchHit(p.id, p.displayName ?: "Place", p.formattedAddress, near?.metresTo(loc.latitude, loc.longitude), loc.latitude, loc.longitude)
         }
         log(hits.size, t0, if (hits.isEmpty()) "empty" else "OK")
         return hits
@@ -140,10 +141,6 @@ class PlacesSearch @Inject constructor(
 
     /** Delete from the car row's action or the phone's swipe (§8.2 "Deleting"). */
     suspend fun delete(p: PlaceEntity) = db.places().delete(p)
-    /** Undo after a delete (§8.2: a 5 s Alert with Undo): the row goes back with a new id. */
-    suspend fun restore(p: PlaceEntity) { db.places().insert(p.copy(id = 0)) }
     /** "Clear all recents" after its confirmation (§8.2). */
     suspend fun clearRecents() = db.places().clearRecents()
-    /** Favourite / Unfavourite (§8.2): flips RECENT and FAVOURITE. */
-    suspend fun setKind(p: PlaceEntity, kind: PlaceKind) = db.places().update(p.copy(kind = kind))
 }

@@ -124,22 +124,25 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
      * yards to the nearest 10; metric the same way with kilometres and metres to the nearest 10.
      * The host formats the number and unit itself from the `Distance`.
      */
-    fun distance(meters: Int): Distance = if (imperial) {
-        val miles = meters / 1609.344
-        when {
-            miles >= 10 -> Distance.create(Math.round(miles).toDouble(), Distance.UNIT_MILES)
-            miles >= 0.2 -> Distance.create(Math.round(miles * 10) / 10.0, Distance.UNIT_MILES_P1)
-            else -> Distance.create((Math.round(meters / 0.9144 / 10) * 10).toDouble(), Distance.UNIT_YARDS)
-        }
-    } else {
-        when {
-            meters >= 10_000 -> Distance.create(Math.round(meters / 1000.0).toDouble(), Distance.UNIT_KILOMETERS)
-            meters >= 1_000 -> Distance.create(Math.round(meters / 100.0) / 10.0, Distance.UNIT_KILOMETERS_P1)
-            else -> Distance.create((Math.round(meters / 10.0) * 10).toDouble(), Distance.UNIT_METERS)
-        }
-    }
+    fun distance(meters: Int): Distance = distance(meters, imperial)
 
     companion object {
+        /** [TripMapper.distance] for either unit system; in the companion for `TripMapperDistanceTest`. */
+        fun distance(meters: Int, imperial: Boolean): Distance = if (imperial) {
+            val miles = meters / 1609.344
+            when {
+                miles >= 10 -> Distance.create(Math.round(miles).toDouble(), Distance.UNIT_MILES)
+                miles >= 0.2 -> Distance.create(Math.round(miles * 10) / 10.0, Distance.UNIT_MILES_P1)
+                else -> Distance.create((Math.round(meters / 0.9144 / 10) * 10).toDouble(), Distance.UNIT_YARDS)
+            }
+        } else {
+            when {
+                meters >= 10_000 -> Distance.create(Math.round(meters / 1000.0).toDouble(), Distance.UNIT_KILOMETERS)
+                meters >= 1_000 -> Distance.create(Math.round(meters / 100.0) / 10.0, Distance.UNIT_KILOMETERS_P1)
+                else -> Distance.create((Math.round(meters / 10.0) * 10).toDouble(), Distance.UNIT_METERS)
+            }
+        }
+
         /** "Main Rd/A61" → "Main Rd / A61", as Google Maps writes a road with two names. */
         fun spacedRoad(road: String): String = road.trim().replace(Regex("\\s*/\\s*"), " / ")
 
@@ -187,14 +190,12 @@ class TripMapper(private val carContext: CarContext, private val imperial: Boole
             Sdk.OFF_RAMP_SLIGHT_RIGHT -> Maneuver.TYPE_OFF_RAMP_SLIGHT_RIGHT
             Sdk.OFF_RAMP_SHARP_LEFT, Sdk.OFF_RAMP_U_TURN_COUNTERCLOCKWISE -> Maneuver.TYPE_OFF_RAMP_NORMAL_LEFT
             Sdk.OFF_RAMP_SHARP_RIGHT, Sdk.OFF_RAMP_U_TURN_CLOCKWISE -> Maneuver.TYPE_OFF_RAMP_NORMAL_RIGHT
-            Sdk.ROUNDABOUT_CLOCKWISE, Sdk.ROUNDABOUT_STRAIGHT_CLOCKWISE, Sdk.ROUNDABOUT_LEFT_CLOCKWISE,
-            Sdk.ROUNDABOUT_RIGHT_CLOCKWISE, Sdk.ROUNDABOUT_SLIGHT_LEFT_CLOCKWISE, Sdk.ROUNDABOUT_SLIGHT_RIGHT_CLOCKWISE,
-            Sdk.ROUNDABOUT_SHARP_LEFT_CLOCKWISE, Sdk.ROUNDABOUT_SHARP_RIGHT_CLOCKWISE, Sdk.ROUNDABOUT_U_TURN_CLOCKWISE,
-            -> Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CW
-            Sdk.ROUNDABOUT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_STRAIGHT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_LEFT_COUNTERCLOCKWISE,
-            Sdk.ROUNDABOUT_RIGHT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_SLIGHT_LEFT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_SLIGHT_RIGHT_COUNTERCLOCKWISE,
-            Sdk.ROUNDABOUT_SHARP_LEFT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_SHARP_RIGHT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_U_TURN_COUNTERCLOCKWISE,
-            -> Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CCW
+            Sdk.ROUNDABOUT_CLOCKWISE, Sdk.ROUNDABOUT_STRAIGHT_CLOCKWISE, Sdk.ROUNDABOUT_LEFT_CLOCKWISE, Sdk.ROUNDABOUT_RIGHT_CLOCKWISE,
+            Sdk.ROUNDABOUT_SLIGHT_LEFT_CLOCKWISE, Sdk.ROUNDABOUT_SLIGHT_RIGHT_CLOCKWISE, Sdk.ROUNDABOUT_SHARP_LEFT_CLOCKWISE,
+            Sdk.ROUNDABOUT_SHARP_RIGHT_CLOCKWISE, Sdk.ROUNDABOUT_U_TURN_CLOCKWISE -> Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CW
+            Sdk.ROUNDABOUT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_STRAIGHT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_LEFT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_RIGHT_COUNTERCLOCKWISE,
+            Sdk.ROUNDABOUT_SLIGHT_LEFT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_SLIGHT_RIGHT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_SHARP_LEFT_COUNTERCLOCKWISE,
+            Sdk.ROUNDABOUT_SHARP_RIGHT_COUNTERCLOCKWISE, Sdk.ROUNDABOUT_U_TURN_COUNTERCLOCKWISE -> Maneuver.TYPE_ROUNDABOUT_ENTER_AND_EXIT_CCW
             Sdk.ROUNDABOUT_EXIT_CLOCKWISE -> Maneuver.TYPE_ROUNDABOUT_EXIT_CW
             Sdk.ROUNDABOUT_EXIT_COUNTERCLOCKWISE -> Maneuver.TYPE_ROUNDABOUT_EXIT_CCW
             Sdk.FERRY_BOAT -> Maneuver.TYPE_FERRY_BOAT

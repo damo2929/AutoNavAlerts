@@ -8,14 +8,13 @@ import androidx.car.app.Screen
 import androidx.car.app.model.Action
 import androidx.car.app.CarToast
 import androidx.car.app.model.ItemList
-import androidx.car.app.model.Row
 import androidx.car.app.model.SearchTemplate
 import androidx.car.app.model.Template
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
-import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.CarScreenHost
 import io.autonav.alerts.car.screens.CarUi.toDestination
 import io.autonav.alerts.contacts.ContactAddress
 import io.autonav.alerts.data.PlaceEntity
@@ -49,7 +48,7 @@ import kotlinx.coroutines.launch
  */
 class SearchScreen(
     carContext: CarContext,
-    private val session: NavSession,
+    private val session: CarScreenHost,
     initialQuery: String? = null,
     private val contactsOnly: Boolean = false,
     initialChoice: Pair<ContactAddress, List<SearchHit>>? = null,
@@ -91,30 +90,18 @@ class SearchScreen(
         if (choice != null) {
             val (contact, options) = choice
             options.forEach { h ->
-                list.addItem(
-                    Row.Builder().setTitle(h.subtitle ?: h.title)
-                        .addText(carContext.getString(R.string.car_which_address, contact.name) + (h.distanceM?.let { " · " + CarUi.formatDistance(it, session.imperial) } ?: ""))
-                        .setOnClickListener {
-                            lifecycleScope.launch {
-                                deps.contacts().remember(contact, h)
-                                go(Destination(contact.title, h.lat!!, h.lon!!, h.placeId, h.subtitle ?: contact.address))
-                            }
-                        }
-                        .build(),
-                )
+                val text = carContext.getString(R.string.car_which_address, contact.name) + (h.distanceM?.let { " · " + CarUi.formatDistance(it, session.imperial) } ?: "")
+                list.addItem(CarUi.row(h.subtitle ?: h.title, text) {
+                    lifecycleScope.launch {
+                        deps.contacts().remember(contact, h)
+                        go(Destination(contact.title, h.lat!!, h.lon!!, h.placeId, h.subtitle ?: contact.address))
+                    }
+                })
             }
         } else if (query.isBlank()) {
             recents.forEach { p ->
-                list.addItem(
-                    Row.Builder().setTitle(p.name)
-                        .apply { p.address?.let { addText(it) } }
-                        .setImage(CarUi.icon(carContext, when (p.kind) {
-                            PlaceKind.FAVOURITE -> R.drawable.ic_action_star
-                            PlaceKind.RECENT -> R.drawable.ic_action_recents
-                        }))
-                        .setOnClickListener { go(p.toDestination()) }
-                        .build(),
-                )
+                val res = if (p.kind == PlaceKind.FAVOURITE) R.drawable.ic_action_star else R.drawable.ic_action_recents
+                list.addItem(CarUi.row(p.name, p.address, image = CarUi.icon(carContext, res)) { go(p.toDestination()) })
             }
             if (!contactsOnly && deps.contacts().available) {
                 // Contacts (DESIGN.md §8.3): the list of contacts with an address, recently used first.
@@ -126,27 +113,14 @@ class SearchScreen(
             if (contactsOnly) list.setNoItemsMessage(carContext.getString(R.string.car_contacts_type_name))
         } else if (searching) {
             // Never a silent empty list (DESIGN.md §8): the submit is running.
-            list.addItem(Row.Builder().setTitle(carContext.getString(R.string.car_searching)).build())
+            list.addItem(CarUi.row(carContext.getString(R.string.car_searching)))
         } else {
             contacts.forEach { (c, distance) ->
-                list.addItem(
-                    Row.Builder().setTitle(c.name)
-                        .addText(listOfNotNull(distance?.let { CarUi.formatDistance(it, session.imperial) }, c.label, c.address).joinToString(" · "))
-                        .setImage(CarUi.icon(carContext, R.drawable.ic_action_contact))
-                        .setOnClickListener { pickContact(c) }
-                        .build(),
-                )
+                list.addItem(CarUi.contactRow(carContext, c.name, distance?.let { CarUi.formatDistance(it, session.imperial) }, c.label, c.address) { pickContact(c) })
             }
             hits.forEach { h ->
-                list.addItem(
-                    Row.Builder().setTitle(h.title)
-                        .apply {
-                            val sub = listOfNotNull(h.distanceM?.let { CarUi.formatDistance(it, session.imperial) }, h.subtitle).joinToString(" · ")
-                            if (sub.isNotBlank()) addText(sub)
-                        }
-                        .setOnClickListener { pick(h) }
-                        .build(),
-                )
+                val sub = listOfNotNull(h.distanceM?.let { CarUi.formatDistance(it, session.imperial) }, h.subtitle).joinToString(" · ")
+                list.addItem(CarUi.row(h.title, sub.takeIf { it.isNotBlank() }) { pick(h) })
             }
             if (hits.isEmpty() && contacts.isEmpty()) {
                 list.setNoItemsMessage(
@@ -218,12 +192,7 @@ class SearchScreen(
     // An autocomplete hit has no position yet: one Place Details call resolves it (billed to the user's key, §1.4).
     private fun pick(h: SearchHit) {
         lifecycleScope.launch {
-            val dest = deps.places().resolve(h)
-            if (dest == null) {
-                CarToast.makeText(carContext, carContext.getString(R.string.car_place_not_found), CarToast.LENGTH_SHORT).show()
-            } else {
-                go(dest)
-            }
+            deps.places().resolve(h)?.let(::go) ?: CarToast.makeText(carContext, carContext.getString(R.string.car_place_not_found), CarToast.LENGTH_SHORT).show()
         }
     }
 

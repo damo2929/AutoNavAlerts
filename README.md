@@ -155,7 +155,7 @@ Every setting is explained in [docs/SETTINGS.md](docs/SETTINGS.md).
 
 **Live incident reporting** on the car screen (crashes, congestion, police).
 Google Maps has it. Google's Navigation SDK does not offer it to other apps on Android Auto yet.
-The app will detect it by itself if a future SDK adds it.
+A quarterly check on GitHub watches for it; the feature is added when the SDK offers it.
 A check runs every 3 months on GitHub and opens an issue when that happens.
 
 Technical detail: run the check yourself with `tools/check-nav-sdk-features.sh --latest`.
@@ -192,7 +192,7 @@ You need:
 
 ```bash
 echo "sdk.dir=$HOME/Android/Sdk" >> local.properties
-./gradlew :core:test          # JVM unit tests
+./gradlew :core:test :app:testDebugUnitTest   # JVM unit tests
 ./gradlew :app:assembleDebug  # builds app/build/outputs/apk/debug/app-debug.apk
 ```
 

@@ -9,9 +9,6 @@ import androidx.car.app.AppManager
 import androidx.car.app.CarContext
 import androidx.car.app.CarToast
 import androidx.car.app.Screen
-import androidx.car.app.model.Action
-import androidx.car.app.model.Alert
-import androidx.car.app.model.CarText
 import androidx.car.app.model.Header
 import androidx.car.app.model.MessageTemplate
 import androidx.car.app.model.Template
@@ -19,7 +16,7 @@ import androidx.car.app.versioning.CarAppApiLevels
 import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.App
 import io.autonav.alerts.R
-import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.CarScreenHost
 import io.autonav.alerts.reports.CarVoiceRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -42,7 +39,7 @@ import kotlinx.coroutines.withContext
  */
 class VoiceCommentScreen(
     carContext: CarContext,
-    private val session: NavSession,
+    private val session: CarScreenHost,
     private val reportId: Long,
 ) : Screen(carContext) {
     private var recorder: CarVoiceRecorder? = null
@@ -88,20 +85,13 @@ class VoiceCommentScreen(
         screenManager.popToRoot()
         val text = if (commented) "Camera reported with your comment. Check it on your phone after the drive."
         else "Camera reported. Check it on your phone after the drive."
-        if (ctx.carAppApiLevel >= CarAppApiLevels.LEVEL_5) {
-            // Its own id range, clear of the POI alert ids (`NavSession.showCarAlert` uses poiId % 100 000).
-            val alertId = 900_000 + (reportId % 1000).toInt()
-            val am = ctx.getCarService(AppManager::class.java)
-            am.showAlert(
-                Alert.Builder(alertId, CarText.create(text), 5_000)
-                    .addAction(Action.Builder().setTitle("Undo").setOnClickListener {
-                        App.appScope.launch { session.deps.reports().undo(reportId) }
-                        am.dismissAlert(alertId)
-                    }.build())
-                    .build(),
-            )
-        } else {
-            CarToast.makeText(ctx, text, CarToast.LENGTH_LONG).show()
-        }
+        if (ctx.carAppApiLevel < CarAppApiLevels.LEVEL_5) return CarToast.makeText(ctx, text, CarToast.LENGTH_LONG).show()
+        // Its own id range, clear of the POI alert ids (`NavSession.showCarAlert` uses poiId % 100 000).
+        val alertId = 900_000 + (reportId % 1000).toInt()
+        val am = ctx.getCarService(AppManager::class.java)
+        am.showAlert(CarUi.alert(alertId, text, 5_000, actions = arrayOf("Undo" to {
+            App.appScope.launch { session.deps.reports().undo(reportId) }
+            am.dismissAlert(alertId)
+        })))
     }
 }

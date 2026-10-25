@@ -70,17 +70,14 @@ val MIGRATION_3_4 = migration(
         "`lon` REAL NOT NULL, `formattedAddress` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`key`))",
 )
 
-/** v5: OpenStreetMap speed limits fetched by tile from Overpass as you drove. Superseded by v6; kept so an old install can still step through (DESIGN.md §8.4a "Replaced"). */
-val MIGRATION_4_5 = migration(
-    4, 5,
-    "CREATE TABLE IF NOT EXISTS `osm_limit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `tile` INTEGER NOT NULL, " +
-        "`lat1` REAL NOT NULL, `lon1` REAL NOT NULL, `lat2` REAL NOT NULL, `lon2` REAL NOT NULL, `mph` REAL NOT NULL, `dir` INTEGER NOT NULL)",
-    "CREATE INDEX IF NOT EXISTS `index_osm_limit_tile` ON `osm_limit` (`tile`)",
-    "CREATE TABLE IF NOT EXISTS `osm_tile` (`key` INTEGER NOT NULL, `fetchedAt` INTEGER NOT NULL, `ways` INTEGER NOT NULL, " +
-        "`segments` INTEGER NOT NULL, PRIMARY KEY(`key`))",
-)
+/**
+ * v5: OpenStreetMap speed limits fetched by tile from Overpass as you drove, in two tables of their own (`osm_limit`
+ * with its tile index, `osm_tile`), which v6 drops; nothing in between read them. Stepping through makes nothing,
+ * so an install still on v4 ends with the same schema as one that built and dropped them (DESIGN.md §8.4a "Replaced").
+ */
+val MIGRATION_4_5 = migration(4, 5)
 
-/** v6: the Overpass speed-limit tiles are replaced by one downloaded file (DESIGN.md §8.4a). */
+/** v6: the Overpass speed-limit tiles are replaced by one downloaded file (DESIGN.md §8.4a); IF EXISTS, since v5 may have been skipped over. */
 val MIGRATION_5_6 = migration(5, 6, "DROP TABLE IF EXISTS `osm_limit`", "DROP TABLE IF EXISTS `osm_tile`")
 
 /**

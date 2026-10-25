@@ -116,8 +116,7 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
     /** Records at most once per [intervalMs] for [key]; [msg] is only built when it will be written. */
     fun sample(key: String, intervalMs: Long, channel: Channel, tag: String, msg: () -> String) {
         val now = System.currentTimeMillis()
-        val last = lastSample[key]
-        if (last != null && now - last < intervalMs) return
+        if (lastSample[key]?.let { now - it < intervalMs } == true) return
         lastSample[key] = now
         record(channel, tag, msg())
     }
@@ -125,8 +124,7 @@ class EventLog @Inject constructor(@ApplicationContext context: Context) {
     /** Records only when [value] differs from the last one seen for [key] (the first time counts). */
     fun onChange(key: String, value: Any?, channel: Channel, tag: String, msg: () -> String) {
         val v: Any = value ?: NULL
-        val prev = lastValue.put(key, v)
-        if (prev == v) return
+        if (lastValue.put(key, v) == v) return
         record(channel, tag, msg())
     }
 

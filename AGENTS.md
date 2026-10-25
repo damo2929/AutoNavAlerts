@@ -103,7 +103,7 @@ Interface contracts between parallel agents (when CHECKPOINT.md lists them, e.g.
 
 ## 4. Working conventions
 
-- Build: `./gradlew :core:test :app:assembleDebug`. JDK 21 is downloaded by Gradle; the Android SDK is at `~/Android/Sdk` (`sdk.dir` in `local.properties`, never committed).
+- Build: `./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug`. The app tests include a Robolectric tier (Android code on the JVM, pinned to SDK 36; DESIGN.md §15.1). JDK 21 is downloaded by Gradle; the Android SDK is at `~/Android/Sdk` (`sdk.dir` in `local.properties`, never committed).
 - Bench: `tools/bench.sh phone` (emulator), `tools/bench.sh install`, `tools/bench.sh car` (DHU), `tools/bench.sh reload` (a new build while the DHU is up: stops the head unit and app, installs, starts again; never a bare `adb install -r` under a connected car screen, TESTING.md §3 step 4), `tools/drive.py` for a GPS drive, `tools/scenario.sh <name>` for scripted cases, `tools/bench.sh dhu screenshot <file>` to look. Debug broadcasts are in TESTING.md §3 step 5a.
 - Debug builds only have `Simulate`, the bench hooks and `run-as` log access. The owner's phone runs a release build; check release-only paths (R8 keep rules, §14) when touching the Navigation SDK or Maps classes.
 - Don't `pkill -f` a pattern that matches your own shell; kill by PID from `/tmp/autonav-bench/*.pid`.

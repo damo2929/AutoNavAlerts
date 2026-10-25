@@ -4,9 +4,11 @@
 package io.autonav.alerts.pgw
 
 import android.content.Context
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.BuildConfig
 import io.autonav.alerts.core.pgw.PgwConfig
+import io.autonav.alerts.core.pgw.PgwDownload
 import io.autonav.alerts.core.pgw.PgwPages
 import io.autonav.alerts.core.pgw.PgwRelease
 import io.autonav.alerts.core.pgw.PgwSubmission
@@ -58,18 +60,22 @@ sealed interface FeedResult {
  * own watermarked copy and never leaves the device (§6.4).
  */
 @Singleton
-class PgwClient @Inject constructor(
-    @ApplicationContext private val context: Context,
+class PgwClient internal constructor(
+    private val context: Context,
     private val settings: SettingsStore,
+    /** The site's root and the feed's URL: always `PgwConfig`'s in the app; a JVM test points them at a local server (§15.2). */
+    private val base: String,
+    private val rssUrl: String,
 ) {
+    @Inject constructor(@ApplicationContext context: Context, settings: SettingsStore) : this(context, settings, PgwConfig.BASE, PgwConfig.RSS_URL)
+
     // The session cookies by name, in memory for this process; persisted encrypted by saveCookies() (§6.1 step 2.1).
     private val cookies = HashMap<String, Cookie>()
 
     /** OkHttp's view of [cookies]; expired ones are left out on the way back in. */
     private val jar = object : CookieJar {
-        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) =
             synchronized(this@PgwClient.cookies) { cookies.forEach { this@PgwClient.cookies[it.name] = it } }
-        }
         override fun loadForRequest(url: HttpUrl): List<Cookie> =
             synchronized(cookies) { cookies.values.filter { it.matches(url) && it.expiresAt > System.currentTimeMillis() } }
     }
@@ -83,7 +89,8 @@ class PgwClient @Inject constructor(
         .addNetworkInterceptor { chain ->
             val req = chain.request()
             // Credentials and cookies go to PGW's own host only (§6.2a "only sent to www.pocketgpsworld.com over HTTPS").
-            require(req.url.host == "www.pocketgpsworld.com" || req.url.host == "pocketgpsworld.com") { "Unexpected host" }
+            // [base]'s host is www.pocketgpsworld.com itself in the app, so this adds no host there.
+            require(req.url.host == "www.pocketgpsworld.com" || req.url.host == "pocketgpsworld.com" || req.url.host == base.toHttpUrl().host) { "Unexpected host" }
             chain.proceed(req.newBuilder().header("User-Agent", "AutoNavAlerts/${BuildConfig.VERSION_NAME} (Android)").build())
         }
         .build()
@@ -94,7 +101,7 @@ class PgwClient @Inject constructor(
      * feed is public and carries no camera data (§6.4). Throws IOException on a non-2xx reply.
      */
     suspend fun checkFeed(etag: String?, lastModified: String?): FeedResult = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url(PgwConfig.RSS_URL).apply {
+        val req = Request.Builder().url(rssUrl).apply {
             etag?.let { header("If-None-Match", it) }
             lastModified?.let { header("If-Modified-Since", it) }
         }.build()
@@ -114,10 +121,10 @@ class PgwClient @Inject constructor(
      */
     suspend fun ensureLoggedIn() = withContext(Dispatchers.IO) {
         restoreCookies()
-        val page = get(PgwConfig.BASE + PgwConfig.CAMERAS_PATH)
+        val page = get(base + PgwConfig.CAMERAS_PATH)
         if (PgwPages.loginState(page) == PgwPages.LoginState.LOGGED_IN) return@withContext
         val (user, pass) = settings.pgwCredentials() ?: throw PgwAuthException("No PocketGPSWorld login saved")
-        val html = post(PgwConfig.BASE + PgwConfig.LOGIN_PATH, formBody(PgwConfig.loginForm(user, pass))).use { it.body.string() }
+        val html = post(base + PgwConfig.LOGIN_PATH, formBody(PgwConfig.loginForm(user, pass))).use { it.body.string() }
         // "Logged in" means a session cookie and a page with logout / My Account and no password field (§6.1 step 2.1).
         if (PgwPages.loginState(html) != PgwPages.LoginState.LOGGED_IN) throw PgwAuthException("Login failed: check your username and password")
         saveCookies()
@@ -130,21 +137,21 @@ class PgwClient @Inject constructor(
      * caller deletes the file after import (§6.1 "The zip is deleted after import"). Throws [PgwSubscriptionException]
      * when logged in but offered no link, [PgwAuthException] when the session was lost, [PgwParseException] for a bad reply.
      */
-    suspend fun download(dest: File, pkg: io.autonav.alerts.core.pgw.PgwDownload): File = withContext(Dispatchers.IO) {
+    suspend fun download(dest: File, pkg: PgwDownload): File = withContext(Dispatchers.IO) {
         ensureLoggedIn()
         // System and voicePack only fill the site's package list, but the browser sends them, so we do too (§6.1 step 2.2).
         val body = formBody(PgwConfig.downloadForm(pkg.idPackage), "System" to pkg.system, "voicePack" to "noVoice")
-        val html = post(PgwConfig.BASE + PgwConfig.CAMERAS_PATH, body).use { it.body.string() }
-        android.util.Log.i(TAG, "Download page: ${html.length} chars, zip link: ${PgwPages.findZipLink(html)}")
+        val html = post(base + PgwConfig.CAMERAS_PATH, body).use { it.body.string() }
         // No link while logged in means no active subscription (§6.2a "Expired subscription"); logged out means the session died.
-        val link = PgwPages.findZipLink(html)
+        // The link is absolute on PgwConfig.BASE; re-rooted on [base], which is the same string in the app.
+        val link = PgwPages.findZipLink(html)?.replaceFirst(PgwConfig.BASE, base).also { Log.i(TAG, "Download page: ${html.length} chars, zip link: $it") }
             ?: if (PgwPages.loginState(html) == PgwPages.LoginState.LOGGED_IN) throw PgwSubscriptionException("No download link: is your subscription active?")
             else throw PgwAuthException("Logged out while downloading")
         // The temp link needs no cookie, but sending it is harmless and matches the browser.
         http.newCall(Request.Builder().url(link).build()).execute().use { resp ->
             if (!resp.isSuccessful) throw IOException("Download HTTP ${resp.code}")
             val type = resp.header("Content-Type").orEmpty()
-            android.util.Log.i(TAG, "Zip response: HTTP ${resp.code}, type=$type, length=${resp.header("Content-Length")}")
+            Log.i(TAG, "Zip response: HTTP ${resp.code}, type=$type, length=${resp.header("Content-Length")}")
             if (!type.contains("zip")) throw PgwParseException("Download wasn't a zip ($type)")
             dest.parentFile?.mkdirs()
             // Streamed straight to disk: the zip is never held in memory (§1.3).
@@ -165,14 +172,14 @@ class PgwClient @Inject constructor(
         ensureLoggedIn()
         // The per-user hidden fields (POISubmitted, email, userid, Country, MAX_FILE_SIZE) are read from the
         // page each time and sent back as they are: never hard-coded, never logged (§8.5 step 1).
-        val form = get(PgwConfig.BASE + PgwConfig.SUBMIT_PATH)
+        val form = get(base + PgwConfig.SUBMIT_PATH)
         val hidden = PgwPages.submitHiddenFields(form)
         if (hidden.isEmpty()) throw PgwParseException("Submission form not found")
         val body = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
             hidden.forEach { (k, v) -> addFormDataPart(k, v) }
             s.formFields().forEach { (k, v) -> addFormDataPart(k, v) }
         }.build()
-        post(PgwConfig.BASE + PgwConfig.CAMERAS_PATH, body).use { resp ->
+        post(base + PgwConfig.CAMERAS_PATH, body).use { resp ->
             if (!resp.isSuccessful) throw IOException("Submit HTTP ${resp.code}")
             resp.body.string()
         }
@@ -198,7 +205,7 @@ class PgwClient @Inject constructor(
     /** Loads the persisted session into memory once per process; a non-empty jar is left alone. */
     private suspend fun restoreCookies() {
         if (synchronized(cookies) { cookies.isNotEmpty() }) return
-        val url = PgwConfig.BASE.toHttpUrl()
+        val url = base.toHttpUrl()
         settings.pgwCookies()?.lineSequence()?.mapNotNull { Cookie.parse(url, it) }?.forEach { cookies[it.name] = it }
     }
 

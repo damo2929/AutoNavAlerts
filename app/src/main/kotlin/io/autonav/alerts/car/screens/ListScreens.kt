@@ -6,11 +6,10 @@ package io.autonav.alerts.car.screens
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
 import androidx.car.app.CarToast
+import androidx.car.app.model.Action
 import androidx.car.app.model.ItemList
-import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.MessageTemplate
 import androidx.car.app.model.CarIcon
-import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 import androidx.car.app.model.Toggle
 import androidx.car.app.versioning.CarAppApiLevels
@@ -19,17 +18,20 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
 import io.autonav.alerts.alerts.NavTts
-import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.CarScreenHost
 import io.autonav.alerts.car.screens.CarUi.toDestination
 import io.autonav.alerts.core.alerts.SpeechScheduler
 import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.data.PlaceEntity
 import io.autonav.alerts.data.PlaceKind
 import io.autonav.alerts.data.PoiSetEntity
+import io.autonav.alerts.settings.AppSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,7 +49,7 @@ import kotlinx.coroutines.withContext
  * design; the mute row here is the one Mute on the car screen (the banner has no buttons, §12.1,
  * hard rule 2).
  */
-class MoreScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
+class MoreScreen(carContext: CarContext, private val session: CarScreenHost) : Screen(carContext) {
     private var mutedUntil = 0L
     private var satellite = false
     /** The live lines as last sent, compared by the ticker before any re-send. */
@@ -57,14 +59,12 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
     init {
         // Follows the settings, so a change made elsewhere (the map's pill, the phone) shows here,
         // and only a change re-sends the template (no shake, DESIGN.md §8).
-        lifecycleScope.launch {
-            session.deps.settings().settings.collect { s ->
-                if (s.mutedUntilMs == mutedUntil && s.satelliteMap == satellite) return@collect
-                mutedUntil = s.mutedUntilMs
-                satellite = s.satelliteMap
-                invalidate()
-            }
-        }
+        session.deps.settings().settings.onEach { s ->
+            if (s.mutedUntilMs == mutedUntil && s.satelliteMap == satellite) return@onEach
+            mutedUntil = s.mutedUntilMs
+            satellite = s.satelliteMap
+            invalidate()
+        }.launchIn(lifecycleScope)
         // The ticker runs only while the screen is showing (STARTED), and compares before it re-sends.
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
@@ -124,36 +124,55 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
             .addItem(CarUi.row(carContext, "Route options", R.drawable.ic_action_navigate, "Avoid tolls, energy-efficient EV routes") {
                 screenManager.push(RouteOptionsScreen(carContext, session))
             })
-            .addItem(Row.Builder().setTitle("Satellite map")
-                .setImage(CarUi.icon(carContext, R.drawable.ic_action_layers))
-                .setToggle(Toggle.Builder { on ->
-                    // Kept here at once: the next template must not show the old state (it snapped back).
-                    satellite = on
-                    lifecycleScope.launch { session.deps.settings().update { it.copy(satelliteMap = on) } }
-                }.setChecked(satellite).build())
-                .build())
-            .apply {
-                // Only appears if the Navigation SDK ever supports reporting on Android Auto (§16 #21).
-                if (session.surface.incidentReportingSupported) addItem(
-                    CarUi.row(
-                        carContext, "Report to Google Maps", R.drawable.ic_action_report,
-                        if (session.surface.incidentReportingAvailableNow) "Crash, slowdown, hazard…" else "Available during navigation",
-                    ) {
-                        screenManager.pop()
-                        if (!session.surface.showIncidentPanel()) {
-                            CarToast.makeText(carContext, "Reporting isn't available here right now", CarToast.LENGTH_SHORT).show()
-                        }
-                    },
-                )
-            }
+            .addItem(CarUi.row("Satellite map", image = CarUi.icon(carContext, R.drawable.ic_action_layers), toggle = Toggle.Builder { on ->
+                // Kept here at once: the next template must not show the old state (it snapped back).
+                satellite = on
+                lifecycleScope.launch { session.deps.settings().update { it.copy(satelliteMap = on) } }
+            }.setChecked(satellite).build()))
             .addItem(CarUi.row(carContext, "Alerts", R.drawable.ic_action_volume_on, live[1], live[2]) {
                 screenManager.push(AlertsRecordsScreen(carContext, session.deps.tts()))
             })
-            .addItem(Row.Builder().setTitle("GPS")
-                .addText(live[3])
-                .addText(live[4])
-                .build())
+            .addItem(CarUi.row("GPS", live[3], live[4]))
         return CarUi.list(CarUi.header("More"), list.build())
+    }
+}
+
+/**
+ * A list screen whose rows come from one suspending [load] (DESIGN.md §8): the host's own spinner under
+ * [title] until [items] are in, then the rows and any [actions], with [emptyText] when a loaded list has
+ * none. Re-sent once per load (hard rule 3). [reload] runs on every resume when [reloadOnResume] (Recents
+ * and Contacts, whose order a Go or a pick changes); the other screens call it when they want it. Main
+ * thread (`lifecycleScope`); the repositories do their own I/O.
+ */
+abstract class LoadingListScreen<T : Any>(carContext: CarContext, reloadOnResume: Boolean = false) : Screen(carContext) {
+    /** What the rows are built from; null until the first load has finished. */
+    protected var items: T? = null
+    protected abstract val title: String
+    /** The host's message for an empty list; a screen whose [items] isn't a list never needs one. */
+    protected open val emptyText: String? = null
+
+    init {
+        if (reloadOnResume) lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onResume(owner: LifecycleOwner) = reload()
+        })
+    }
+
+    protected abstract suspend fun load(): T
+    protected abstract fun ItemList.Builder.addRows(items: T)
+    protected open fun actions(items: T): List<Action> = emptyList()
+
+    protected fun reload() {
+        lifecycleScope.launch { items = load(); invalidate() }
+    }
+
+    /** The rows and actions, or a loading template before the first load. */
+    override fun onGetTemplate(): Template {
+        val header = CarUi.header(title)
+        val t = items ?: return CarUi.loading(header)
+        val list = ItemList.Builder()
+        if (t is Collection<*> && t.isEmpty()) emptyText?.let(list::setNoItemsMessage)
+        list.addRows(t)
+        return CarUi.list(header, list.build(), *actions(t).toTypedArray())
     }
 }
 
@@ -163,30 +182,27 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
  * Settings → Routing, so both always agree. Main thread; the settings update suspends on its own
  * dispatcher. Re-sent only after a load or a change (hard rule 3).
  */
-class RouteOptionsScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
-    private var settings: io.autonav.alerts.settings.AppSettings? = null
+class RouteOptionsScreen(carContext: CarContext, private val session: CarScreenHost) : LoadingListScreen<AppSettings>(carContext) {
+    override val title = "Route options"
 
     init {
-        lifecycleScope.launch { settings = session.deps.settings().current(); invalidate() }
+        reload()
     }
 
-    /** The two toggles, or a loading template before the settings have been read. */
-    override fun onGetTemplate(): Template {
-        val header = CarUi.header("Route options")
-        val s = settings ?: return CarUi.loading(header)
-        val list = ItemList.Builder()
-            .addItem(Row.Builder().setTitle("Avoid tolls").addText("Where there's a way round")
-                .setToggle(Toggle.Builder { on -> update { it.copy(avoidTolls = on) } }.setChecked(s.avoidTolls).build()).build())
-            .addItem(Row.Builder().setTitle("Energy-efficient routes (EV)").addText("Least energy for an electric car")
-                .setToggle(Toggle.Builder { on -> update { it.copy(evEfficientRoutes = on) } }.setChecked(s.evEfficientRoutes).build()).build())
-        return CarUi.list(header, list.build())
+    override suspend fun load(): AppSettings = session.deps.settings().current()
+
+    /** The two toggles. */
+    override fun ItemList.Builder.addRows(items: AppSettings) {
+        addItem(CarUi.row("Avoid tolls", "Where there's a way round", toggle = Toggle.Builder { on -> update { it.copy(avoidTolls = on) } }.setChecked(items.avoidTolls).build()))
+        addItem(CarUi.row("Energy-efficient routes (EV)", "Least energy for an electric car",
+            toggle = Toggle.Builder { on -> update { it.copy(evEfficientRoutes = on) } }.setChecked(items.evEfficientRoutes).build()))
     }
 
     // Written to the store first, then read back, so the toggle shows what was actually saved.
-    private fun update(change: (io.autonav.alerts.settings.AppSettings) -> io.autonav.alerts.settings.AppSettings) {
+    private fun update(change: (AppSettings) -> AppSettings) {
         lifecycleScope.launch {
             session.deps.settings().update(change)
-            settings = session.deps.settings().current()
+            items = session.deps.settings().current()
             invalidate()
         }
     }
@@ -203,48 +219,39 @@ class RouteOptionsScreen(carContext: CarContext, private val session: NavSession
  * engine both read, so the map follows at the next fix. Re-sent only after the load or a toggle
  * (hard rule 3).
  */
-class PoiLayersScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
-    private var sets: List<PoiSetEntity>? = null
+class PoiLayersScreen(carContext: CarContext, private val session: CarScreenHost) : LoadingListScreen<List<PoiSetEntity>>(carContext) {
+    override val title = "POI layers"
+    override val emptyText = "No POI sets yet. Import or sync on your phone."
     /** One car icon per distinct default icon id, so sets sharing an icon share the bitmap. */
     private var icons: Map<String, CarIcon> = emptyMap()
 
     init {
-        lifecycleScope.launch {
-            val s = session.deps.pois().activeSets.first()
-            icons = withContext(Dispatchers.IO) {
-                // 48 dp, never under 48 px, so the host's small-image slot doesn't upscale a tiny bitmap.
-                val px = (ICON_DP * carContext.resources.displayMetrics.density).toInt().coerceAtLeast(48)
-                s.map { it.defaultIconId }.distinct().associateWith { CarUi.icon(session.deps.icons().bitmap(it, px)) }
-            }
-            sets = s
-            invalidate()
+        reload()
+    }
+
+    override suspend fun load(): List<PoiSetEntity> {
+        val s = session.deps.pois().activeSets.first()
+        icons = withContext(Dispatchers.IO) {
+            // 48 dp, never under 48 px, so the host's small-image slot doesn't upscale a tiny bitmap.
+            val px = (ICON_DP * carContext.resources.displayMetrics.density).toInt().coerceAtLeast(48)
+            s.map { it.defaultIconId }.distinct().associateWith { CarUi.icon(session.deps.icons().bitmap(it, px)) }
         }
+        return s
     }
 
     /** One row per set up to the host's list limit, with its icon, counts and the on/off toggle. */
-    override fun onGetTemplate(): Template {
-        val header = CarUi.header("POI layers")
-        val s = sets ?: return CarUi.loading(header)
-        val list = ItemList.Builder()
-        if (s.isEmpty()) list.setNoItemsMessage("No POI sets yet. Import or sync on your phone.")
-        val limit = CarUi.listLimit(carContext)
-        s.take(limit).forEach { set ->
-            list.addItem(
-                Row.Builder().setTitle(set.name)
-                    .apply { icons[set.defaultIconId]?.let { setImage(it, Row.IMAGE_TYPE_SMALL) } }
-                    .addText("${set.poiCount} POIs · alerts ${if (set.alertsEnabled) "on" else "off"}")
-                    .setToggle(Toggle.Builder { on -> update(set.copy(enabled = on)) }.setChecked(set.enabled).build())
-                    .build(),
-            )
+    override fun ItemList.Builder.addRows(items: List<PoiSetEntity>) {
+        items.take(CarUi.listLimit(carContext)).forEach { set ->
+            addItem(CarUi.row(set.name, "${set.poiCount} POIs · alerts ${if (set.alertsEnabled) "on" else "off"}", image = icons[set.defaultIconId],
+                toggle = Toggle.Builder { on -> update(set.copy(enabled = on)) }.setChecked(set.enabled).build()))
         }
-        return CarUi.list(header, list.build())
     }
 
     // The local copy is patched rather than re-read, so the toggle doesn't snap back before Room has caught up.
     private fun update(set: PoiSetEntity) {
         lifecycleScope.launch {
             session.deps.pois().updateSet(set)
-            sets = sets?.map { if (it.id == set.id) set else it }
+            items = items?.map { if (it.id == set.id) set else it }
             invalidate()
         }
     }
@@ -262,33 +269,35 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
  * list never changes under the driver's finger and nothing re-sends on its own (hard rule 3).
  * Main thread only.
  */
-class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Screen(carContext) {
-    private var records: List<SpeechScheduler.Record> = tts.records.value
+class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : LoadingListScreen<List<SpeechScheduler.Record>>(carContext) {
+    override val title = "Alerts"
+    override val emptyText = "No alerts spoken yet"
+
+    init {
+        // Taken as the screen is made, so the first template is the list, never a spinner.
+        items = tts.records.value
+    }
+
+    override suspend fun load(): List<SpeechScheduler.Record> = tts.records.value
 
     /** The newest records up to the host's list limit: kind, POI, outcome, time, wait and detail. */
-    override fun onGetTemplate(): Template {
-        val limit = CarUi.listLimit(carContext)
-        val list = ItemList.Builder()
-        if (records.isEmpty()) list.setNoItemsMessage("No alerts spoken yet")
+    override fun ItemList.Builder.addRows(items: List<SpeechScheduler.Record>) {
         val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)
         // Limit changes and directions are their own kinds, never shown as a camera stage (§8.4a, §12.3).
-        records.asReversed().take(limit).forEach { r ->
+        items.asReversed().take(CarUi.listLimit(carContext)).forEach { r ->
             val u = r.utterance
-            list.addItem(
-                Row.Builder().setTitle(when (u.kind) {
-                    io.autonav.alerts.core.alerts.AlertKind.LIMIT_CHANGE -> "Speed limit change ${r.outcome}"
-                    io.autonav.alerts.core.alerts.AlertKind.GUIDANCE -> "Directions ${r.outcome}"
-                    else -> "${u.kind} poi ${u.poiId} ${r.outcome}"
-                })
-                    .addText(
-                        fmt.format(java.util.Date(tts.wallMs(r.atMs))) + " · waited " + (r.waitedMs?.let { "$it ms" } ?: "–") +
-                            (r.byKind?.let { " · by $it" } ?: "") + (r.detail?.let { " · $it" } ?: ""),
-                    )
-                    .build(),
-            )
+            val title = when (u.kind) {
+                io.autonav.alerts.core.alerts.AlertKind.LIMIT_CHANGE -> "Speed limit change ${r.outcome}"
+                io.autonav.alerts.core.alerts.AlertKind.GUIDANCE -> "Directions ${r.outcome}"
+                else -> "${u.kind} poi ${u.poiId} ${r.outcome}"
+            }
+            addItem(CarUi.row(title,
+                fmt.format(java.util.Date(tts.wallMs(r.atMs))) + " · waited " + (r.waitedMs?.let { "$it ms" } ?: "–") +
+                    (r.byKind?.let { " · by $it" } ?: "") + (r.detail?.let { " · $it" } ?: "")))
         }
-        return CarUi.list(CarUi.header("Alerts"), list.build(), CarUi.textAction("Refresh") { records = tts.records.value; invalidate() })
     }
+
+    override fun actions(items: List<SpeechScheduler.Record>): List<Action> = listOf(CarUi.textAction("Refresh") { reload() })
 }
 
 /**
@@ -300,49 +309,33 @@ class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Scr
  * Unfavourite or the phone app). Main thread; the place repository does its Room work on its
  * own dispatcher (§2). Re-sent once per load (hard rule 3).
  */
-class RecentsScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext) {
-    private var places: List<PlaceEntity>? = null
+class RecentsScreen(carContext: CarContext, private val session: CarScreenHost) : LoadingListScreen<List<PlaceEntity>>(carContext, reloadOnResume = true) {
+    override val title = "Recents"
+    override val emptyText = "No recent places"
 
-    init {
-        // On resume, not create: a Go on the preview adds a recent, and the host's limit shows the newest first.
-        lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onResume(owner: LifecycleOwner) = reload()
-        })
-    }
+    // On resume, not create: a Go on the preview adds a recent, and the host's limit shows the newest first.
+    override suspend fun load(): List<PlaceEntity> = session.deps.places().recents(50)
 
-    private fun reload() {
-        lifecycleScope.launch { places = session.deps.places().recents(50); invalidate() }
-    }
-
-    /** The rows, a Clear all action when any recent exists, or a loading template before the first load. */
-    override fun onGetTemplate(): Template {
-        val header = CarUi.header("Recents")
-        val p = places ?: return CarUi.loading(header)
+    /** The rows: a tap navigates (car API 6, with a delete action on each recent) or opens the place detail. */
+    override fun ItemList.Builder.addRows(items: List<PlaceEntity>) {
         // Row.addAction needs car API 6 (§8.2 "Deleting from the car screen").
         val rowActions = carContext.carAppApiLevel >= CarAppApiLevels.LEVEL_6
-        val list = ItemList.Builder()
-        if (p.isEmpty()) list.setNoItemsMessage("No recent places")
-        p.forEach { place ->
-            val row = Row.Builder().setTitle(place.name)
-                .apply { place.address?.let { addText(it) } }
-                .setOnClickListener {
-                    if (rowActions) navigate(place) else screenManager.push(PlaceDetailScreen(carContext, session, place) { reload() })
-                }
-            if (rowActions && place.kind == PlaceKind.RECENT) {
-                row.addAction(CarUi.action(carContext, R.drawable.ic_action_delete) { delete(place) })
-            }
-            list.addItem(row.build())
-        }
-        val b = ListTemplate.Builder().setHeader(header).setSingleList(list.build())
-        if (p.any { it.kind == PlaceKind.RECENT }) {
-            b.addAction(CarUi.textAction("Clear all") {
-                screenManager.push(ConfirmScreen(carContext, "Clear all recents?") {
-                    lifecycleScope.launch { session.deps.places().clearRecents(); reload() }
-                })
+        items.forEach { place ->
+            val delete = if (rowActions && place.kind == PlaceKind.RECENT) CarUi.action(carContext, R.drawable.ic_action_delete) { delete(place) } else null
+            addItem(CarUi.row(place.name, place.address, action = delete) {
+                if (rowActions) navigate(place) else screenManager.push(PlaceDetailScreen(carContext, session, place) { reload() })
             })
         }
-        return b.build()
     }
+
+    /** Clear all, when any recent exists. */
+    override fun actions(items: List<PlaceEntity>): List<Action> = listOfNotNull(
+        CarUi.textAction("Clear all") {
+            screenManager.push(ConfirmScreen(carContext, "Clear all recents?") {
+                lifecycleScope.launch { session.deps.places().clearRecents(); reload() }
+            })
+        }.takeIf { items.any { it.kind == PlaceKind.RECENT } },
+    )
 
     private fun navigate(p: PlaceEntity) {
         screenManager.push(RoutePreviewScreen(carContext, session, p.toDestination()))
@@ -366,7 +359,7 @@ class RecentsScreen(carContext: CarContext, private val session: NavSession) : S
  */
 class PlaceDetailScreen(
     carContext: CarContext,
-    private val session: NavSession,
+    private val session: CarScreenHost,
     private val place: PlaceEntity,
     private val onChanged: () -> Unit,
 ) : Screen(carContext) {

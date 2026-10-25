@@ -189,9 +189,24 @@ data class PlaceEntity(
 
 /**
  * What a camera report says (DESIGN.md §8.5). UNSPECIFIED until the spoken comment or the phone review
- * picks one; `CameraReportRepository.toSubmission` maps each to PGW's Action and Type codes.
+ * picks one. Each carries what `CameraReportRepository` needs of it: [label], the "My reports" marker's name
+ * (shown on the map and said as `{category}` when the set has no category, §7.2), and PGW's form codes
+ * (§8.5 "Mapping our report types"): [type] (0 not sure, 2 mobile, 4 SPECS, 5 red light, 10 RedSpeed) and
+ * [knownAction], the Action sent when the report names a known camera (2 change, 3 remove, 4 mobile seen
+ * again; 1 add otherwise, and always without a known camera). Stored by name only.
  */
-enum class ReportKind { UNSPECIFIED, MOBILE_SEEN, NEW_FIXED, NEW_AVERAGE, NEW_RED_LIGHT, NEW_RED_LIGHT_SPEED, CAMERA_GONE, WRONG_LIMIT, WRONG_DIRECTION, WRONG_TYPE }
+enum class ReportKind(val label: String, val type: Int, val knownAction: Int) {
+    UNSPECIFIED("Camera (type to check)", 0, 1),
+    MOBILE_SEEN("Mobile camera (reported)", 2, 4),
+    NEW_FIXED("Fixed camera (reported)", 0, 1),
+    NEW_AVERAGE("Average speed camera (reported)", 4, 1),
+    NEW_RED_LIGHT("Red light camera (reported)", 5, 1),
+    NEW_RED_LIGHT_SPEED("Red light + speed camera (reported)", 10, 1),
+    CAMERA_GONE("Camera not there", 0, 3),
+    WRONG_LIMIT("Wrong speed limit", 0, 2),
+    WRONG_DIRECTION("Wrong direction", 0, 2),
+    WRONG_TYPE("Wrong camera type", 0, 2),
+}
 /** Where a report's captured speed limit came from (DESIGN.md §8.5): GOOGLE, CAMERA or NONE at the tap; USER once confirmed or changed at review. */
 enum class LimitSource { GOOGLE, CAMERA, NONE, USER }
 

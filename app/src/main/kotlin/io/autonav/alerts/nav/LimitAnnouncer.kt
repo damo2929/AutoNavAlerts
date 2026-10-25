@@ -30,8 +30,7 @@ class LimitAnnouncer(
 ) {
     /** The last announced limit (mph) and where its change was, so the same change isn't said twice. */
     private var lastMph: Int? = null
-    private var lastLat = 0.0
-    private var lastLon = 0.0
+    private var lastAt = 0.0 to 0.0
 
     /**
      * True when [newMph] at [distanceM] ahead should be announced now. Records it when true.
@@ -51,12 +50,11 @@ class LimitAnnouncer(
         if (distanceM > maxOf(minM, speedMps * leadS)) return false
         // The change's own position: a projection along the heading moves when the road turns
         // (bench 2026-10-23: the same 50 said twice, 3 s apart, after a right turn).
-        val (cLat, cLon) = if (!changeLat.isNaN() && !changeLon.isNaN()) changeLat to changeLon else project(lat, lon, headingDeg, distanceM)
+        val at = if (!changeLat.isNaN() && !changeLon.isNaN()) changeLat to changeLon else project(lat, lon, headingDeg, distanceM)
         // The same limit within 200 m of the last announced change is the same change, already said.
-        if (lastMph == newMph && Geo.distanceM(lastLat, lastLon, cLat, cLon) < sameChangeM) return false
+        if (lastMph == newMph && Geo.distanceM(lastAt.first, lastAt.second, at.first, at.second) < sameChangeM) return false
         lastMph = newMph
-        lastLat = cLat
-        lastLon = cLon
+        lastAt = at
         return true
     }
 

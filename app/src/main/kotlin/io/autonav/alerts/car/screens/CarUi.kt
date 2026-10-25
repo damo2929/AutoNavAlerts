@@ -8,15 +8,18 @@ import androidx.car.app.CarContext
 import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
+import androidx.car.app.model.Alert
 import androidx.car.app.model.CarIcon
+import androidx.car.app.model.CarText
 import androidx.car.app.model.Header
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
+import androidx.car.app.model.Toggle
 import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
-import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.CarScreenHost
 import io.autonav.alerts.contacts.ContactAddress
 import io.autonav.alerts.contacts.Located
 import io.autonav.alerts.data.PlaceEntity
@@ -25,9 +28,9 @@ import io.autonav.alerts.places.SearchHit
 import kotlinx.coroutines.launch
 
 /**
- * Small helpers shared by the car screens (DESIGN.md §8): icons, actions, headers, rows and list
- * templates built the one way, the host's list limit, distance text in the display units, and the
- * contact pick shared by Search and Contacts (§8.3). Stateless; called from the screens'
+ * Small helpers shared by the car screens (DESIGN.md §8): icons, actions, headers, rows (plain, contact),
+ * host alert cards and list templates built the one way, the host's list limit, distance text in the
+ * display units, and the contact pick shared by Search and Contacts (§8.3). Stateless; called from the screens'
  * `onGetTemplate` on the main thread. They only build what each screen built before, so every
  * template stays as it was (hard rules 2 and 3 are the screens' own).
  */
@@ -44,7 +47,33 @@ object CarUi {
 
     /** A row with an icon and up to two [text] lines that runs [onClick] (More's and Search's navigation rows). */
     fun row(ctx: CarContext, title: String, @DrawableRes res: Int, vararg text: String, onClick: () -> Unit): Row =
-        Row.Builder().setTitle(title).apply { text.forEach { addText(it) } }.setImage(icon(ctx, res)).setOnClickListener(onClick).build()
+        row(title, *text, image = icon(ctx, res), onClick = onClick)
+
+    /**
+     * Any list row the screens build: [title], the non-null [text] lines, an [image] (a small one, as the host
+     * draws a bitmap untinted), a [toggle], a row [action] (car API 6) and [onClick]; each left out when null.
+     */
+    fun row(
+        title: String, vararg text: String?, image: CarIcon? = null, toggle: Toggle? = null, action: Action? = null, onClick: (() -> Unit)? = null,
+    ): Row = Row.Builder().setTitle(title).apply {
+        text.filterNotNull().forEach(::addText)
+        image?.let(::setImage)
+        toggle?.let(::setToggle)
+        action?.let(::addAction)
+        onClick?.let { setOnClickListener(it) }
+    }.build()
+
+    /** A contact's address as a row (§8.3): the name over [parts] joined by " · " (each screen's own order), the contact icon. */
+    fun contactRow(ctx: CarContext, name: String, vararg parts: String?, onClick: () -> Unit): Row =
+        row(name, parts.filterNotNull().joinToString(" · "), image = icon(ctx, R.drawable.ic_action_contact), onClick = onClick)
+
+    /** A host alert card (car API ≥ 5; §12.1, §8.5): [text], [subtitle] and [icon] for [durationMs], with text [actions] (title to what it does). */
+    fun alert(id: Int, text: String, durationMs: Long, icon: CarIcon? = null, subtitle: String? = null, vararg actions: Pair<String, () -> Unit>): Alert =
+        Alert.Builder(id, CarText.create(text), durationMs).apply {
+            icon?.let(::setIcon)
+            subtitle?.takeIf { it.isNotEmpty() }?.let { setSubtitle(CarText.create(it)) }
+            actions.forEach { (title, onClick) -> addAction(textAction(title, onClick = onClick)) }
+        }.build()
 
     /** A stored place as a destination (Recents, the place detail and Search's empty state, §8.2). */
     fun PlaceEntity.toDestination(): Destination = Destination(name, lat, lon, placeId)
@@ -54,7 +83,7 @@ object CarUi {
      * user's own key; never the whole address book), then the route preview; several matches go to [onChoose];
      * none gives a toast. Shared by `SearchScreen` and `ContactsScreen`, which differ only in [onChoose].
      */
-    fun pickContact(screen: Screen, session: NavSession, c: ContactAddress, onChoose: (List<SearchHit>) -> Unit) {
+    fun pickContact(screen: Screen, session: CarScreenHost, c: ContactAddress, onChoose: (List<SearchHit>) -> Unit) {
         val ctx = screen.carContext
         screen.lifecycleScope.launch {
             when (val r = session.deps.contacts().locate(c, session.deps.location().lastLocation.value)) {

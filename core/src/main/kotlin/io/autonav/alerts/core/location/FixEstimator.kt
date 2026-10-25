@@ -138,21 +138,7 @@ class FixEstimator(private val config: Config = Config()) {
     private val ring = ArrayDeque<Sample>()
     private var last: FixInput? = null
     private val smoother = SpeedSmoother()
-    private var dispRef: Sample? = null
-    /** The median of the last three displacement windows. */
-    private var dispSpeed = 0.0
-    /** The last window's own speed. */
-    private var dispWindowSpeed = 0.0
-    private var dispPending = false
-    private val dispSmoother = SpeedSmoother()
-
-    /** One displacement window ends with speed [raw]; the reference moves to this fix. */
-    private fun closeWindow(raw: Double, f: FixInput) {
-        dispWindowSpeed = raw
-        dispSpeed = dispSmoother.add(raw)
-        dispRef = Sample(f.lat, f.lon, f.timeMs)
-        dispPending = false
-    }
+    private var disp = Displacement()
     private var ema: Double? = null
     private var trackAccDeg: Double? = null
     private var stillSinceMs: Long? = null
@@ -173,11 +159,7 @@ class FixEstimator(private val config: Config = Config()) {
     fun resetTrack(reason: String) {
         ring.clear()
         smoother.reset()
-        dispRef = null
-        dispSpeed = 0.0
-        dispWindowSpeed = 0.0
-        dispPending = false
-        dispSmoother.reset()
+        disp = Displacement()
         ema = null
         trackAccDeg = null
         stillSinceMs = null
@@ -190,66 +172,34 @@ class FixEstimator(private val config: Config = Config()) {
      * reported speed but doesn't feed the track or the displacement speed.
      */
     fun onFix(f: FixInput): Estimate {
-        var resetReason: String? = null
-        last?.let { prev ->
-            val reason = when {
+        val resetReason = last?.let { prev ->
+            val jump = Geo.distanceM(prev.lat, prev.lon, f.lat, f.lon)
+            when {
                 f.source != prev.source -> "handover ${prev.source}→${f.source}"
                 f.timeMs - prev.timeMs > config.gapMs -> "gap ${f.timeMs - prev.timeMs} ms"
-                Geo.distanceM(prev.lat, prev.lon, f.lat, f.lon) > config.jumpM ->
-                    "jump ${Geo.distanceM(prev.lat, prev.lon, f.lat, f.lon).toInt()} m"
+                jump > config.jumpM -> "jump ${jump.toInt()} m"
                 else -> null
             }
-            if (reason != null) { resetTrack(reason); resetReason = reason }
-        }
+        }?.also(::resetTrack)
         val acc = f.accuracyM ?: config.defaultAccuracyM
         val good = acc <= config.maxAccuracyM
 
-        // --- Speed ---
-        val speed: Double
-        val speedSource: SpeedSource
-        val reported = f.speedMps
-        if (reported != null) {
-            speed = smoother.add(max(0.0, reported))
-            speedSource = when (f.source) {
+        // --- Speed: the reported one when the fix carries it, else displacement ÷ time ---
+        val (speed, speedSource) = when (val reported = f.speedMps) {
+            null -> disp.onFix(f, acc, good)
+            else -> smoother.add(max(0.0, reported)) to when (f.source) {
                 LocationSource.PHONE -> SpeedSource.GPS
                 LocationSource.CAR -> SpeedSource.CAR_RAW
                 LocationSource.SIM -> SpeedSource.SIMULATED
             }
-        } else {
-            val ref = dispRef
-            when {
-                !good -> Unit // hold the last displacement speed
-                ref == null -> { dispRef = Sample(f.lat, f.lon, f.timeMs); dispSpeed = 0.0 }
-                f.timeMs - ref.timeMs < config.displacementMinDtMs -> Unit // too soon: hold
-                else -> {
-                    val dt = (f.timeMs - ref.timeMs) / 1000.0
-                    val disp = Geo.distanceM(ref.lat, ref.lon, f.lat, f.lon)
-                    val threshold = max(config.minDisplacementM, acc)
-                    if (disp > threshold) {
-                        // Two fixes in a row beyond the threshold: one jitter spike can't become a speed.
-                        if (dispPending) closeWindow(disp / dt, f) else dispPending = true
-                    } else {
-                        dispPending = false
-                        // No displacement in a window: a stop, when the last speed would have shown
-                        // in this long a window; otherwise (a crawl) only after the re-anchor time.
-                        val stopped = dispWindowSpeed * dt > threshold
-                        if (stopped || f.timeMs - ref.timeMs >= config.displacementReanchorMs) closeWindow(0.0, f)
-                    }
-                }
-            }
-            speed = dispSpeed
-            speedSource = if (dispRef == null) SpeedSource.NONE else SpeedSource.DISPLACEMENT
         }
 
         // --- Standing still: the heading is held, then null after 30 s. A chord never spans a
         // stop (the ring is emptied while still), so moving off in a new direction can't read as
         // the old one through the parked jitter.
-        if (speed < config.stillMps) {
-            if (stillSinceMs == null) stillSinceMs = f.timeMs
-            ring.clear()
-        } else {
-            stillSinceMs = null
-        }
+        val stillNow = speed < config.stillMps
+        stillSinceMs = if (stillNow) stillSinceMs ?: f.timeMs else null
+        if (stillNow) ring.clear()
         val still = stillSinceMs?.let { f.timeMs - it >= config.stillHeadingMs } ?: false
         if (still) { ema = null; trackAccDeg = null }
 
@@ -265,8 +215,8 @@ class FixEstimator(private val config: Config = Config()) {
                 if (d >= config.minChordM) { pick = s; pickD = d }
                 if (d >= target) break
             }
-            if (pick != null) {
-                val b = Geo.bearingDeg(pick.lat, pick.lon, f.lat, f.lon)
+            pick?.let { p ->
+                val b = Geo.bearingDeg(p.lat, p.lon, f.lat, f.lon)
                 ema = ema?.let { Geo.normalizeDeg(it + config.emaAlpha * Geo.angleDiffDeg(b, it)) } ?: b
                 // headingAccuracyDeg ≈ atan2(2 × accuracy, chord) (§10.6a): 3 m fixes over 40 m give about 8.5°.
                 trackAccDeg = Math.toDegrees(atan2(2 * acc, pickD))
@@ -285,35 +235,30 @@ class FixEstimator(private val config: Config = Config()) {
             if (bits == lastBearingBits) sameBearingCount++ else { lastBearingBits = bits; sameBearingCount = 1; runStartTrack = ema }
             if (runStartTrack == null) runStartTrack = ema
             if (!gpsBearingStale && sameBearingCount >= config.staleBearingFixes) {
-                val t = ema
-                val r = runStartTrack
-                if (t != null && r != null && Geo.absAngleDiffDeg(t, r) > config.staleBearingTurnDeg) gpsBearingStale = true
+                val turned = ema?.let { t -> runStartTrack?.let { r -> Geo.absAngleDiffDeg(t, r) } }
+                if (turned != null && turned > config.staleBearingTurnDeg) gpsBearingStale = true
             }
         }
         // A reported accuracy of 0 (mock, simulated or car feeds) would weigh the bearing infinitely: NaN heading.
         val bAcc = (f.bearingAccuracyDeg ?: config.gpsDefaultAccuracyDeg).coerceAtLeast(1.0)
         val gpsUsable = b != null && !gpsBearingStale && !still && speed > config.gpsMinMps && bAcc <= config.gpsMaxAccuracyDeg
 
-        // --- Combine ---
+        // --- Combine: the heading, its accuracy and where it came from ---
         val track = ema
         val tAcc = trackAccDeg?.coerceAtLeast(1.0)
-        var heading: Double? = null
-        var source = HeadingSource.NONE
-        var hAcc: Double? = null
-        var gpsUsed: Double? = null
-        when {
+        val (heading, hAcc, source) = when {
             track != null && tAcc != null && gpsUsable && Geo.absAngleDiffDeg(b!!, track) <= config.gpsMaxOffTrackDeg -> {
                 // Inverse-variance blend (§10.6a): the better-known of track and GPS bearing pulls harder.
                 val wT = 1.0 / (tAcc * tAcc)
                 val wG = 1.0 / (bAcc * bAcc)
-                heading = Geo.normalizeDeg(track + wG / (wT + wG) * Geo.angleDiffDeg(b, track))
-                hAcc = sqrt(1.0 / (wT + wG))
-                source = HeadingSource.BLEND
-                gpsUsed = b
+                Triple(Geo.normalizeDeg(track + wG / (wT + wG) * Geo.angleDiffDeg(b, track)), sqrt(1.0 / (wT + wG)), HeadingSource.BLEND)
             }
-            track != null -> { heading = track; hAcc = tAcc; source = if (chord != null) HeadingSource.TRACK else HeadingSource.HELD }
-            gpsUsable -> { heading = b; hAcc = bAcc; source = HeadingSource.GPS; gpsUsed = b }
+            track != null -> Triple(track, tAcc, if (chord != null) HeadingSource.TRACK else HeadingSource.HELD)
+            gpsUsable -> Triple(b, bAcc, HeadingSource.GPS)
+            else -> Triple(null, null, HeadingSource.NONE)
         }
+        // The feed's bearing counts as used when it shaped the heading.
+        val gpsUsed = b.takeIf { source == HeadingSource.BLEND || source == HeadingSource.GPS }
 
         last = f
         return Estimate(
@@ -322,6 +267,56 @@ class FixEstimator(private val config: Config = Config()) {
             chordM = chord, trackDeg = track, gpsBearingDeg = gpsUsed, gpsBearingStale = gpsBearingStale,
             locationSource = f.source, resetReason = resetReason,
         )
+    }
+
+    /**
+     * The displacement speed (§10.2 "Speed", the fix carries none): the reference fix a window is
+     * measured from, the median of the last three windows ([speed]), the last window's own speed
+     * and whether one fix beyond the threshold is pending. Replaced as a unit by [resetTrack].
+     */
+    private inner class Displacement {
+        private var ref: Sample? = null
+        private var speed = 0.0
+        private var windowSpeed = 0.0
+        private var pending = false
+        private val smoother = SpeedSmoother()
+
+        /** The speed after this fix with its source: NONE until a reference exists; a poor fix ([good] false) holds the last. */
+        fun onFix(f: FixInput, acc: Double, good: Boolean): Pair<Double, SpeedSource> {
+            val r = ref
+            when {
+                !good -> Unit // hold the last displacement speed
+                r == null -> {
+                    ref = Sample(f.lat, f.lon, f.timeMs)
+                    speed = 0.0
+                }
+                f.timeMs - r.timeMs < config.displacementMinDtMs -> Unit // too soon: hold
+                else -> {
+                    val dt = (f.timeMs - r.timeMs) / 1000.0
+                    val disp = Geo.distanceM(r.lat, r.lon, f.lat, f.lon)
+                    val threshold = max(config.minDisplacementM, acc)
+                    if (disp > threshold) {
+                        // Two fixes in a row beyond the threshold: one jitter spike can't become a speed.
+                        if (pending) closeWindow(disp / dt, f) else pending = true
+                    } else {
+                        pending = false
+                        // No displacement in a window: a stop, when the last speed would have shown
+                        // in this long a window; otherwise (a crawl) only after the re-anchor time.
+                        val stopped = windowSpeed * dt > threshold
+                        if (stopped || f.timeMs - r.timeMs >= config.displacementReanchorMs) closeWindow(0.0, f)
+                    }
+                }
+            }
+            return speed to if (ref == null) SpeedSource.NONE else SpeedSource.DISPLACEMENT
+        }
+
+        /** One displacement window ends with speed [raw]; the reference moves to this fix. */
+        private fun closeWindow(raw: Double, f: FixInput) {
+            windowSpeed = raw
+            speed = smoother.add(raw)
+            ref = Sample(f.lat, f.lon, f.timeMs)
+            pending = false
+        }
     }
 }
 

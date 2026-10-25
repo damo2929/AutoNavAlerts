@@ -77,12 +77,12 @@ class GuidancePrompter(private val config: Config = Config()) {
         val prepareM = (v * config.prepareS).coerceIn(config.prepareMinM, config.prepareMaxM)
         if (distanceM <= nowM) {
             if (Kind.NOW in said) return null
-            said += Kind.NOW; said += Kind.PREPARE; said += Kind.CONTINUE
+            said += Kind.entries
             return Prompt(Kind.NOW, step, text, distanceM, null)
         }
         if (distanceM <= prepareM) {
             if (Kind.PREPARE in said) return null
-            said += Kind.PREPARE; said += Kind.CONTINUE
+            said += listOf(Kind.PREPARE, Kind.CONTINUE)
             // Not worth a "prepare" just before the "now" one.
             // Inside 1.5 × the now distance the "now" prompt follows within a second or two: one is enough.
             if (distanceM < nowM * 1.5) return null

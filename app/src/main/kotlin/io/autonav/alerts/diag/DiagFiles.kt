@@ -47,14 +47,9 @@ object DiagFiles {
     /** A share-sheet chooser for one or more files under `files/diag/`. */
     fun shareIntent(context: Context, files: List<File>, mime: String = "text/plain", title: String = "AutoNavAlerts diagnostics"): Intent {
         val uris = files.map { uriFor(context, it) }
-        val send = if (uris.size == 1) {
-            Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
-        } else {
-            Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-        }
-        send.type = mime
-        send.putExtra(Intent.EXTRA_SUBJECT, title)
-        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val send = Intent(if (uris.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).setType(mime)
+            .putExtra(Intent.EXTRA_SUBJECT, title).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (uris.size == 1) send.putExtra(Intent.EXTRA_STREAM, uris[0]) else send.putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
         return Intent.createChooser(send, title)
     }
 }

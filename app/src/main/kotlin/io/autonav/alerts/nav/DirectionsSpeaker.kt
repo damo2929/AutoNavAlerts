@@ -95,8 +95,7 @@ class DirectionsSpeaker @Inject constructor(
 
     /** Guidance ended (a stop, an arrival, the fallback to the SDK's voice). */
     fun stop(reason: String) {
-        if (job == null) return
-        job?.cancel()
+        (job ?: return).cancel()
         job = null
         prompter.reset()
         log("stop reason=$reason")

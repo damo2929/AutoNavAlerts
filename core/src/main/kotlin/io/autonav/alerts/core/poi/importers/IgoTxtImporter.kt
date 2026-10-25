@@ -5,7 +5,6 @@ package io.autonav.alerts.core.poi.importers
 
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.core.poi.ImportResult
-import io.autonav.alerts.core.poi.ImportRow
 import io.autonav.alerts.core.poi.RowError
 import io.autonav.alerts.core.poi.SpeedUnit
 import java.io.BufferedReader
@@ -32,10 +31,7 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
             ?.equals("X,Y,Type,Speed,DirType,Direction", ignoreCase = true) == true
 
     /** Reads the whole file line by line; never throws on a bad row, which goes to the errors instead. */
-    fun parse(reader: BufferedReader): ImportResult {
-        val rows = ArrayList<ImportRow>()
-        val errors = ArrayList<RowError>()
-        var silent = 0
+    fun parse(reader: BufferedReader): ImportResult = collectImport {
         var lineNo = 0
         var headerSeen = false
 
@@ -56,7 +52,7 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
             val type = f[2].trim()
             if (type.toIntOrNull() == null) {
                 // PGW watermark row, e.g. "0.72185,51.51508,Copyright PocketGPSWorld.com,,"
-                silent++
+                silentlySkipped++
                 return@forEach
             }
             // X is longitude and Y latitude (§5.2 column table).
@@ -67,15 +63,9 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
                 ?.takeIf { it >= 0f && it < 360f }
 
             // DirType 1 → ONE_WAY, 2 → BOTH; empty or 0 → ANY; and no Direction forces ANY whatever DirType says.
-            val dirType = when {
-                direction == null -> DirectionType.ANY
-                dirTypeCode == 1 -> DirectionType.ONE_WAY
-                dirTypeCode == 2 -> DirectionType.BOTH
-                else -> DirectionType.ANY
-            }
+            val dirType = if (dirTypeCode == 1 || dirTypeCode == 2) dirTypeOf(direction, both = dirTypeCode == 2) else DirectionType.ANY
             rows += importRow(lat, lon, null, type, speed?.let { it to null }, speedUnit, dirType, direction)
         }
-        return ImportResult(rows, errors, silent)
     }
 
     companion object {

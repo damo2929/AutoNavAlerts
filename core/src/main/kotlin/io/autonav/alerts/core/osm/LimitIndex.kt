@@ -37,10 +37,7 @@ class LimitIndex private constructor(
      * The nearest piece within 20 m running within 30° of the heading, either way (DESIGN.md §8.4,
      * §8.4a "Finding the limit"). With no heading (standing still) the nearest piece within 20 m.
      */
-    fun limitAt(lat: Double, lon: Double, headingDeg: Double?): Double? {
-        val best = pieceAt(lat, lon, headingDeg) ?: return null
-        return mphOf(best).toDouble()
-    }
+    fun limitAt(lat: Double, lon: Double, headingDeg: Double?): Double? = pieceAt(lat, lon, headingDeg)?.let { mphOf(it).toDouble() }
 
     /** The piece [limitAt] would use (its index), or null. For the lookahead (DESIGN.md §8.4a). */
     fun pieceAt(lat: Double, lon: Double, headingDeg: Double?): Int? {
@@ -50,34 +47,32 @@ class LimitIndex private constructor(
         var best = -1
         var bestD = OsmSpeedLimits.MATCH_M
         forEachNear(lat, lon) { p ->
-            val o = 4 * p
-            val d = Geo.flatDistanceToSegmentM(lat, lon, ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6, kx)
+            val d = Geo.flatDistanceToSegmentM(lat, lon, lat1(p), lon1(p), lat2(p), lon2(p), kx)
             if (d <= bestD && (h == null || headingFits(p, h))) { best = p; bestD = d }
         }
-        return if (best < 0) null else best
+        return best.takeIf { it >= 0 }
     }
 
     /** The limit of a piece, mph. */
     fun mphOf(piece: Int): Int = mph[piece].toInt() and 0xff
 
+    // A piece's ends in degrees: [ends] holds lat1, lon1, lat2, lon2 in micro-degrees at 4·piece + 0..3.
+    private fun lat1(piece: Int) = ends[4 * piece] / 1e6
+    private fun lon1(piece: Int) = ends[4 * piece + 1] / 1e6
+    private fun lat2(piece: Int) = ends[4 * piece + 2] / 1e6
+    private fun lon2(piece: Int) = ends[4 * piece + 3] / 1e6
+
     /** The piece's first end (its drawing direction). */
-    fun startOf(piece: Int): LatLngPoint = LatLngPoint(ends[4 * piece] / 1e6, ends[4 * piece + 1] / 1e6)
+    fun startOf(piece: Int): LatLngPoint = LatLngPoint(lat1(piece), lon1(piece))
 
     /** The piece's end in its drawing direction when [forward], else its start. */
-    fun endOf(piece: Int, forward: Boolean): LatLngPoint =
-        if (forward) LatLngPoint(ends[4 * piece + 2] / 1e6, ends[4 * piece + 3] / 1e6) else startOf(piece)
+    fun endOf(piece: Int, forward: Boolean): LatLngPoint = if (forward) LatLngPoint(lat2(piece), lon2(piece)) else startOf(piece)
 
     /** Bearing from the piece's start to its end, degrees. */
-    fun bearingOf(piece: Int): Double {
-        val o = 4 * piece
-        return Geo.bearingDeg(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
-    }
+    fun bearingOf(piece: Int): Double = Geo.bearingDeg(lat1(piece), lon1(piece), lat2(piece), lon2(piece))
 
     /** The piece's straight length, metres. */
-    fun lengthOf(piece: Int): Double {
-        val o = 4 * piece
-        return Geo.distanceM(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
-    }
+    fun lengthOf(piece: Int): Double = Geo.distanceM(lat1(piece), lon1(piece), lat2(piece), lon2(piece))
 
     /** A join from [joinFrom]: the next piece, whether it is walked in its drawn direction, and whether this was a fork. */
     /** [piece] is an index into this index; [forward] whether we walk it start to end; [fork] see [joinFrom]. */
@@ -104,9 +99,8 @@ class LimitIndex private constructor(
         val outs = ArrayList<Pair<Double, Boolean>>(4)
         forEachNear(lat, lon) { p ->
             if (p == exclude) return@forEachNear
-            val o = 4 * p
-            val dA = Geo.flatDistanceM(lat, lon, ends[o] / 1e6, ends[o + 1] / 1e6, kx)
-            val dB = Geo.flatDistanceM(lat, lon, ends[o + 2] / 1e6, ends[o + 3] / 1e6, kx)
+            val dA = Geo.flatDistanceM(lat, lon, lat1(p), lon1(p), kx)
+            val dB = Geo.flatDistanceM(lat, lon, lat2(p), lon2(p), kx)
             // Which end of the candidate touches the join point says which way we would walk it.
             val forward = when {
                 dA <= JOIN_M && dA <= dB -> true

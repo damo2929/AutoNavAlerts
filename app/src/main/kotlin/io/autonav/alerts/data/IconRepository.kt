@@ -60,7 +60,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     fun userIds(): List<String> = dirUser().listFiles { f -> f.extension == "png" }?.map { "user:" + it.nameWithoutExtension }?.sorted() ?: emptyList()
 
     /** A short name for the picker and the set editor. */
-    fun label(id: String): String = BUILTIN_LABELS[id] ?: if (isPgwIcon(id)) "PocketGPSWorld icon" else "Custom icon"
+    fun label(id: String): String = BUILTIN_PACK.firstOrNull { it.id == id }?.label ?: if (isPgwIcon(id)) "PocketGPSWorld icon" else "Custom icon"
 
     /**
      * Copies a picked image into app storage and returns its id, or null if it can't be decoded (§7.1 "User icons").
@@ -108,11 +108,9 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     fun bitmap(id: String, sizePx: Int): Bitmap {
         val key = "$id@$sizePx"
         cache.get(key)?.let { return it }
-        val bmp = when {
-            id.startsWith("user:") -> File(dirUser(), id.removePrefix("user:") + ".png").takeIf { it.exists() }
-                ?.let { BitmapFactory.decodeFile(it.path) }?.let { Bitmap.createScaledBitmap(it, sizePx, sizePx, true) }
-            else -> null
-        } ?: ContextCompat.getDrawable(context, BUILTIN[id] ?: R.drawable.ic_poi_pin)!!.toBitmap(sizePx, sizePx)
+        val bmp = id.takeIf { it.startsWith("user:") }?.let { File(dirUser(), it.removePrefix("user:") + ".png") }?.takeIf { it.exists() }
+            ?.let { BitmapFactory.decodeFile(it.path) }?.let { Bitmap.createScaledBitmap(it, sizePx, sizePx, true) }
+            ?: ContextCompat.getDrawable(context, BUILTIN[id] ?: R.drawable.ic_poi_pin)!!.toBitmap(sizePx, sizePx)
         cache.put(key, bmp)
         return bmp
     }
@@ -130,10 +128,8 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         val out = createBitmap(size, size)
         val c = Canvas(out)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = alphaOf(emphasis) }
-        if (emphasis == Emphasis.ACTIVE) {
-            // The pulse ring (§8.1 ACTIVE): a static translucent disc; the "pulse" is the layer swapping emphasis.
-            c.drawCircle(size / 2f, size / 2f, size / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 230, 40, 40) })
-        }
+        // The pulse ring (§8.1 ACTIVE): a static translucent disc; the "pulse" is the layer swapping emphasis.
+        if (emphasis == Emphasis.ACTIVE) c.drawCircle(size / 2f, size / 2f, size / 2f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 230, 40, 40) })
         // A camera is drawn with its icon alone, never with a limit badge (DESIGN.md §7, owner). Not larger:
         // the head of the flat direction arrow under it must stay clear on the tilted map (hard rule 1).
         val camera = isCameraIcon(id)
@@ -173,11 +169,10 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         }
         val halo = arrowStroke(Color.WHITE, stroke * 2.2f, emphasis)
         val ink = arrowStroke(Color.rgb(200, 30, 30), stroke, emphasis)
-        c.drawPath(head, halo)
-        c.drawPath(head, ink)
-        if (directionType == DirectionType.BOTH) {
+        // The chevron, then for BOTH the same one turned round; each is its halo first, its ink on top.
+        for (turn in if (directionType == DirectionType.BOTH) listOf(0f, 180f) else listOf(0f)) {
             c.save()
-            c.rotate(180f, w / 2, w / 2)
+            c.rotate(turn, w / 2, w / 2)
             c.drawPath(head, halo)
             c.drawPath(head, ink)
             c.restore()
@@ -208,7 +203,7 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
          */
         fun isCameraIcon(id: String): Boolean = isSuppliedIcon(id) || id.startsWith("builtin:camera_")
 
-        // The built-in pack's ids (§7.1). The drawables are vector assets under res/drawable/ic_poi_*.
+        // The built-in ids the code picks itself (§7.1): the cameras for PGW sets and reports, the pin for a hand import.
         const val CAMERA_FIXED = "builtin:camera_fixed"
         const val CAMERA_MOBILE = "builtin:camera_mobile"
         const val CAMERA_AVERAGE = "builtin:camera_average"
@@ -216,34 +211,28 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         const val CAMERA_REDLIGHT_SPEED = "builtin:camera_redlight_speed"
         const val CAMERA_PENDING = "builtin:camera_pending"
         const val PIN = "builtin:pin"
-        const val HAZARD = "builtin:hazard"
-        const val SCHOOL = "builtin:school"
-        const val FUEL = "builtin:fuel"
-        const val EV = "builtin:ev"
-        const val STAR = "builtin:star"
+
+        /** One icon of the built-in pack: its id, its vector drawable and its picker label. */
+        private class Builtin(val id: String, val drawable: Int, val label: String)
+
+        /** The built-in pack in picker order (§7.1). The drawables are vector assets under res/drawable/ic_poi_*. */
+        private val BUILTIN_PACK = listOf(
+            Builtin(CAMERA_FIXED, R.drawable.ic_poi_camera_fixed, "Fixed camera"),
+            Builtin(CAMERA_MOBILE, R.drawable.ic_poi_camera_mobile, "Mobile camera"),
+            Builtin(CAMERA_AVERAGE, R.drawable.ic_poi_camera_average, "Average speed"),
+            Builtin(CAMERA_REDLIGHT, R.drawable.ic_poi_camera_redlight, "Red light"),
+            Builtin(CAMERA_REDLIGHT_SPEED, R.drawable.ic_poi_camera_redlight_speed, "Red light + speed"),
+            Builtin(CAMERA_PENDING, R.drawable.ic_poi_camera_pending, "Pending site"),
+            Builtin(PIN, R.drawable.ic_poi_pin, "Pin"),
+            Builtin("builtin:hazard", R.drawable.ic_poi_hazard, "Hazard"),
+            Builtin("builtin:school", R.drawable.ic_poi_school, "School"),
+            Builtin("builtin:fuel", R.drawable.ic_poi_fuel, "Fuel"),
+            Builtin("builtin:ev", R.drawable.ic_poi_ev, "EV charger"),
+            Builtin("builtin:star", R.drawable.ic_poi_star, "Star"),
+        )
 
         /** Id → drawable for the built-in pack; also the "is this a built-in" test used when a sync decides whether to refresh a set's icon (§5.2a). */
-        val BUILTIN = mapOf(
-            CAMERA_FIXED to R.drawable.ic_poi_camera_fixed,
-            CAMERA_MOBILE to R.drawable.ic_poi_camera_mobile,
-            CAMERA_AVERAGE to R.drawable.ic_poi_camera_average,
-            CAMERA_REDLIGHT to R.drawable.ic_poi_camera_redlight,
-            CAMERA_REDLIGHT_SPEED to R.drawable.ic_poi_camera_redlight_speed,
-            CAMERA_PENDING to R.drawable.ic_poi_camera_pending,
-            PIN to R.drawable.ic_poi_pin,
-            HAZARD to R.drawable.ic_poi_hazard,
-            SCHOOL to R.drawable.ic_poi_school,
-            FUEL to R.drawable.ic_poi_fuel,
-            EV to R.drawable.ic_poi_ev,
-            STAR to R.drawable.ic_poi_star,
-        )
-
-        /** Picker labels for the built-in pack. */
-        val BUILTIN_LABELS = mapOf(
-            CAMERA_FIXED to "Fixed camera", CAMERA_MOBILE to "Mobile camera", CAMERA_AVERAGE to "Average speed",
-            CAMERA_REDLIGHT to "Red light", CAMERA_REDLIGHT_SPEED to "Red light + speed", CAMERA_PENDING to "Pending site",
-            PIN to "Pin", HAZARD to "Hazard", SCHOOL to "School", FUEL to "Fuel", EV to "EV charger", STAR to "Star",
-        )
+        val BUILTIN: Map<String, Int> = BUILTIN_PACK.associate { it.id to it.drawable }
 
         /** An icon that came in a PocketGPSWorld download (`user:pgw_<stem>`, §5.2a). */
         fun isPgwIcon(id: String) = id.startsWith("user:pgw_")

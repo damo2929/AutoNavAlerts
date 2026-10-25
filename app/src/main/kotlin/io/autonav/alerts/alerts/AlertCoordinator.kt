@@ -32,12 +32,15 @@ import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.nav.AdaptiveLocationSource
 import io.autonav.alerts.nav.GuidanceController
 import io.autonav.alerts.osm.SpeedLimitRepository
+import io.autonav.alerts.settings.AppSettings
 import io.autonav.alerts.settings.SettingsStore
+import io.autonav.alerts.util.view
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -90,6 +93,23 @@ data class ActiveAlert(
 }
 
 /**
+ * What the marker layer and the screens read of the engine, published as one value per change
+ * (DESIGN.md §8.1, §11 step 10, §15.5): [nearby] the POIs in the cache (for markers; updated when
+ * the cell changes or data changes); [facingAway] the POIs on our road that point the other way,
+ * never alerted, drawn dimmed; [verdicts] every candidate's verdict from the last fix, the marker
+ * layer's one source of truth; [active] the alert being shown, cleared 12 s after its event when
+ * nothing new fires (the banner's 8 s plus slack); [lastFix] the last fix the engine ran on, for
+ * the session's once-a-second limit lookahead and the snapshot.
+ */
+data class MarkerState(
+    val nearby: List<ResolvedPoi> = emptyList(),
+    val facingAway: Set<Long> = emptySet(),
+    val verdicts: Map<Long, Verdict> = emptyMap(),
+    val active: ActiveAlert? = null,
+    val lastFix: Fix? = null,
+)
+
+/**
  * Runs the alert engine on every adaptive fix (DESIGN.md §10–12), keeps the 5×5 cell cache, and
  * publishes active alerts for the dispatcher and the per-fix marker redraw. One engine for the
  * whole session: settings change it in place, never recreate it (§11 step 9). Mute only silences
@@ -133,7 +153,7 @@ class AlertCoordinator @Inject constructor(
     /** The trace writes to alert-debug; its PASSED summary needs the set name and the current fix. */
     val trace = AlertTraceLog(
         info = { id -> byId[id]?.let { TraceInfo(it.set.name, it.poi.bearing, it.poi.directionType) } },
-        fix = { _lastFix.value },
+        fix = { _markers.value.lastFix },
         sink = { tag, msg -> eventLog.record(EventLog.Channel.ALERT, tag, msg) },
     )
     /** The engine's fixed numbers (§11: 45°, 3 km lookahead, 5 km zone gap); `overspeedPct` is updated in place. */
@@ -159,29 +179,23 @@ class AlertCoordinator @Inject constructor(
     /** The cache's alerting POIs as the engine takes them, built once per reload, not per fix. */
     @Volatile private var alertable: List<AlertPoi> = emptyList()
     /** The latest settings, kept by the collector so a fix doesn't re-read DataStore on every fix. */
-    @Volatile private var latest: io.autonav.alerts.settings.AppSettings? = null
+    @Volatile private var latest: AppSettings? = null
     /** The global lead-time slider (§11.1), applied when the cache is resolved. */
     @Volatile private var leadSeconds: Int = io.autonav.alerts.settings.DEFAULT_ALERT_LEAD_SECONDS
 
-    private val _nearby = MutableStateFlow<List<ResolvedPoi>>(emptyList())
+    private val _markers = MutableStateFlow(MarkerState())
+    /** The engine's output for the marker layer and the screens (§8.1); the flows below are views of its fields. */
+    val markers: StateFlow<MarkerState> = _markers
     /** POIs in the cache (for markers). Updated when the cell changes or data changes. */
-    val nearby: StateFlow<List<ResolvedPoi>> = _nearby
-
-    private val _facingAway = MutableStateFlow<Set<Long>>(emptySet())
+    val nearby: StateFlow<List<ResolvedPoi>> = markers.view { it.nearby }
     /** POIs on our road that point the other way: never alerted, drawn dimmed (DESIGN.md §8.1). */
-    val facingAway: StateFlow<Set<Long>> = _facingAway
-
-    private val _verdicts = MutableStateFlow<Map<Long, Verdict>>(emptyMap())
+    val facingAway: StateFlow<Set<Long>> = markers.view { it.facingAway }
     /** Every candidate's verdict from the last fix (§8.1, §11 step 10): the marker layer's one source of truth. */
-    val verdicts: StateFlow<Map<Long, Verdict>> = _verdicts
-
+    val verdicts: StateFlow<Map<Long, Verdict>> = markers.view { it.verdicts }
     /** The alert being shown; cleared 12 s after its event when nothing new fires (the banner's 8 s plus slack). */
-    private val _active = MutableStateFlow<ActiveAlert?>(null)
-    val active: StateFlow<ActiveAlert?> = _active
-
+    val active: StateFlow<ActiveAlert?> = markers.view { it.active }
     /** The last fix the engine ran on, for the session's once-a-second limit lookahead and the snapshot. */
-    private val _lastFix = MutableStateFlow<Fix?>(null)
-    val lastFix: StateFlow<Fix?> = _lastFix
+    val lastFix: StateFlow<Fix?> = markers.view { it.lastFix }
 
     /** Sets muted from the car alert's action, until the given time. */
     private val setMutes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
@@ -212,12 +226,12 @@ class AlertCoordinator @Inject constructor(
                         invalidateCache() // re-resolve the candidates on the next fix
                         alertsLog("lead=${it.alertLeadSeconds} s (1st ${it.alertLeadSeconds} s, 2nd ${it.alertLeadSeconds / 2.0} s)")
                     }
-                    val muted = it.mutedUntilMs > System.currentTimeMillis() || !it.voiceOn
+                    val muted = it.muted(System.currentTimeMillis())
                     eventLog.onChange("alerts.mute", muted, EventLog.Channel.ALERT, "Alerts") {
                         "mute global=$muted voiceOn=${it.voiceOn} until=${it.mutedUntilMs}"
                     }
                     // Turning mute (or voice off) on stops what is being said and what waits (§12.3).
-                    val wasMuted = prev != null && (prev.mutedUntilMs > System.currentTimeMillis() || !prev.voiceOn)
+                    val wasMuted = prev?.muted(System.currentTimeMillis()) == true
                     if (muted && !wasMuted && prev != null) tts.muteNow()
                 }
             }
@@ -266,16 +280,14 @@ class AlertCoordinator @Inject constructor(
      * priority first, with `speak` from sound-on, global mute and set mute.
      */
     private suspend fun onFix(fix: Fix) {
-        _lastFix.value = fix
+        _markers.update { it.copy(lastFix = fix) }
         val cell = Grid.cellOf(fix.lat, fix.lon)
         if (cell != cacheCentre) reload(cell, fix.lat)
         val s = latest ?: settings.current().also { latest = it }
         val now = System.currentTimeMillis()
         // Mute (timed) and the Voice switch both silence speech only (§12.3).
-        val globallyMuted = s.mutedUntilMs > now || !s.voiceOn
-        if (quiet.isNotEmpty()) cache.forEach { r ->
-            if (r.poi.id in quiet && Geo.distanceM(fix.lat, fix.lon, r.poi.lat, r.poi.lon) > QUIET_UNTIL_M) quiet.remove(r.poi.id)
-        }
+        val globallyMuted = s.muted(now)
+        quiet.removeAll { id -> byId[id]?.let { Geo.distanceM(fix.lat, fix.lon, it.poi.lat, it.poi.lon) > QUIET_UNTIL_M } == true }
         // Mute never changes the candidates (§12.3): PASSING still fires and the card still shows.
         val candidates = if (quiet.isEmpty()) alertable else alertable.filter { it.id !in quiet }
         val (events, verdicts, away) = synchronized(engineLock) {
@@ -287,14 +299,14 @@ class AlertCoordinator @Inject constructor(
                 engine.facingAway(),
             )
         }
-        if (verdicts != _verdicts.value) _verdicts.value = verdicts
-        if (away != _facingAway.value) _facingAway.value = away
+        // One value for both, and none when neither changed (no churn for the marker layer).
+        _markers.update { it.copy(verdicts = verdicts, facingAway = away) }
         // The speech staleness rule needs the live distance to the cameras being alerted on (§12.3).
         for ((id, v) in verdicts) if (v == Verdict.AHEAD_OK) byId[id]?.let { r ->
             tts.onDistance(id, Geo.distanceM(fix.lat, fix.lon, r.poi.lat, r.poi.lon))
         }
         if (events.isEmpty()) {
-            _active.value?.let { a -> if (now - a.timeMs > 12_000) _active.value = null }
+            _markers.value.active?.let { a -> if (now - a.timeMs > 12_000) _markers.update { it.copy(active = null) } }
             return
         }
         val renderer = AlertTemplateRenderer(s.units)
@@ -303,7 +315,7 @@ class AlertCoordinator @Inject constructor(
         for (e in events.sortedByDescending { it.priority }) {
             val r = byId[e.poiId]
             val alert = render(renderer, e, r, fix) ?: continue
-            _active.value = alert
+            _markers.update { it.copy(active = alert) }
             Log.i(TAG, "${e.kind} poi=${e.poiId} at ${e.distanceM.toInt()} m, ${(fix.speedMps / Geo.MPS_PER_MPH).toInt()} mph: ${alert.display}")
             val setMuted = r?.let { (setMutes[it.set.id] ?: 0) > now } ?: false
             val speak = (r?.alert?.soundOn ?: true) && !globallyMuted && !setMuted
@@ -328,33 +340,22 @@ class AlertCoordinator @Inject constructor(
             AlertKind.LIMIT_CHANGE -> null // never emitted by the engine; spoken by NavSession (§8.4a)
             AlertKind.GUIDANCE -> null // never emitted by the engine; spoken by DirectionsSpeaker (§12.3)
         } ?: return null
+        val speedUnit = r?.poi?.speedUnit ?: SpeedUnit.MPH
         val values = TemplateValues(
             category = r?.categoryName, setName = r?.set?.name,
-            speed = r?.poi?.speedLimit, speedUnit = r?.poi?.speedUnit ?: SpeedUnit.MPH,
+            speed = r?.poi?.speedLimit, speedUnit = speedUnit,
             distanceM = e.distanceM.takeIf { it > 0 },
             direction = r?.let { directionWord(fix, it.poi) },
         )
-        var out = renderer.render(template, values)
-        if (e.overspeed && e.kind != AlertKind.OVERSPEED) {
-            out = out.copy(spoken = out.spoken + ", " + AlertTemplateRenderer.OVERSPEED_SUFFIX)
+        val out = renderer.render(template, values).let {
+            if (e.overspeed && e.kind != AlertKind.OVERSPEED) it.copy(spoken = it.spoken + ", " + AlertTemplateRenderer.OVERSPEED_SUFFIX) else it
         }
         return ActiveAlert(
             poiId = e.poiId, kind = e.kind, display = out.display, spoken = out.spoken,
             iconId = r?.iconId ?: io.autonav.alerts.data.IconRepository.CAMERA_AVERAGE,
             distanceM = e.distanceM, speedLimit = r?.poi?.speedLimit, setId = r?.set?.id ?: -1, timeMs = now,
-            speedUnit = r?.poi?.speedUnit ?: SpeedUnit.MPH,
+            speedUnit = speedUnit,
         )
-    }
-
-    /** `{direction}` (§7.2): "ahead" within 25° either side of the heading, else left or right; "ahead" with no heading. */
-    private fun directionWord(fix: Fix, poi: PoiEntity): String {
-        val h = fix.heading ?: return "ahead"
-        val d = Geo.angleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, poi.lat, poi.lon), h)
-        return when {
-            d > 25 -> "on your right"
-            d < -25 -> "on your left"
-            else -> "ahead"
-        }
     }
 
     /** Forces a reload on the next fix (data changed, sets toggled, the slider moved). Any thread. */
@@ -383,8 +384,7 @@ class AlertCoordinator @Inject constructor(
         // Only now: if this is interrupted, or invalidated meanwhile, the next fix reloads again.
         if (cacheGen.get() == gen) cacheCentre = cell
         trace.prune(byId.keys)
-        _nearby.value = resolved
-        Log.d(TAG, "Cache: ${resolved.size} POIs around cell $cell")
+        _markers.update { it.copy(nearby = resolved) }
         alertsLog("cache n=${resolved.size} alertable=${alertable.size} cell=$cell lead=$lead s")
     }
 
@@ -393,7 +393,8 @@ class AlertCoordinator @Inject constructor(
      * route state, the mutes, the five nearest POIs with their verdicts, and the TTS queue.
      */
     fun snapshot(): String = buildString {
-        val fix = _lastFix.value
+        val mk = _markers.value
+        val fix = mk.lastFix
         val st = location.stats.value
         val now = System.currentTimeMillis()
         if (fix == null) append("fix: none yet\n") else {
@@ -407,10 +408,10 @@ class AlertCoordinator @Inject constructor(
         append("route: guiding=${guidance.guiding.value} destination=${guidance.destination.value?.title ?: "-"} zone=${engine.isInZone}\n")
         val s = latest
         val activeSetMutes = setMutes.filterValues { it > now }.keys
-        append("mutes: global=${s?.let { it.mutedUntilMs > now || !it.voiceOn } ?: "?"} sets=$activeSetMutes quiet=$quiet\n")
-        _active.value?.let { append("active: ${it.kind} poi=${it.poiId} \"${it.display}\" ${now - it.timeMs} ms ago\n") }
+        append("mutes: global=${s?.muted(now) ?: "?"} sets=$activeSetMutes quiet=$quiet\n")
+        mk.active?.let { append("active: ${it.kind} poi=${it.poiId} \"${it.display}\" ${now - it.timeMs} ms ago\n") }
         if (fix != null) {
-            val verdicts = _verdicts.value
+            val verdicts = mk.verdicts
             val nearest = cache.sortedBy { Geo.distanceM(fix.lat, fix.lon, it.poi.lat, it.poi.lon) }.take(5)
             append("nearest:\n")
             for (r in nearest) {
@@ -419,7 +420,7 @@ class AlertCoordinator @Inject constructor(
                 val off = fix.heading?.let { Geo.absAngleDiffDeg(toPoi, it).roundToInt() }
                 append("  poi=${r.poi.id} set=\"${r.set.name}\" d=${d.roundToInt()} brgTo=${toPoi.roundToInt()} offAxis=${off ?: "-"}")
                 append(" camBrg=${r.poi.bearing?.roundToInt() ?: "-"} dir=${r.poi.directionType} verdict=${verdicts[r.poi.id] ?: if (r.alertsOn) "-" else "alertsOff"}")
-                if (r.poi.id in _facingAway.value) append(" dimmed")
+                if (r.poi.id in mk.facingAway) append(" dimmed")
                 append('\n')
             }
         }
@@ -492,10 +493,11 @@ class AlertCoordinator @Inject constructor(
          */
         fun leadStages(first: AlertStage, second: AlertStage, leadSeconds: Int?): Pair<AlertStage, AlertStage> {
             if (leadSeconds == null) return first to second
-            val f = if (first.mode == DistanceMode.TIME) first.copy(seconds = leadSeconds.toDouble()) else first
-            val s = if (second.mode == DistanceMode.TIME) second.copy(seconds = leadSeconds / 2.0) else second
-            return f to s
+            return first.lead(leadSeconds.toDouble()) to second.lead(leadSeconds / 2.0)
         }
+
+        /** The stage with the slider's [seconds] in TIME mode; a FIXED stage as it is. */
+        private fun AlertStage.lead(seconds: Double) = if (mode == DistanceMode.TIME) copy(seconds = seconds) else this
 
         /** Mobile van sites may be marked up to this far beside the road (DESIGN.md §11 step 4). */
         private const val MOBILE_SIDE_M = 100.0
@@ -517,6 +519,20 @@ class AlertCoordinator @Inject constructor(
             return set.source == io.autonav.alerts.data.PoiSourceType.PGW_PENDING ||
                 code == "mobile" || code == "pmobile" || stem.startsWith("mobile") || stem.startsWith("pmobile") ||
                 cat?.name?.contains("mobile", ignoreCase = true) == true
+        }
+
+        /** Speech is silenced at [now] (epoch ms): the timed mute, or the Voice switch off (§12.3). The cards are unaffected. Internal for `AlertWordsTest`. */
+        internal fun AppSettings.muted(now: Long) = mutedUntilMs > now || !voiceOn
+
+        /** `{direction}` (§7.2): "ahead" within 25° either side of the heading, else left or right; "ahead" with no heading. Internal for `AlertWordsTest`. */
+        internal fun directionWord(fix: Fix, poi: PoiEntity): String {
+            val h = fix.heading ?: return "ahead"
+            val d = Geo.angleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, poi.lat, poi.lon), h)
+            return when {
+                d > 25 -> "on your right"
+                d < -25 -> "on your left"
+                else -> "ahead"
+            }
         }
 
         /** A short distance for cards and rows: the renderer's [AlertTemplateRenderer.shortDistance] (§7.2) by the display units. */

@@ -39,9 +39,11 @@ ldd $ANDROID_HOME/extras/google/auto/desktop-head-unit | grep "not found"   # sh
 
 ### 1.3 Build the debug APK
 ```bash
+./gradlew :core:test :app:testDebugUnitTest   # JVM unit tests, including the Robolectric tier
 ./gradlew :app:assembleDebug
 # → app/build/outputs/apk/debug/app-debug.apk
 ```
+The app's unit tests include a **Robolectric** tier (car templates, Room, workers, notifications, views, speech; DESIGN.md §15.1). It runs Android SDK 36 on the JVM (`@Config(sdk = [36])`, as Robolectric 4.17 has no SDK 37 yet) and needs the `--add-exports`/`--add-opens` flags that `app/build.gradle.kts` passes to the test task on JDK 21. The first run downloads the SDK 36 android-all jar (about 200 MB) into `~/.m2`.
 Use a **debug** build for bench testing. Only debug builds have the **Simulate** button and the Bench testing settings.
 
 ---
@@ -433,7 +435,7 @@ Google's live incident reporting isn't available to apps on Android Auto yet (DE
 tools/check-nav-sdk-features.sh            # the version in gradle/libs.versions.toml
 tools/check-nav-sdk-features.sh --latest   # the newest published version
 ```
-It exits with code 10 and says so if `NavigationViewForAuto` has gained the reporting APIs. The same check runs **quarterly on GitHub** (Actions → "Navigation SDK feature watch", 1 Jan/Apr/Jul/Oct, or **Run workflow** to run it now). It opens an issue on the repo when support appears. The app then enables them automatically: Google's report button on the car map, and **More → Report to Google Maps** during navigation. Test those on the DHU. The log line `IncidentReporting: Incident reporting not supported on Android Auto…` confirms it's still off.
+It exits with code 10 and says so if `NavigationViewForAuto` has gained the reporting APIs. The same check runs **quarterly on GitHub** (Actions → "Navigation SDK feature watch", 1 Jan/Apr/Jul/Oct, or **Run workflow** to run it now). It opens an issue on the repo when support appears. The feature is then designed in DESIGN.md §8 and built (Google's report button on the car map, and **More → Report to Google Maps** during navigation); the reflection stub that would have switched them on by itself was removed on 2026-10-25 (owner; DESIGN.md §16 #21).
 
 ## 6.11 Diagnostics (G)
 The two debug logs are always on (docs/SETTINGS.md §1.8). `run-as` works on debug builds only; on a release build use Save or Share.

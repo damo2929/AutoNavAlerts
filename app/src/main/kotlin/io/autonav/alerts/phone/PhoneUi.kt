@@ -43,12 +43,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // The building blocks the phone screens share (DESIGN.md §13; docs/SETTINGS.md): the settings card,
 // the switch row, the three text styles every card uses (help, ✓ and error lines), the Show/Hide fold,
-// chip groups, the confirm dialog, the icon-row card, the "save to a file" launcher and the browser
-// link. Each one draws exactly what the screens drew inline before it existed, so the phone UI
+// chip groups, the confirm dialog, the icon-row card, the "save to a file" launcher, the browser
+// link, the background-work button and the IO hop. Each one draws exactly what the screens drew inline before it existed, so the phone UI
 // (wording, order, spacing, colours) is unchanged. All run on the main thread inside MainActivity's
 // composition. Nothing here touches the car screen or the alert engine, so no hard rule of
 // AGENTS.md §3.1 is at stake; the Backup card's helpers keep rule 6 (no camera data in the file)
@@ -150,14 +153,14 @@ internal fun rememberSaveTo(mime: String, okMsg: String, errPrefix: String, work
 }
 
 /**
- * An `AlertDialog` with a Cancel text button and one confirming action: a filled `Button` labelled
- * [confirmLabel], or a `TextButton` when [textConfirm] is set (the Restore dialog). Dismissing the
- * dialog any other way counts as Cancel.
+ * An `AlertDialog` with a Cancel text button (unless [cancel] is off: the Engine now view, whose one button
+ * closes it) and one confirming action: a filled `Button` labelled [confirmLabel], or a `TextButton` when
+ * [textConfirm] is set (the Restore dialog). Dismissing the dialog any other way counts as Cancel.
  */
 @Composable
 internal fun ConfirmDialog(
     title: String, confirmLabel: String, onConfirm: () -> Unit, onDismiss: () -> Unit,
-    textConfirm: Boolean = false, text: @Composable () -> Unit,
+    textConfirm: Boolean = false, cancel: Boolean = true, text: @Composable () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -166,9 +169,23 @@ internal fun ConfirmDialog(
         confirmButton = {
             if (textConfirm) TextButton(onClick = onConfirm) { Text(confirmLabel) } else Button(onClick = onConfirm) { Text(confirmLabel) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = if (cancel) ({ TextButton(onClick = onDismiss) { Text("Cancel") } }) else null,
     )
 }
+
+/**
+ * A filled (or [outlined]) button labelled [label] whose click runs [work] on [scope], the screen's own, so
+ * the work finishes even when its result takes the button off the screen (Save and test, Send all): the
+ * shape of every "do it and come back" button on the phone.
+ */
+@Composable
+internal fun Btn(label: String, scope: CoroutineScope, enabled: Boolean = true, outlined: Boolean = false, work: suspend () -> Unit) {
+    val onClick: () -> Unit = { scope.launch { work() } }
+    if (outlined) OutlinedButton(onClick, enabled = enabled) { Text(label) } else Button(onClick, enabled = enabled) { Text(label) }
+}
+
+/** [block] on `Dispatchers.IO`: the file reads and log flushes the phone screens keep off the main thread (DESIGN.md §2). */
+internal suspend fun <T> io(block: suspend CoroutineScope.() -> T): T = withContext(Dispatchers.IO, block)
 
 /**
  * A tappable card with a 40 dp icon, a title and a subtitle line, then [trailing] (a switch, an arrow):

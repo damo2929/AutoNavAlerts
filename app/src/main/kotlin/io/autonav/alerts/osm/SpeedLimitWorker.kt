@@ -21,6 +21,7 @@ import io.autonav.alerts.core.osm.NorthernIreland
 import io.autonav.alerts.core.osm.OsmLimitFile
 import io.autonav.alerts.core.osm.ShapefileRoads
 import io.autonav.alerts.util.ensureChannel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -96,7 +97,7 @@ class SpeedLimitWorker @AssistedInject constructor(
         } catch (e: Exception) {
             writer.close()
             // Cancel (from the card or the notification): the temp files go, the old file is untouched (§8.4a).
-            if (e is kotlinx.coroutines.CancellationException || isStopped) {
+            if (e is CancellationException || isStopped) {
                 Log.i(TAG, "Speed limits download cancelled; the old file is unchanged")
                 repo.report(null)
                 throw e
@@ -114,21 +115,18 @@ class SpeedLimitWorker @AssistedInject constructor(
     /** Progress from the stream reads: the live StateFlow on every call, the notification at most every 2 s. */
     private fun show(region: String, step: String, done: Long, total: Long) {
         // The reads block, so coroutine cancellation alone wouldn't stop them: stop here on Cancel.
-        if (isStopped) throw kotlinx.coroutines.CancellationException("Speed limit download cancelled")
+        if (isStopped) throw CancellationException("Speed limit download cancelled")
         repo.report(SpeedLimitRepository.Progress(region, step, done, total, false))
         val now = System.currentTimeMillis()
         if (now - lastShown < 2_000) return
         lastShown = now
         val text = "$region: $step · ${done / 1_000_000} of ${total / 1_000_000} MB"
-        applicationContext.getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, notification(text, done, total))
+        applicationContext.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text, done, total))
     }
 
     /** The foreground-service wrapper for the progress notification; Android 10+ wants the dataSync type declared. */
-    private fun foreground(text: String, done: Long, total: Long): ForegroundInfo {
-        val n = notification(text, done, total)
-        return if (Build.VERSION.SDK_INT >= 29) ForegroundInfo(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        else ForegroundInfo(NOTIFICATION_ID, n)
+    private fun foreground(text: String, done: Long, total: Long): ForegroundInfo = notification(text, done, total).let { n ->
+        if (Build.VERSION.SDK_INT >= 29) ForegroundInfo(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) else ForegroundInfo(NOTIFICATION_ID, n)
     }
 
     /** The ongoing progress notification with a Cancel action (§8.4a "with a progress notification and Cancel"); indeterminate until the total is known. */
