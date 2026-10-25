@@ -5,9 +5,7 @@ package io.autonav.alerts.osm
 
 import android.content.Context
 import android.util.Log
-import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -17,6 +15,7 @@ import io.autonav.alerts.core.osm.LimitIndex
 import io.autonav.alerts.core.osm.LimitLookahead
 import io.autonav.alerts.core.osm.OsmLimitFile
 import io.autonav.alerts.core.osm.OsmSpeedLimits
+import io.autonav.alerts.util.network
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -81,10 +80,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      * past forks by the straightest branch (§8.4a "The free-drive road ahead for cameras").
      */
     fun roadAhead(lat: Double, lon: Double, headingDeg: Double, maxM: Double): List<LatLngLike>? {
-        val idx = index
-        ensureLoaded(idx, lat, lon)
-        if (idx === LimitIndex.EMPTY) return null
-        val la = lookahead?.takeIf { it.first === idx }?.second ?: LimitLookahead(idx).also { lookahead = idx to it }
+        val la = lookaheadAt(lat, lon) ?: return null
         return runCatching { la.roadAhead(lat, lon, headingDeg, maxM) }
             .onFailure { Log.w(TAG, "roadAhead: ${it.message}") }.getOrNull()
     }
@@ -96,12 +92,20 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
      * Null with no data, no heading or no change within 600 m. Called once a second by `NavSession`, never per fix.
      */
     fun nextChange(lat: Double, lon: Double, headingDeg: Double, routeAhead: List<LatLngLike>?): LimitLookahead.Change? {
+        val la = lookaheadAt(lat, lon) ?: return null
+        return runCatching { la.nextChange(lat, lon, headingDeg, routeAhead?.takeIf { it.size >= 2 }) }
+            .onFailure { Log.w(TAG, "lookahead: ${it.message}") }.getOrNull()
+    }
+
+    /**
+     * The lookahead over the tiles in memory around the car (a background load starts for any not loaded yet),
+     * built once per [index] and kept until the index is replaced; null while nothing is in memory.
+     */
+    private fun lookaheadAt(lat: Double, lon: Double): LimitLookahead? {
         val idx = index
         ensureLoaded(idx, lat, lon)
         if (idx === LimitIndex.EMPTY) return null
-        val la = lookahead?.takeIf { it.first === idx }?.second ?: LimitLookahead(idx).also { lookahead = idx to it }
-        return runCatching { la.nextChange(lat, lon, headingDeg, routeAhead?.takeIf { it.size >= 2 }) }
-            .onFailure { Log.w(TAG, "lookahead: ${it.message}") }.getOrNull()
+        return lookahead?.takeIf { it.first === idx }?.second ?: LimitLookahead(idx).also { lookahead = idx to it }
     }
 
     /** Reads the tiles around the car in the background when they aren't in memory yet; one load at a time, none when there is no file. */
@@ -112,12 +116,15 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
 
     /** True when the tiles at all four points [NEAR_M] from the car are in [idx] (§8.4a: reload when within 60 m of a tile not in memory). */
     private fun covers(idx: LimitIndex, lat: Double, lon: Double): Boolean {
-        val dLat = NEAR_M / 111_000.0
-        val dLon = NEAR_M / (111_000.0 * cos(Math.toRadians(lat)))
-        for (la in doubleArrayOf(lat - dLat, lat + dLat)) for (lo in doubleArrayOf(lon - dLon, lon + dLon)) {
-            if (OsmSpeedLimits.tileKey(la, lo) !in idx.tiles) return false
-        }
+        forCornerTiles(lat, lon, NEAR_M) { if (it !in idx.tiles) return false }
         return true
+    }
+
+    /** The tile keys at the four points [m] metres from the car, diagonally: one tile in open country, up to four at a corner. */
+    private inline fun forCornerTiles(lat: Double, lon: Double, m: Double, each: (Long) -> Unit) {
+        val dLat = m / 111_000.0
+        val dLon = m / (111_000.0 * cos(Math.toRadians(lat)))
+        for (la in doubleArrayOf(lat - dLat, lat + dLat)) for (lo in doubleArrayOf(lon - dLon, lon + dLon)) each(OsmSpeedLimits.tileKey(la, lo))
     }
 
     /** Builds a fresh index of the tiles within [LOAD_M] of the car (§8.4a: usually one, up to four at a corner) and swaps it in, unless the file was replaced meanwhile. */
@@ -125,10 +132,8 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
         val gen = generation
         val r = openReader() ?: run { index = LimitIndex.EMPTY; return }
         // The tiles within a few hundred metres: one in open country, up to four at a corner.
-        val d = LOAD_M / 111_000.0
-        val dl = LOAD_M / (111_000.0 * cos(Math.toRadians(lat)))
         val tiles = linkedSetOf<Long>()
-        for (la in doubleArrayOf(lat - d, lat + d)) for (lo in doubleArrayOf(lon - dl, lon + dl)) tiles += OsmSpeedLimits.tileKey(la, lo)
+        forCornerTiles(lat, lon, LOAD_M) { tiles += it }
         val built = runCatching { LimitIndex.build(r, tiles) }
             .onFailure { Log.w(TAG, "Reading limits: ${it.message}") }.getOrDefault(LimitIndex.EMPTY)
         synchronized(this) { if (gen == generation) index = built }
@@ -167,7 +172,7 @@ class SpeedLimitRepository @Inject constructor(@ApplicationContext private val c
     fun download(wifiOnly: Boolean) {
         _progress.value = Progress("", if (wifiOnly) "Waiting for Wi-Fi" else "Waiting for a connection", 0, 0, false)
         val req = OneTimeWorkRequestBuilder<SpeedLimitWorker>()
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED).build())
+            .setConstraints(network(wifiOnly).build())
             .build()
         WorkManager.getInstance(context).enqueueUniqueWork(WORK, ExistingWorkPolicy.REPLACE, req)
     }

@@ -22,6 +22,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -115,8 +117,7 @@ class PgwClient @Inject constructor(
         val page = get(PgwConfig.BASE + PgwConfig.CAMERAS_PATH)
         if (PgwPages.loginState(page) == PgwPages.LoginState.LOGGED_IN) return@withContext
         val (user, pass) = settings.pgwCredentials() ?: throw PgwAuthException("No PocketGPSWorld login saved")
-        val body = FormBody.Builder().apply { PgwConfig.loginForm(user, pass).forEach { (k, v) -> add(k, v) } }.build()
-        val html = http.newCall(Request.Builder().url(PgwConfig.BASE + PgwConfig.LOGIN_PATH).post(body).build()).execute().use { it.body.string() }
+        val html = post(PgwConfig.BASE + PgwConfig.LOGIN_PATH, formBody(PgwConfig.loginForm(user, pass))).use { it.body.string() }
         // "Logged in" means a session cookie and a page with logout / My Account and no password field (§6.1 step 2.1).
         if (PgwPages.loginState(html) != PgwPages.LoginState.LOGGED_IN) throw PgwAuthException("Login failed: check your username and password")
         saveCookies()
@@ -132,9 +133,8 @@ class PgwClient @Inject constructor(
     suspend fun download(dest: File, pkg: io.autonav.alerts.core.pgw.PgwDownload): File = withContext(Dispatchers.IO) {
         ensureLoggedIn()
         // System and voicePack only fill the site's package list, but the browser sends them, so we do too (§6.1 step 2.2).
-        val body = FormBody.Builder().apply { PgwConfig.downloadForm(pkg.idPackage).forEach { (k, v) -> add(k, v) } }
-            .add("System", pkg.system).add("voicePack", "noVoice").build()
-        val html = http.newCall(Request.Builder().url(PgwConfig.BASE + PgwConfig.CAMERAS_PATH).post(body).build()).execute().use { it.body.string() }
+        val body = formBody(PgwConfig.downloadForm(pkg.idPackage), "System" to pkg.system, "voicePack" to "noVoice")
+        val html = post(PgwConfig.BASE + PgwConfig.CAMERAS_PATH, body).use { it.body.string() }
         android.util.Log.i(TAG, "Download page: ${html.length} chars, zip link: ${PgwPages.findZipLink(html)}")
         // No link while logged in means no active subscription (§6.2a "Expired subscription"); logged out means the session died.
         val link = PgwPages.findZipLink(html)
@@ -172,7 +172,7 @@ class PgwClient @Inject constructor(
             hidden.forEach { (k, v) -> addFormDataPart(k, v) }
             s.formFields().forEach { (k, v) -> addFormDataPart(k, v) }
         }.build()
-        http.newCall(Request.Builder().url(PgwConfig.BASE + PgwConfig.CAMERAS_PATH).post(body).build()).execute().use { resp ->
+        post(PgwConfig.BASE + PgwConfig.CAMERAS_PATH, body).use { resp ->
             if (!resp.isSuccessful) throw IOException("Submit HTTP ${resp.code}")
             resp.body.string()
         }
@@ -181,6 +181,13 @@ class PgwClient @Inject constructor(
     /** A plain GET returning the page text; blocking, so only called inside `withContext(Dispatchers.IO)`. */
     private fun get(url: String): String =
         http.newCall(Request.Builder().url(url).build()).execute().use { it.body.string() }
+
+    /** A POST of [body] to [url], executed; the caller reads and closes the response. Blocking, like [get]. */
+    private fun post(url: String, body: RequestBody): Response = http.newCall(Request.Builder().url(url).post(body).build()).execute()
+
+    /** The site's form [fields] (from `PgwConfig`) and any [extra] ones, in that order, as a URL-encoded body. */
+    private fun formBody(fields: List<Pair<String, String>>, vararg extra: Pair<String, String>): FormBody =
+        FormBody.Builder().apply { (fields + extra).forEach { (k, v) -> add(k, v) } }.build()
 
     /** Persists the session, one Set-Cookie line per cookie, encrypted (§6.1 step 2.1 "persisted in encrypted storage"). */
     private suspend fun saveCookies() {

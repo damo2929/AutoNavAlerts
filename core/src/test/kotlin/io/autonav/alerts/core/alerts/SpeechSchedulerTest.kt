@@ -249,6 +249,47 @@ class SpeechSchedulerTest {
         assertEquals(b, s.speaking)
     }
 
+    @Test
+    fun watchdogExtendsWhileTheEngineStillSpeaksUpToTheCap() {
+        val s = SpeechScheduler()
+        val a = u(AlertKind.SECOND, poi = 1, text = "x".repeat(20))
+        s.offer(a, 0)
+        assertNull("nothing current", s.extendWhileSpeaking(100))
+        val d = s.next(0) as Decision.Speak
+        assertNull("handed to the engine, onStart not yet reported", s.extendWhileSpeaking(100))
+        s.onStarted(d.utterance, 200)
+        // Past the 3000 + 120 × 20 ms deadline but still audibly speaking: it goes on, with the time since onStart.
+        assertEquals(5_400L, s.extendWhileSpeaking(5_600))
+        assertEquals(14_999L, s.extendWhileSpeaking(15_199))
+        // 15 s from onStart is the cap: the watchdog frees the engine.
+        assertNull(s.extendWhileSpeaking(15_200))
+        assertEquals(a, s.onWatchdog(15_200))
+        assertNull(s.extendWhileSpeaking(15_300))
+        assertEquals(listOf(Outcome.TIMED_OUT), outcomes(s))
+    }
+
+    @Test
+    fun recordTextForTheSnapshotAndTheLog() {
+        val utt = Utterance(7, 4, AlertKind.SECOND, "Fixed camera, 200 yards", 50, 200.0, null, false, 1_000)
+        val spoken = SpeechScheduler.Record(utt, Outcome.SPOKEN, atMs = 4_000, startMs = 1_800, waitedMs = 800)
+        assertEquals("SECOND poi=4 SPOKEN waited=800ms", spoken.describe())
+        assertEquals("done SECOND poi=4 dur=2200 waited=800", spoken.logLine())
+        val replaced = SpeechScheduler.Record(utt, Outcome.REPLACED, atMs = 1_200, byKind = AlertKind.PASSING)
+        assertEquals("SECOND poi=4 REPLACED by=PASSING", replaced.describe())
+        assertEquals("replaced SECOND poi=4 by=PASSING", replaced.logLine())
+        val stale = SpeechScheduler.Record(utt, Outcome.STALE, atMs = 1_200, detail = "d=120 < 142")
+        assertEquals("SECOND poi=4 STALE d=120 < 142", stale.describe())
+        assertEquals("dropped SECOND poi=4 reason=stale d=120 < 142", stale.logLine())
+        assertEquals("muted SECOND poi=4", SpeechScheduler.Record(utt, Outcome.MUTED, 1_200).logLine())
+        // Interrupted, timed out and an engine error are logged where they happen; a denied focus is the one
+        // outcome the utterance speaks through.
+        for (o in listOf(Outcome.INTERRUPTED, Outcome.TIMED_OUT, Outcome.TTS_ERROR, Outcome.FOCUS_DENIED)) {
+            assertNull(o.name, SpeechScheduler.Record(utt, o, 1_200).logLine())
+        }
+        assertFalse(SpeechScheduler.Record(utt, Outcome.FOCUS_DENIED, 1_200).terminal)
+        assertTrue(spoken.terminal)
+    }
+
     // --- Directions (GUIDANCE, DESIGN.md §12.3) ---------------------------------------------------
 
     private fun dir(text: String, queuedMs: Long, distanceM: Double = 300.0, staleBelowM: Double? = null) =

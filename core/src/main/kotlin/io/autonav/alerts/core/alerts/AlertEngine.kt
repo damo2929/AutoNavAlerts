@@ -113,8 +113,8 @@ enum class HeadingSource { GPS, TRACK, BLEND, HELD, NONE, UNKNOWN }
 /** Where the speed in a [Fix] came from (DESIGN.md §10.2, §10.6). [NONE]: nothing to go on yet (no reported speed and no displacement reference). */
 enum class SpeedSource { CAR_RAW, GPS, DERIVED, SIMULATED, NONE }
 
-/** Which feed the position in a [Fix] came from (DESIGN.md §10.1, §10.7). */
-enum class LocationSource { PHONE, CAR, SIM }
+/** Which feed the position in a [Fix] came from (DESIGN.md §10.1, §10.7): the estimator's own enum, one definition. */
+typealias LocationSource = io.autonav.alerts.core.location.LocationSource
 
 /**
  * One position as the engine sees it (DESIGN.md §10, §11 "Inputs per fix"). Built by the app from
@@ -450,7 +450,7 @@ class AlertEngine(
             }
         }
 
-        updateZone(fix, candidates, heading, out)
+        updateZone(fix, out)
         prune(now)
         return out
     }
@@ -459,47 +459,30 @@ class AlertEngine(
      * Every candidate's verdict from the last [onFix] (DESIGN.md §8.1): the one source of truth for the
      * marker emphasis. POIs not seen on that fix are absent.
      */
-    fun classify(): Map<Long, Verdict> {
-        val out = HashMap<Long, Verdict>()
-        for ((id, s) in states) if (s.lastSeenMs == lastFixMs) out[id] = s.verdict
-        return out
-    }
+    fun classify(): Map<Long, Verdict> = states.filterValues { it.lastSeenMs == lastFixMs }.mapValues { it.value.verdict }
 
     /**
      * The POIs drawn dimmed (§8.1): on our road ahead, facing the other way with confidence (the
      * mismatch exceeds 45° + the heading accuracy, while moving), kept with hysteresis until the
      * direction rule passes again, the mismatch drops under 40°, or the POI is behind. Never alerted.
      */
-    fun facingAway(): Set<Long> {
-        var out: MutableSet<Long>? = null
-        for ((id, s) in states) if (s.hidden) (out ?: HashSet<Long>().also { out = it }) += id
-        return out ?: emptySet()
-    }
-
-    /** The old signature: the verdicts come from the last [onFix], so the arguments are no longer used. */
-    @Deprecated("Use facingAway() after onFix", ReplaceWith("facingAway()"))
-    @Suppress("UNUSED_PARAMETER")
-    fun facingAway(fix: Fix, pois: Collection<AlertPoi>, route: RouteMatcher? = null): Set<Long> = facingAway()
+    fun facingAway(): Set<Long> = states.filterValues { it.hidden }.keys
 
     /** Drops the state of POIs that haven't been candidates for [Config.pruneMs] (§11 step 7). */
-    fun prune(nowMs: Long) {
-        val it = states.entries.iterator()
-        while (it.hasNext()) {
-            val e = it.next()
-            if (nowMs - e.value.lastSeenMs > config.pruneMs) {
-                it.remove()
-                if (e.value.entered) trace?.cleared(e.key, ClearReason.PRUNED)
-            }
-        }
-    }
+    fun prune(nowMs: Long) = drop { _, s -> nowMs - s.lastSeenMs > config.pruneMs }
 
     /** Drops the state of every POI not in [ids] (the cache was reloaded, or sets changed). */
     fun forgetExcept(ids: Collection<Long>) {
         val keep = ids.toHashSet()
+        drop { id, _ -> id !in keep }
+    }
+
+    /** Removes every state [gone] says so of, tracing a clear for those that had entered their lookahead. */
+    private inline fun drop(gone: (Long, PoiState) -> Boolean) {
         val it = states.entries.iterator()
         while (it.hasNext()) {
             val e = it.next()
-            if (e.key !in keep) {
+            if (gone(e.key, e.value)) {
                 it.remove()
                 if (e.value.entered) trace?.cleared(e.key, ClearReason.PRUNED)
             }
@@ -544,7 +527,8 @@ class AlertEngine(
         heading: Double, headingAcc: Double,
     ) {
         if (poi.bearing == null || poi.directionType == DirectionType.ANY) return
-        val mismatch = headingMismatch(poi, heading)
+        // The camera's bearing against our heading alone (the dimming confidence, §8.1): the rule without its β leg.
+        val mismatch = directionMismatch(poi, heading, heading, betaAllowed = false)
         val was = state.hidden
         // Dim only on a confident mismatch: beyond 45° plus the heading's own error, while moving (§8.1).
         // Undim with hysteresis once the mismatch is under 40°, the rule passes, or the POI is behind.
@@ -590,16 +574,6 @@ class AlertEngine(
         }
     }
 
-    /** The camera's bearing against our heading alone (for the dimming confidence, §8.1). */
-    private fun headingMismatch(poi: AlertPoi, heading: Double): Double {
-        val b = poi.bearing?.toDouble() ?: return 0.0
-        return when (poi.directionType) {
-            DirectionType.ANY -> 0.0
-            DirectionType.ONE_WAY -> Geo.absAngleDiffDeg(b, heading)
-            DirectionType.BOTH -> minOf(Geo.absAngleDiffDeg(b, heading), Geo.absAngleDiffDeg(b + 180.0, heading))
-        }
-    }
-
     private fun emit(poi: AlertPoi, kind: AlertKind, d: Double, fix: Fix, triggerM: Double, staleBelowM: Double?): AlertEvent {
         // In a zone, its cameras are judged against the zone's limit; any other camera (a red-light camera
         // at 30 inside a 50 zone) against its own, and the zone's only when it has none.
@@ -624,20 +598,10 @@ class AlertEngine(
 
     private fun handleZonePass(poi: AlertPoi, fix: Fix, out: MutableList<AlertEvent>) {
         when (poi.zoneRole) {
-            ZoneRole.ZONE_START -> {
-                if (!inZone) {
-                    startZone(poi, fix)
-                    out += zoneEvent(poi.id, AlertKind.ZONE_ENTER)
-                } else {
-                    // A camera with no limit (variable or unknown) keeps the zone's.
-                    zoneLimitMps = poi.speedLimitMps ?: zoneLimitMps
-                }
-                zonePoiId = poi.id
-                lastZonePointLat = poi.lat; lastZonePointLon = poi.lon
-            }
-            ZoneRole.ZONE_POINT -> {
-                // A real zone has another camera ahead with the same limit to time you against (§11 step 8).
-                val ahead = zonePointAhead(fix, poi.speedLimitMps, exclude = poi.id)
+            ZoneRole.ZONE_START, ZoneRole.ZONE_POINT -> {
+                // A real zone has another camera ahead with the same limit to time you against (§11 step 8);
+                // a start marker opens one on its own.
+                val ahead = poi.zoneRole == ZoneRole.ZONE_START || zonePointAhead(fix, poi.speedLimitMps, exclude = poi.id)
                 if (!inZone) {
                     if (!ahead) return
                     startZone(poi, fix)
@@ -686,7 +650,7 @@ class AlertEngine(
     // A variable or unknown limit (null) matches anything, so a "var" SPECS set stays in its chain.
     private fun sameLimit(a: Double?, b: Double?) = a == null || b == null || abs(a - b) < 0.5
 
-    private fun updateZone(fix: Fix, candidates: Collection<AlertPoi>, heading: Double?, out: MutableList<AlertEvent>) {
+    private fun updateZone(fix: Fix, out: MutableList<AlertEvent>) {
         if (!inZone) return
         val sinceLastPoint = Geo.distanceM(fix.lat, fix.lon, lastZonePointLat, lastZonePointLon)
         val fromStart = Geo.distanceM(fix.lat, fix.lon, zoneStartLat, zoneStartLon)

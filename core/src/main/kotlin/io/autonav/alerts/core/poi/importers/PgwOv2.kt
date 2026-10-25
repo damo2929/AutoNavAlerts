@@ -5,7 +5,6 @@ package io.autonav.alerts.core.poi.importers
 
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.core.poi.ImportResult
-import io.autonav.alerts.core.poi.ImportRow
 import io.autonav.alerts.core.poi.SpeedUnit
 
 /**
@@ -95,10 +94,8 @@ object PgwOv2 {
         val rows = raw.rows.mapNotNull { r ->
             val p = r.name?.let(::parseName)
             if (p == null) { skipped++; return@mapNotNull null }
-            ImportRow(
-                lat = r.lat, lon = r.lon, name = r.name, categoryCode = categoryCode(p),
-                speed = p.speed, speedUnit = p.speed?.let { SpeedUnit.MPH },
-                dirType = p.directionType, bearing = if (p.directionType == DirectionType.ANY) null else p.bearing,
+            importRow(
+                r.lat, r.lon, r.name, categoryCode(p), p.speed?.let { it to null }, SpeedUnit.MPH, p.directionType, p.bearing,
                 extra = buildMap {
                     put("pgwId", p.pgwId)
                     if (p.variable) put("variableLimit", "true")

@@ -3,6 +3,8 @@
 
 package io.autonav.alerts.core.poi.importers
 
+import io.autonav.alerts.core.io.secureDocumentBuilderFactory
+import io.autonav.alerts.core.io.skipFully
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.core.poi.ImportResult
 import io.autonav.alerts.core.poi.ImportRow
@@ -11,10 +13,10 @@ import io.autonav.alerts.core.poi.SpeedUnit
 import io.autonav.alerts.core.poi.isPlausibleCoordinate
 import org.w3c.dom.Element
 import java.io.BufferedReader
+import java.io.EOFException
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import javax.xml.parsers.DocumentBuilderFactory
 
 /** The file formats the importers read (DESIGN.md §5); the set's `format` column (§4.1). */
 enum class PoiFormat { IGO_TXT, KML, GPX, OV2, CSV }
@@ -56,13 +58,36 @@ internal fun speedFromText(text: String?): Pair<Int, SpeedUnit?>? {
     return v to unit
 }
 
-// XML from a user's file: no DTDs or external entities, so a crafted file can't read the phone.
-private fun secureFactory() = DocumentBuilderFactory.newInstance().apply {
-    isNamespaceAware = false
-    runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-    runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
-    isExpandEntityReferences = false
+/**
+ * The one coordinate check of DESIGN.md §5.1 for every importer: [lat] and [lon] when both parsed
+ * and [isPlausibleCoordinate] holds, else a "bad coordinates" [RowError] for [line] is added and
+ * null comes back (the caller skips the row).
+ */
+internal fun MutableList<RowError>.checkCoordinate(lat: Double?, lon: Double?, lineNumber: Int, line: String): Pair<Double, Double>? {
+    if (lat == null || lon == null || !isPlausibleCoordinate(lat, lon)) { this += RowError(lineNumber, line, "bad coordinates"); return null }
+    return lat to lon
 }
+
+/** A bearing text as degrees true in [0, 360), or null when it isn't a number. */
+internal fun String.toBearingOrNull(): Float? = toFloatOrNull()?.let { ((it % 360f) + 360f) % 360f }
+
+/**
+ * An [ImportRow] from what an importer found: [speed] as (value, unit-or-null) with the unit
+ * falling back to [defaultUnit], and the [bearing] kept only when [dirType] isn't ANY, since a
+ * direction needs a type to be judged by (§4.1, §11 step 3). The importers never invent a direction.
+ */
+internal fun importRow(
+    lat: Double, lon: Double, name: String?, categoryCode: String?,
+    speed: Pair<Int, SpeedUnit?>?, defaultUnit: SpeedUnit,
+    dirType: DirectionType, bearing: Float?, extra: Map<String, String> = emptyMap(),
+): ImportRow = ImportRow(
+    lat = lat, lon = lon, name = name, categoryCode = categoryCode,
+    speed = speed?.first, speedUnit = speed?.let { it.second ?: defaultUnit },
+    dirType = dirType, bearing = if (dirType == DirectionType.ANY) null else bearing, extra = extra,
+)
+
+// XML from a user's file: no DTDs or external entities, so a crafted file can't read the phone.
+private fun secureFactory() = secureDocumentBuilderFactory()
 
 private fun Element.child(tag: String): Element? {
     val nodes = getElementsByTagName(tag)
@@ -91,11 +116,7 @@ class KmlImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
             val coords = pm.child("Point")?.childText("coordinates")
             if (coords == null) continue // lines/polygons are ignored
             val parts = coords.split(',').map { it.trim() }
-            val lon = parts.getOrNull(0)?.toDoubleOrNull()
-            val lat = parts.getOrNull(1)?.toDoubleOrNull()
-            if (lat == null || lon == null || !isPlausibleCoordinate(lat, lon)) {
-                errors += RowError(i + 1, coords, "bad coordinates"); continue
-            }
+            val (lat, lon) = errors.checkCoordinate(parts.getOrNull(1)?.toDoubleOrNull(), parts.getOrNull(0)?.toDoubleOrNull(), i + 1, coords) ?: continue
             val name = pm.childText("name")
             val desc = pm.childText("description")
             val extended = HashMap<String, String>()
@@ -104,8 +125,7 @@ class KmlImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
                 val e = data.item(j) as Element
                 e.getAttribute("name").takeIf { it.isNotBlank() }?.let { k -> extended[k.lowercase()] = e.childText("value") ?: "" }
             }
-            val bearing = (extended["heading"] ?: extended["bearing"] ?: extended["direction"] ?: pm.child("IconStyle")?.childText("heading"))
-                ?.toFloatOrNull()?.let { ((it % 360f) + 360f) % 360f }
+            val bearing = (extended["heading"] ?: extended["bearing"] ?: extended["direction"] ?: pm.child("IconStyle")?.childText("heading"))?.toBearingOrNull()
             val dirType = when {
                 bearing == null -> DirectionType.ANY
                 extended["dirtype"] == "2" || desc?.contains("both", ignoreCase = true) == true -> DirectionType.BOTH
@@ -113,12 +133,7 @@ class KmlImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
             }
             val folder = (pm.parentNode as? Element)?.takeIf { it.tagName == "Folder" }?.childText("name")
             val speed = extended["speed"]?.toIntOrNull()?.takeIf { it > 0 }?.let { it to null } ?: speedFromText(name) ?: speedFromText(desc)
-            rows += ImportRow(
-                lat = lat, lon = lon, name = name,
-                categoryCode = folder ?: pm.childText("styleUrl")?.removePrefix("#"),
-                speed = speed?.first, speedUnit = speed?.let { it.second ?: defaultUnit },
-                dirType = dirType, bearing = if (dirType == DirectionType.ANY) null else bearing,
-            )
+            rows += importRow(lat, lon, name, folder ?: pm.childText("styleUrl")?.removePrefix("#"), speed, defaultUnit, dirType, bearing)
         }
         return ImportResult(rows, errors, 0)
     }
@@ -138,21 +153,13 @@ class GpxImporter(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
         val errors = ArrayList<RowError>()
         for (i in 0 until wpts.length) {
             val w = wpts.item(i) as Element
-            val lat = w.getAttribute("lat").toDoubleOrNull()
-            val lon = w.getAttribute("lon").toDoubleOrNull()
-            if (lat == null || lon == null || !isPlausibleCoordinate(lat, lon)) {
-                errors += RowError(i + 1, "wpt", "bad coordinates"); continue
-            }
+            val (lat, lon) = errors.checkCoordinate(w.getAttribute("lat").toDoubleOrNull(), w.getAttribute("lon").toDoubleOrNull(), i + 1, "wpt") ?: continue
             val name = w.childText("name")
-            val bearing = (w.childText("course") ?: w.childText("heading") ?: w.childText("bearing"))
-                ?.toFloatOrNull()?.let { ((it % 360f) + 360f) % 360f }
+            val bearing = (w.childText("course") ?: w.childText("heading") ?: w.childText("bearing"))?.toBearingOrNull()
             val speed = speedFromText(name) ?: speedFromText(w.childText("desc"))
-            rows += ImportRow(
-                lat = lat, lon = lon, name = name,
-                categoryCode = w.childText("type") ?: w.childText("sym"),
-                speed = speed?.first, speedUnit = speed?.let { it.second ?: defaultUnit },
-                dirType = if (bearing == null) DirectionType.ANY else DirectionType.ONE_WAY,
-                bearing = bearing,
+            rows += importRow(
+                lat, lon, name, w.childText("type") ?: w.childText("sym"), speed, defaultUnit,
+                dirType = if (bearing == null) DirectionType.ANY else DirectionType.ONE_WAY, bearing = bearing,
             )
         }
         return ImportResult(rows, errors, 0)
@@ -180,14 +187,8 @@ class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
             while (n < 4) { val k = inp.read(b, n, 4 - n); if (k < 0) return null; n += k }
             return ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN).int
         }
-        fun skip(n: Int): Boolean {
-            var left = n
-            while (left > 0) {
-                val k = inp.skipBytes(left)
-                if (k > 0) left -= k else if (inp.read() < 0) return false else left--
-            }
-            return true
-        }
+        // False when the stream ends inside the record; any other read error still propagates.
+        fun skip(n: Int): Boolean = try { inp.skipFully(n.toLong()); true } catch (_: EOFException) { false }
         val rows = ArrayList<ImportRow>()
         val errors = ArrayList<RowError>()
         var record = 0
@@ -213,12 +214,8 @@ class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
                     }
                     // Type 3 is "name\0id\0extra\0": the name is the first field.
                     val name = String(nameBytes, Charsets.ISO_8859_1).substringBefore('\u0000').trim()
-                    if (!isPlausibleCoordinate(lat, lon)) {
-                        errors += RowError(record, name, "bad coordinates"); continue
-                    }
-                    val speed = speedFromText(name)
-                    rows += ImportRow(lat = lat, lon = lon, name = name, speed = speed?.first,
-                        speedUnit = speed?.let { it.second ?: defaultUnit })
+                    errors.checkCoordinate(lat, lon, record, name) ?: continue
+                    rows += importRow(lat, lon, name, null, speedFromText(name), defaultUnit, DirectionType.ANY, null)
                 }
                 else -> if (!skip(len - 5)) break // skipper (1), deleted or unknown
             }
@@ -269,22 +266,16 @@ class CsvImporter(private val profile: CsvProfile) {
             val line = raw.trimEnd('\r')
             if (line.isBlank()) return@forEachIndexed
             val f = splitCsv(line, profile.delimiter)
-            val lat = f.getOrNull(profile.latCol)?.trim()?.toDoubleOrNull()
-            val lon = f.getOrNull(profile.lonCol)?.trim()?.toDoubleOrNull()
-            if (lat == null || lon == null || !isPlausibleCoordinate(lat, lon)) {
-                errors += RowError(idx + 1, line, "bad coordinates"); return@forEachIndexed
-            }
-            val bearing = profile.bearingCol?.let { f.getOrNull(it)?.trim()?.toFloatOrNull() }?.let { ((it % 360f) + 360f) % 360f }
+            val (lat, lon) = errors.checkCoordinate(f.getOrNull(profile.latCol)?.trim()?.toDoubleOrNull(), f.getOrNull(profile.lonCol)?.trim()?.toDoubleOrNull(), idx + 1, line)
+                ?: return@forEachIndexed
+            val bearing = profile.bearingCol?.let { f.getOrNull(it)?.trim()?.toBearingOrNull() }
             val dirType = profile.dirTypeCol?.let { f.getOrNull(it)?.trim()?.lowercase() }?.let { profile.dirTypeMap[it] }
                 ?: if (bearing != null) DirectionType.ONE_WAY else DirectionType.ANY
             val speed = profile.speedCol?.let { f.getOrNull(it)?.trim()?.toIntOrNull() }?.takeIf { it > 0 }
-            rows += ImportRow(
-                lat = lat, lon = lon,
-                name = profile.nameCol?.let { f.getOrNull(it)?.trim() },
-                categoryCode = profile.categoryCol?.let { f.getOrNull(it)?.trim() },
-                speed = speed, speedUnit = speed?.let { profile.speedUnit },
-                dirType = if (bearing == null) DirectionType.ANY else dirType,
-                bearing = if (dirType == DirectionType.ANY) null else bearing,
+            rows += importRow(
+                lat, lon, profile.nameCol?.let { f.getOrNull(it)?.trim() }, profile.categoryCol?.let { f.getOrNull(it)?.trim() },
+                speed?.let { it to null }, profile.speedUnit,
+                dirType = if (bearing == null) DirectionType.ANY else dirType, bearing = bearing,
             )
         }
         return ImportResult(rows, errors, 0)

@@ -64,25 +64,35 @@ class ContactsSource @Inject constructor(
         if (!available || query.trim().length < ContactMatch.MIN_QUERY) return@withContext emptyList()
         val q = query.trim()
         val out = ArrayList<Pair<Int, ContactAddress>>()
+        // A cheap first filter in the provider; the word-start rule is applied by the rank.
+        queryPostal("${StructuredPostal.DISPLAY_NAME_PRIMARY} LIKE ?", arrayOf("%$q%")) { a ->
+            ContactMatch.rank(a.name, q)?.let { out += it to a }
+        }
+        out.sortedWith(compareBy({ it.first }, { it.second.name.lowercase() })).take(limit).map { it.second }
+    }
+
+    /**
+     * One read of the address book's `StructuredPostal` rows matching [selection], by name: each row with a name
+     * and a non-blank formatted address goes to [each]. Multi-line addresses become one line; blank ones are
+     * skipped (§8.3 "Addresses with a blank formatted address are skipped"). A provider failure is logged and
+     * yields nothing.
+     */
+    private inline fun queryPostal(selection: String?, args: Array<String>?, each: (ContactAddress) -> Unit) {
         runCatching {
             context.contentResolver.query(
                 StructuredPostal.CONTENT_URI,
                 arrayOf(StructuredPostal._ID, StructuredPostal.DISPLAY_NAME_PRIMARY, StructuredPostal.TYPE, StructuredPostal.LABEL, StructuredPostal.FORMATTED_ADDRESS),
-                // A cheap first filter in the provider; the word-start rule is applied below.
-                "${StructuredPostal.DISPLAY_NAME_PRIMARY} LIKE ?", arrayOf("%$q%"),
+                selection, args,
                 "${StructuredPostal.DISPLAY_NAME_PRIMARY} COLLATE NOCASE",
             )?.use { c ->
                 while (c.moveToNext()) {
                     val name = c.getString(1) ?: continue
-                    // Multi-line addresses become one line; blank ones are skipped (§8.3 "Addresses with a blank formatted address are skipped").
                     val address = c.getString(4)?.replace('\n', ',')?.replace(Regex(""",\s*"""), ", ")?.trim()?.takeIf { it.isNotBlank() } ?: continue
-                    val rank = ContactMatch.rank(name, q) ?: continue
                     val label = StructuredPostal.getTypeLabel(context.resources, c.getInt(2), c.getString(3)).toString()
-                    out += rank to ContactAddress(c.getLong(0), name, label, address)
+                    each(ContactAddress(c.getLong(0), name, label, address))
                 }
             }
         }.onFailure { Log.w(TAG, "contacts query", it) }
-        out.sortedWith(compareBy({ it.first }, { it.second.name.lowercase() })).take(limit).map { it.second }
     }
 
     /**
@@ -93,21 +103,7 @@ class ContactsSource @Inject constructor(
     suspend fun all(limit: Int): List<ContactAddress> = withContext(Dispatchers.IO) {
         if (!available || limit <= 0) return@withContext emptyList()
         val out = ArrayList<ContactAddress>()
-        runCatching {
-            context.contentResolver.query(
-                StructuredPostal.CONTENT_URI,
-                arrayOf(StructuredPostal._ID, StructuredPostal.DISPLAY_NAME_PRIMARY, StructuredPostal.TYPE, StructuredPostal.LABEL, StructuredPostal.FORMATTED_ADDRESS),
-                null, null,
-                "${StructuredPostal.DISPLAY_NAME_PRIMARY} COLLATE NOCASE",
-            )?.use { c ->
-                while (c.moveToNext()) {
-                    val name = c.getString(1) ?: continue
-                    val address = c.getString(4)?.replace('\n', ',')?.replace(Regex(""",\s*"""), ", ")?.trim()?.takeIf { it.isNotBlank() } ?: continue
-                    val label = StructuredPostal.getTypeLabel(context.resources, c.getInt(2), c.getString(3)).toString()
-                    out += ContactAddress(c.getLong(0), name, label, address)
-                }
-            }
-        }.onFailure { Log.w(TAG, "contacts query", it) }
+        queryPostal(null, null) { out += it }
         // When each address was last located: a plain query on the cache table, keyed like `locate`.
         val usedAt = HashMap<String, Long>()
         runCatching {

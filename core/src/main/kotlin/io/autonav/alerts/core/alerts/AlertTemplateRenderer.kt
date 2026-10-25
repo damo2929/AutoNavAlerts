@@ -44,7 +44,7 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
         RenderedAlert(display = renderOne(template, v, spoken = false), spoken = renderOne(template, v, spoken = true))
 
     private fun renderOne(template: String, v: TemplateValues, spoken: Boolean): String {
-        val speedInUnits = v.speed?.let { convertSpeed(it, v.speedUnit ?: SpeedUnit.MPH) }
+        val speedInUnits = v.speed?.let { (v.speedUnit ?: SpeedUnit.MPH).toDisplay(it, units == Units.IMPERIAL) }
         val values = mapOf(
             "category" to (v.category ?: v.setName),
             "speed" to speedInUnits?.toString(),
@@ -68,19 +68,13 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
         return clauses.joinToString(", ").replace(Regex("""\s+"""), " ").trim()
     }
 
-    private fun convertSpeed(speed: Int, from: SpeedUnit): Int = when {
-        units == Units.IMPERIAL && from == SpeedUnit.KMH -> (speed / 1.609344).roundToInt()
-        units == Units.METRIC && from == SpeedUnit.MPH -> (speed * 1.609344).roundToInt()
-        else -> speed
-    }
-
     private fun shortSpeedUnits() = if (units == Units.IMPERIAL) "mph" else "km/h"
     private fun spokenSpeedUnits() = if (units == Units.IMPERIAL) "miles per hour" else "kilometres per hour"
 
     /** Display form of [m] metres: "140 yd" (10 yd steps) / "1.2 mi", or "300 m" / "1.2 km" (§7.2, §12.1 subtitle). */
     fun shortDistance(m: Double): String = if (units == Units.IMPERIAL) {
         val yd = m / Geo.METRES_PER_YARD
-        if (yd < 1000) "${roundTo(yd, 10)} yd" else "%.1f mi".format(m / 1609.344)
+        if (yd < 1000) "${roundTo(yd, 10)} yd" else "%.1f mi".format(m / Geo.METRES_PER_MILE)
     } else {
         if (m < 1000) "${roundTo(m, 10)} m" else "%.1f km".format(m / 1000)
     }
@@ -91,7 +85,7 @@ class AlertTemplateRenderer(private val units: Units = Units.IMPERIAL) {
      * is kilometres to one decimal or metres in 50 m steps.
      */
     fun spokenDistance(m: Double): String = if (units == Units.IMPERIAL) {
-        val miles = m / 1609.344
+        val miles = m / Geo.METRES_PER_MILE
         when {
             miles >= 0.9 -> "%.0f mile%s".format(miles, if (miles >= 1.5) "s" else "")
             miles >= 0.65 -> "three quarters of a mile"

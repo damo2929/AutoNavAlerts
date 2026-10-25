@@ -3,13 +3,14 @@
 
 package io.autonav.alerts.core.osm
 
+import io.autonav.alerts.core.geo.Geo
+import io.autonav.alerts.core.io.skipFully
 import java.io.DataInputStream
 import java.io.EOFException
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -78,7 +79,7 @@ object ShapefileRoads {
     // 5–90 mph: outside that it isn't a road limit (§8.4a "Limits").
     fun mphFromKmh(kmh: Int): Int {
         if (kmh <= 0) return 0
-        val mph = (kmh / 1.609344).roundToInt()
+        val mph = (kmh / Geo.KMH_PER_MPH).roundToInt()
         return if (mph < 5 || mph > 90) 0 else mph
     }
 
@@ -129,8 +130,8 @@ object ShapefileRoads {
     fun simplify(xy: DoubleArray, toleranceM: Double): DoubleArray {
         val n = xy.size / 2
         if (n < 3) return xy
-        val kx = 111_320.0 * cos(Math.toRadians(xy[1]))
-        val ky = 110_540.0
+        val kx = Geo.metresPerDegLon(xy[1])
+        val ky = Geo.METRES_PER_DEG_LAT
         val keep = BooleanArray(n).also { it[0] = true; it[n - 1] = true }
         val stack = ArrayDeque<Pair<Int, Int>>().apply { add(0 to n - 1) }
         while (stack.isNotEmpty()) {
@@ -152,13 +153,5 @@ object ShapefileRoads {
         var k = 0
         for (i in 0 until n) if (keep[i]) { out[k++] = xy[2 * i]; out[k++] = xy[2 * i + 1] }
         return out
-    }
-
-    private fun DataInputStream.skipFully(n: Long) {
-        var left = n
-        while (left > 0) {
-            val s = skip(left)
-            if (s <= 0) { if (read() < 0) throw EOFException(); left-- } else left -= s
-        }
     }
 }

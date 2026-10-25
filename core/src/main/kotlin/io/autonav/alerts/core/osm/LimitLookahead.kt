@@ -46,57 +46,65 @@ class LimitLookahead(private val index: LimitIndex, private val config: Config =
         if (routeAhead != null && routeAhead.size >= 2) alongRoute(lat, lon, headingDeg, routeAhead)
         else alongRoad(lat, lon, headingDeg)
 
-    private fun alongRoad(lat: Double, lon: Double, headingDeg: Double): Change? {
-        var piece = index.pieceAt(lat, lon, headingDeg) ?: return null
-        val mph0 = index.mphOf(piece)
-        // Pieces have a drawing direction; we walk whichever way agrees with the heading.
-        var forward = Geo.absAngleDiffDeg(index.bearingOf(piece), headingDeg) <= 90.0
+    /**
+     * The connectivity walk's position: the piece being walked and which way, its far [end], the
+     * bearing [out] of it, and the metres [d] from the car to that end. [advance] moves onto the
+     * next piece, walked from whichever of its ends touched the join.
+     */
+    private inner class Walk(var piece: Int, var forward: Boolean) {
         var end = index.endOf(piece, forward)
         var out = outBearing(piece, forward)
-        var d = Geo.distanceM(lat, lon, end.lat, end.lon)
-        var steps = 0
-        while (d <= config.maxM && steps++ < config.maxSteps) {
-            val join = index.joinFrom(end.lat, end.lon, out, exclude = piece) ?: return null
-            // Past a fork we can't know the branch without a route: say nothing yet (§8.4a).
-            if (join.fork) return null
-            val next = join.piece
-            val mph = index.mphOf(next)
-            if (mph != mph0) return Change(mph, d, viaRoute = false, lat = end.lat, lon = end.lon)
+        var d = 0.0
+
+        fun advance(next: Int) {
             val start = index.startOf(next)
             val stop = index.endOf(next, true)
-            // The next piece is walked from whichever of its ends touched the join.
             forward = Geo.distanceM(end.lat, end.lon, start.lat, start.lon) <= Geo.distanceM(end.lat, end.lon, stop.lat, stop.lon)
             d += index.lengthOf(next)
             piece = next
             end = index.endOf(piece, forward)
             out = outBearing(piece, forward)
         }
+    }
+
+    /** The walk started on the piece under the car, or null without one. */
+    private fun startWalk(lat: Double, lon: Double, headingDeg: Double): Walk? {
+        val piece = index.pieceAt(lat, lon, headingDeg) ?: return null
+        // Pieces have a drawing direction; we walk whichever way agrees with the heading.
+        val walk = Walk(piece, Geo.absAngleDiffDeg(index.bearingOf(piece), headingDeg) <= 90.0)
+        walk.d = Geo.distanceM(lat, lon, walk.end.lat, walk.end.lon)
+        return walk
+    }
+
+    private fun alongRoad(lat: Double, lon: Double, headingDeg: Double): Change? {
+        val w = startWalk(lat, lon, headingDeg) ?: return null
+        val mph0 = index.mphOf(w.piece)
+        var steps = 0
+        while (w.d <= config.maxM && steps++ < config.maxSteps) {
+            val join = index.joinFrom(w.end.lat, w.end.lon, w.out, exclude = w.piece) ?: return null
+            // Past a fork we can't know the branch without a route: say nothing yet (§8.4a).
+            if (join.fork) return null
+            val mph = index.mphOf(join.piece)
+            if (mph != mph0) return Change(mph, w.d, viaRoute = false, lat = w.end.lat, lon = w.end.lon)
+            w.advance(join.piece)
+        }
         return null
     }
 
     /**
      * The road ahead of the car as a line (DESIGN.md §11 step 4, free drive): the car's point, then
-     * the end of each piece the connectivity walk follows (as [alongRoad], ignoring limits), until
-     * [maxM] or until no piece continues. Null when no piece is under the car.
+     * the end of each piece the connectivity walk follows (as [alongRoad], ignoring limits and
+     * carrying on past forks by the straightest branch), until [maxM] or until no piece continues.
+     * Null when no piece is under the car.
      */
     fun roadAhead(lat: Double, lon: Double, headingDeg: Double, maxM: Double): List<LatLngLike>? {
-        var piece = index.pieceAt(lat, lon, headingDeg) ?: return null
-        var forward = Geo.absAngleDiffDeg(index.bearingOf(piece), headingDeg) <= 90.0
-        var end = index.endOf(piece, forward)
-        var out = outBearing(piece, forward)
-        val points = arrayListOf<LatLngLike>(LatLngPoint(lat, lon), end)
-        var d = Geo.distanceM(lat, lon, end.lat, end.lon)
+        val w = startWalk(lat, lon, headingDeg) ?: return null
+        val points = arrayListOf<LatLngLike>(LatLngPoint(lat, lon), w.end)
         var steps = 0
-        while (d < maxM && steps++ < config.maxSteps) {
-            val next = index.connectedFrom(end.lat, end.lon, out, exclude = piece) ?: break
-            val start = index.startOf(next)
-            val stop = index.endOf(next, true)
-            forward = Geo.distanceM(end.lat, end.lon, start.lat, start.lon) <= Geo.distanceM(end.lat, end.lon, stop.lat, stop.lon)
-            d += index.lengthOf(next)
-            piece = next
-            end = index.endOf(piece, forward)
-            out = outBearing(piece, forward)
-            points += end
+        while (w.d < maxM && steps++ < config.maxSteps) {
+            val next = index.connectedFrom(w.end.lat, w.end.lon, w.out, exclude = w.piece) ?: break
+            w.advance(next)
+            points += w.end
         }
         return points
     }

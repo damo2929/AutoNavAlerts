@@ -1,128 +1,306 @@
 # AutoNavAlerts
 
-An Android Auto navigation app built on the Google Navigation SDK. It's meant to stand in for Google Maps on the head unit, with a direction-aware POI alert system on top. PocketGPSWorld speed cameras are the first POI source.
+AutoNavAlerts is a navigation app for Android Auto.
+It shows a Google map on your car's screen and guides you turn by turn.
+On top of that it warns you about speed cameras and other points of interest ahead.
 
-> **AI-assisted code:** this project is written with the help of **Claude** (Anthropic's AI assistant, via Claude Code; the Claude Fable and Claude Opus models). A human reviews, tests and is responsible for the code. Commits that include AI-generated changes are marked with a `Co-Authored-By: Claude` trailer.
+A point of interest (POI) is a place marked on the map, such as a speed camera.
+The first POI source is PocketGPSWorld, a UK speed camera database you subscribe to yourself.
 
-## Status
-**First test build (v0.1.0).** It builds and lint passes, and the `:core` logic has 61 unit tests. It **hasn't been run on a real car or the Desktop Head Unit yet**, so expect rough edges.
+The app is written in Kotlin.
+It is built on Google's Navigation SDK (software development kit) and the Android for Cars App Library.
 
-- **Resuming work:** [CHECKPOINT.md](CHECKPOINT.md) has the current state, what has been tested, and next steps.
-- **Testing without a car:** [TESTING.md](TESTING.md) is the complete bench guide (Desktop Head Unit, simulated drives, test data, checklist).
-- **What changed and what's open:** [CHANGELOG.md](CHANGELOG.md) by day, and [ISSUES.md](ISSUES.md) for outstanding bugs, decisions, unverified and unbuilt items.
-- **Installing as a test user** (APK, adb, Android Auto, car): [docs/INSTALLATION.md](docs/INSTALLATION.md).
-- **Every setting explained:** [docs/SETTINGS.md](docs/SETTINGS.md).
+> **AI-assisted code.**
+> This project is written with the help of Claude, Anthropic's AI assistant, through Claude Code.
+> A person reviews, tests and is responsible for the code.
+> Commits with AI-generated changes carry a `Co-Authored-By: Claude` line.
 
-The full design is in [DESIGN.md](DESIGN.md). Read it before changing anything, and record design changes there first. [DESIGN.md Appendix B](DESIGN.md#appendix-b--implementation-status-first-test-build-2026-10-11) tracks what's built and what isn't.
+## What is in this document
 
-## Features
+1. [Where the project stands](#1-where-the-project-stands)
+2. [Which document to read](#2-which-document-to-read)
+3. [What the app does](#3-what-the-app-does)
+4. [What is waiting on Google](#4-what-is-waiting-on-google)
+5. [What is planned but not built](#5-what-is-planned-but-not-built)
+6. [Getting the app as a tester](#6-getting-the-app-as-a-tester)
+7. [Building the app yourself](#7-building-the-app-yourself)
+8. [Your Google Maps key](#8-your-google-maps-key)
+9. [Signing](#9-signing)
+10. [Testing without a car](#10-testing-without-a-car)
+11. [How the code is laid out](#11-how-the-code-is-laid-out)
+12. [Data and licensing](#12-data-and-licensing)
 
-### In the test build
-- **Navigation on the car screen**
-  - Google map with traffic and pan, zoom and recenter. A **Satellite / Map** toggle sits at the top right, with zoom in, zoom out and recenter in a column under it
-  - Places search, with recents shown before you type
-  - **Drive to a contact's address**: type or say a name ("Mum", "Dave Smith") and the contact's Home/Work/other addresses appear above the Places results; or open **Contacts** in Search. Optional contacts permission; only the address you pick is sent to Google
-  - Route preview with ETA and traffic
-  - Turn-by-turn guidance, with turn cards in Android Auto's rail and on the cluster
-- **Lives alongside media**: uses only Android Auto navigation templates, so music keeps playing in split-screen and alert speech lowers the volume rather than pausing it
-- **POI alerts**
-  - Import iGO TXT, KML, GPX, OV2 or CSV files (with column mapping), zipped or not
-  - Per-set icon (built-in or your own image) and spoken text, with a live preview and **Test speak**
-  - Three alert stages: a 1st and 2nd at distances you set, and a **compulsory passing alert 1 s before the camera** (at least 20 yd) whenever sound is on
-  - Direction-aware: cameras facing the other way, or on a parallel road, don't alert
-  - Average-speed zones (only real ones: a zone needs another camera with the same limit ahead; it ends at the last camera) and over-limit warnings that name the zone's limit and show its set icon
-  - Shown as a banner at the bottom of the car map (tap to dismiss), or as a navigation notification when another app fills the screen
-- **Map extras**
-  - POI markers redraw on every GPS update
-  - A speed panel shows your speed and the limit. Google's limit is only known while you're over it, so otherwise the panel shows the nearest camera's limit, marked with a dot.
-  - **OpenStreetMap speed limits for the UK**, downloaded once from Geofabrik (about 1.1 GB fetched, Wi-Fi only by default; 29 MB kept on the phone), fill in the panel's limit when Google and the cameras have none (grey dot). Nothing is looked up online while driving.
-- **Route options**: avoid tolls (on by default) and **energy-efficient routes for electric cars**: the preview offers the fastest and Google's eco-friendly route side by side and you pick (Routes API on your own key; falls back to the fastest route)
-- **Uses the car's own speed and GPS** from Android Auto when the car shares them. The speed panel matches your dashboard; alerts use the car's measured speed and GPS position (the phone's GPS drops to a 1 Hz backup). Falls back to the phone.
-- **GPS at the phone's own rate**: the phone's GPS is taken at the rate it offers (never forced faster), and the car's own GPS and speed at the fastest rate the car provides
-- **PocketGPSWorld**, with **your own** subscription
-  - Choose **TomTom OV2** (default: direction, camera make, roadworks cameras, PGW camera IDs) or **iGO** (exact direction in degrees). Every file in the download becomes its own set (never merged). For TomTom OV2 that's one set per type and speed, e.g. "PGW fixed cameras · 30 mph".
-  - Checks their RSS feed daily and logs in to download a new release by itself
-  - Never swaps in new cameras while you're navigating
-- **Report a camera with one tap** in the car. It saves your position, direction and the best-known speed limit, then records an optional **spoken comment** (speech-to-text). Reports are buffered, and after the drive the phone asks you to check them. **Review and Send happen only in the phone app, never while driving.**
-- **Recents** that you can delete from the car screen
-- **Phone app tabs**
-  - POIs: the POI files you've imported
-  - Cameras: PocketGPSWorld login and sync, and every camera set, grouped by camera type
-  - Reports
-  - Settings: setup (your own **Maps API key**, permissions, navigation terms), units, voice, chime, over-limit warning slider (−5% to +20%, default −0.1%), speed panel, GPS curve, simulate speed (debug builds). All documented in [docs/SETTINGS.md](docs/SETTINGS.md).
+## 1. Where the project stands
 
-### Waiting on Google
-- **Live incident reporting** on the car screen (crashes, congestion, police…). Google Maps has it, but Google's Navigation SDK doesn't offer it to apps on Android Auto yet. The app detects it automatically if a future SDK adds it. A quarterly GitHub Actions check opens an issue when that happens. Run it locally with `tools/check-nav-sdk-features.sh --latest`.
+The app is on Google Play's **internal testing track**.
+Testers install it from the Play Store by invitation.
 
-### Planned (designed, not built yet)
-- A public Google Play listing (store listing, content declarations, review). Today the app is on Play's internal testing track by invitation (docs/INSTALLATION.md)
-- Home Assistant people finder: navigate to family members' live locations, e.g. children or relatives living with dementia (DESIGN.md §17)
-- Google Maps history imports (§8.2)
-- EV chargers via Google Places and Open Charge Map, with a hand-off to Electroverse (§18)
-- Background alerts during free drive with no route set, a phone "Send to car" option, and per-category overrides
+It has been driven in a real car once (an XPENG G6, 2026-10-12) and tested many times on the bench.
+The bench is a Desktop Head Unit on a computer, with a phone or an emulator.
 
-## Getting started
+The core logic has 214 unit tests. The Android side has 30 more.
 
-### Build
-Requirements:
-- **A Java runtime** to start Gradle. Gradle downloads JDK 21 itself (`gradle/gradle-daemon-jvm.properties`).
-- **The Android SDK**, with platform **37.0**, build-tools 37 and platform-tools. Set its path as `sdk.dir` in `local.properties`.
+It is a test build, so please expect some problems.
+
+## 2. Which document to read
+
+| You want to | Read |
+|---|---|
+| Install it on your phone and car as a tester | [docs/INSTALLATION.md](docs/INSTALLATION.md) |
+| Understand every setting | [docs/SETTINGS.md](docs/SETTINGS.md) |
+| Know what changed, by day | [CHANGELOG.md](CHANGELOG.md) |
+| See open bugs and what is not built yet | [ISSUES.md](ISSUES.md) |
+| Test it without a car | [TESTING.md](TESTING.md) |
+| Continue the work where it stopped | [CHECKPOINT.md](CHECKPOINT.md) |
+| Change the code | [AGENTS.md](AGENTS.md), then [DESIGN.md](DESIGN.md) |
+
+DESIGN.md is the source of truth for how the app behaves.
+Please read it before changing anything, and write design changes there first.
+Its Appendix B lists what is built and what is not.
+
+## 3. What the app does
+
+### Navigation on the car screen
+
+- A Google map with live traffic. You can pan, zoom and recenter.
+- A **Satellite / Map** button at the top right. Zoom in, zoom out and recenter sit in a column under it.
+- Search for a place. Your recent places show before you type.
+- Drive to a contact's address. Type or say a name, and the contact's addresses appear above the search results.
+  Only the address you pick is sent to Google.
+- A route preview with the arrival time and traffic.
+- Turn-by-turn guidance. The turn cards also show in Android Auto's side rail and on the car's driver display.
+
+### Works alongside music
+
+- The app uses only Android Auto's navigation screens.
+- So music keeps playing in split screen.
+- When the app speaks, the music gets quieter. It does not stop.
+
+### Camera and POI alerts
+
+- Import your own POI files: iGO TXT, KML, GPX, TomTom OV2 or CSV. They can be zipped.
+  (CSV is a plain text table. OV2 is TomTom's POI file format.)
+- Each set gets its own icon and its own spoken text. You can preview it and press **Test speak**.
+- Three alert stages for each camera:
+  - a 1st alert, some seconds ahead of the camera at your current speed
+  - a 2nd alert, at half that time
+  - a passing alert 1 second before the camera, never less than 20 yards away. This one always plays while sound is on.
+
+*[Image: three markers on a road ahead of a car, labelled 1st, 2nd, passing]*
+
+- Alerts know which way a camera faces.
+  A camera facing the other way, or on a road beside yours, does not alert.
+  Such cameras are drawn dimmed, so you can see why.
+
+*[Image: two cameras on a road, one facing the car (bright), one facing away (dimmed)]*
+
+- Average speed zones are recognised only when they are real: there must be another camera with the same limit ahead.
+  The zone ends at its last camera.
+- If you are over the limit, the alert says so and names the limit.
+- Alerts appear as a banner at the bottom of the car map. Tap it to dismiss.
+  When another app fills the screen, the alert comes as a navigation notification instead.
+
+### Map extras
+
+- POI markers are redrawn on every position update.
+- A speed panel shows your speed and the road's limit.
+  Google only reveals its limit while you are over it.
+  Otherwise the panel shows the limit of the camera you are being warned about, marked with a dot.
+- UK speed limits from OpenStreetMap fill in the panel when Google and the cameras give none (a grey dot).
+  This is one download of about 1.1 GB, over Wi-Fi by default. The phone keeps about 29 MB.
+  Nothing is looked up online while you drive.
+
+### Route options
+
+- **Avoid tolls** is on by default.
+- **Energy-efficient routes** for electric cars (EV). The preview offers the fastest route and Google's energy-saving route side by side.
+  This uses Google's Routes API on your own key. If it is not available, the fastest route is used.
+
+### Speed and position from the car
+
+- When the car shares them through Android Auto, the app uses the car's own speed and GPS position.
+  (GPS is the satellite positioning system.)
+- The speed panel then matches your dashboard.
+- Alerts use the car's measured speed and position. The phone's GPS stays ready as a backup.
+- The phone's GPS is read at the rate the phone offers, never forced faster.
+  The car's speed and GPS are read as fast as the car provides them.
+
+### PocketGPSWorld cameras, with your own subscription
+
+- Choose the **TomTom OV2** download (the default: direction, camera make, roadworks cameras and camera IDs) or **iGO** (exact direction in degrees).
+- Every file in the download becomes its own set. Sets are never merged.
+  With TomTom OV2 that is one set per camera type and speed, for example "PGW fixed cameras · 30 mph".
+- The app checks PocketGPSWorld's update feed once a day and downloads a new release by itself.
+- New cameras are never swapped in while you are navigating.
+
+### Report a camera with one tap
+
+- Tap **Report** in the car. The app saves your position, direction and the best known speed limit.
+- Then it records a short spoken comment, which is turned into text.
+- After the drive, the phone asks you to check your reports.
+- **You review and send reports only in the phone app, never while driving.**
+
+### Phone app
+
+Four tabs:
+
+- **POIs**: the POI files you imported
+- **Cameras**: your PocketGPSWorld login and sync, and every camera set grouped by type
+- **Reports**: the reports you captured in the car
+- **Settings**: setup (your own Maps key, permissions, navigation terms), units, voice, chime, the over-limit slider, the speed panel, backups and diagnostics
+
+Every setting is explained in [docs/SETTINGS.md](docs/SETTINGS.md).
+
+## 4. What is waiting on Google
+
+**Live incident reporting** on the car screen (crashes, congestion, police).
+Google Maps has it. Google's Navigation SDK does not offer it to other apps on Android Auto yet.
+The app will detect it by itself if a future SDK adds it.
+A check runs every 3 months on GitHub and opens an issue when that happens.
+
+Technical detail: run the check yourself with `tools/check-nav-sdk-features.sh --latest`.
+
+## 5. What is planned but not built
+
+- A public Google Play listing. Today the app is on the internal testing track by invitation.
+- A Home Assistant people finder: navigate to a family member's live location (DESIGN.md §17).
+- Importing your Google Maps history (DESIGN.md §8.2).
+- EV chargers from Google Places and Open Charge Map, with a link to Electroverse (DESIGN.md §18).
+- Alerts in the background with no car connected, a phone "Send to car" option, and per-category settings.
+
+The full list of what is designed but not built is in [ISSUES.md](ISSUES.md).
+
+## 6. Getting the app as a tester
+
+You do not need to build anything.
+
+1. Send the maintainer the Google account your phone's Play Store uses.
+2. The maintainer adds it to the Play tester list.
+3. Install from Google Play through the link in [docs/INSTALLATION.md](docs/INSTALLATION.md).
+
+That guide takes you from nothing to a working car screen.
+
+## 7. Building the app yourself
+
+This section is for developers.
+
+You need:
+
+- a Java runtime to start Gradle. Gradle downloads JDK 21 itself.
+- the Android SDK, with platform 37.0, build-tools 37 and platform-tools.
+  Put its path in `local.properties` as `sdk.dir`. That file is never committed.
 
 ```bash
-echo "sdk.dir=$HOME/Android/Sdk" >> local.properties   # local.properties is never committed
+echo "sdk.dir=$HOME/Android/Sdk" >> local.properties
 ./gradlew :core:test          # JVM unit tests
-./gradlew :app:assembleDebug  # → app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug  # builds app/build/outputs/apk/debug/app-debug.apk
 ```
 
 You can test the importer against your own PocketGPSWorld download without committing it:
+
 ```bash
 PGW_IGO_FILE=/path/to/pocketgps_uk_sc.txt ./gradlew :core:test --tests '*realPgwFileIfProvided'
 ```
 
-### Google Maps API key
-You need a Google Maps Platform key with the **Navigation SDK** (access must be approved by Google), **Maps SDK for Android** and **Places API (New)** enabled. Restrict it to the package `uk.damiendye.autonav` and your build's signing SHA-1, and to those three APIs.
+### Installing a build you made
 
-**Get the key in the phone app's Settings tab after installing**: press **Create a key with my Google account** to have the app make one in your own Google Cloud account, or paste one you already have. It's stored encrypted on the device and applied at run time, so no rebuild is needed and each user can bring their own key. There's no built-in key and no way to build one in: everyone's Maps use is billed to their own Google account.
+A build you install with a cable is a **developer build**. Android Auto treats it differently from a Play install.
 
-- **What the button makes**, in your Google Cloud account: one project ("AutoNavAlerts", reused next time), linked to your billing account; the three APIs turned on; one key that only this app can use. You're shown this list before it starts. Details: [docs/SETTINGS.md §2.1](docs/SETTINGS.md).
-- **Billing:** Google Maps needs a Cloud **billing account** (a card from your Google payments profile can be used). Google may charge for use beyond its free allowance. Billing accounts can't be created by an app; if you have none, the app opens the page to add one.
-- **If the button isn't available** for your copy of the app (it needs a one-time Google registration by the maintainer), **Set it up yourself in Google Cloud (step by step)** does the same in your browser, with an **Open** button for each page and **Paste key from clipboard** at the end.
+1. For a phone you will drive with, build the release and install it with the Play Store recorded as the installer:
+   ```bash
+   ./gradlew :app:assembleRelease
+   adb install -r -i com.android.vending app/build/outputs/apk/release/app-release.apk
+   ```
+   (adb is the Android Debug Bridge, Google's command-line tool for phones.)
+   The debug build (`adb install app/build/outputs/apk/debug/app-debug.apk`) is for the bench. It is larger and has test hooks.
+2. In the phone app's **Settings** tab: add your Maps key, press **Allow** for the permissions, then **Allow all the time**, and accept Google's navigation terms.
+3. In Android Auto's settings, tap the version number repeatedly to turn on developer mode. Then turn on **Unknown sources**.
+   A developer build is not kept in Android Auto's Customise Launcher list. It still appears on the car.
+   A Play install needs none of this.
+4. Have a settings backup? Settings → Backup → **Restore from backup…** brings back your key, PocketGPSWorld login and settings.
+   The backup file is plain text with your key and password in it. Please keep it private.
+5. Add cameras: enter your PocketGPSWorld login on the **Cameras** tab and press **Sync now**, or import a POI file on the **POIs** tab.
 
-### Signing
-Official builds are all signed with one shared key, so Google sign-in and restricted Maps keys work for every build. It's kept in a **private** repo, never here. Builds made without it are signed with your own debug key; they work, but a Maps key must list your SHA-1 (`apksigner verify --print-certs <apk>` shows it). See DESIGN.md §13.3.
+## 8. Your Google Maps key
 
-### Install and set up
-0. **Testers don't build anything:** ask the maintainer to add your Google account to the Play tester list, then install from Google Play through the internal-testing link in [docs/INSTALLATION.md](docs/INSTALLATION.md). The steps below are the developer path.
-1. `adb install app/build/outputs/apk/debug/app-debug.apk`
-   (for a phone you'll drive with, build and install the release: `./gradlew :app:assembleRelease` and `adb install -r -i com.android.vending app/build/outputs/apk/release/app-release.apk`; it's smaller and has no bench hooks. The `-i com.android.vending` records the Play Store as the installer, which Android Auto looks for)
-2. In the phone app's **Settings** tab (the app opens there until setup is done): add the Maps API key, press **Allow** (location, notifications, microphone and car speed), then **Allow all the time** (recommended), and accept Google's navigation terms (available once the key is saved).
-3. In Android Auto (sideloaded builds only; a Play install needs none of this): tap the version number repeatedly to turn on developer mode, then enable **Unknown sources**. A sideloaded build won't stay in Android Auto's Customise Launcher list (Google's Unknown sources setting doesn't cover Car App Library apps); it still appears on the car. Pick AutoNavAlerts there as your navigation app.
-4. **Already have a settings backup?** Settings → Backup → **Restore from backup…** brings back your Maps key, PocketGPSWorld login and settings (accept the navigation terms again afterwards). **Save settings backup…** makes one; it's plain text with your key and password in it, so keep it private.
-5. Add cameras: either enter your PocketGPSWorld login on the **Cameras** tab and press **Sync now**, or import a POI file on the **POIs** tab.
+Google Maps use is billed to the person using it.
+So each user brings their own Google Maps Platform key.
+There is no built-in key, and no way to build one in.
 
-### Test without a car
-Use the Android Auto **Desktop Head Unit** and the **Simulate** drive. See **[TESTING.md](TESTING.md)** for the full step-by-step bench set-up (phone or emulator), test data, and a checklist covering every feature. In short:
+The key needs three services turned on: the **Navigation SDK** (Google must approve access), the **Maps SDK for Android** and the **Places API (New)**.
+It is restricted to the app's package name, `uk.damiendye.autonav`, and the build's signing fingerprint.
+
+You get the key in the phone app's **Settings** tab after installing:
+
+- Press **Create a key with my Google account**. The app makes the key in your own Google Cloud account.
+  It creates one project called "AutoNavAlerts" (reused next time), links your billing account, turns on the three services, and makes one key only this app can use.
+  You see this list before it starts.
+- Or paste a key you already have.
+
+The key is stored encrypted on the phone and applied at run time. No rebuild is needed.
+
+**Billing.** Google Maps needs a Cloud billing account. A card from your Google payments profile can be used.
+Google may charge for use beyond its free monthly allowance.
+An app cannot create a billing account. If you have none, the app opens the page where you add one.
+
+**If the button is not available for your copy of the app**, it needs a one-time registration by the maintainer.
+Use **Set it up yourself in Google Cloud (step by step)** instead.
+It opens each Google Cloud page for you and ends with **Paste key from clipboard**.
+
+Detail: [docs/SETTINGS.md §2](docs/SETTINGS.md).
+
+## 9. Signing
+
+All official builds are signed with one shared key.
+So Google sign-in and restricted Maps keys work for every official build.
+The key lives in a private repository, never here.
+
+A build you make without it is signed with your own debug key.
+It works, but your Maps key must list your build's fingerprint (its SHA-1).
+`apksigner verify --print-certs <apk>` shows it.
+
+Technical detail: DESIGN.md §13.3.
+
+## 10. Testing without a car
+
+Use Android Auto's **Desktop Head Unit** on a computer, and the app's **Simulate** drive.
+[TESTING.md](TESTING.md) has the full bench set-up, test data and a checklist for every feature.
+
+In short:
 
 ```bash
-sudo dnf install libcxx libcxxabi          # Fedora: libraries the DHU needs
+sudo dnf install libcxx libcxxabi          # Fedora: libraries the head unit needs
 adb forward tcp:5277 tcp:5277              # after "Start head unit server" on the phone
 $ANDROID_HOME/extras/google/auto/desktop-head-unit
 ```
 
-On the emulator bench, `tools/bench.sh` starts and drives the head unit (`bench.sh car`, `bench.sh dhu screenshot <file>`, `bench.sh dhu dpad …`), and `tools/drive.py` drives the emulator's GPS along real roads (default: a loop around central London). With `--limits` it follows each road's posted limit from OpenStreetMap, taking turns under, at and over it. The emulator only has a stub of Android Auto; TESTING.md §3 shows how to copy the real one from your phone.
+On the emulator bench, `tools/bench.sh` starts and drives the head unit, and `tools/drive.py` moves the emulator's GPS along real roads.
+The emulator ships only a stub of Android Auto. TESTING.md §3 shows how to copy the real one from a phone.
 
-## Project layout
-| Module | What |
+## 11. How the code is laid out
+
+| Module | What it holds |
 |---|---|
-| `:core` | Plain Kotlin/JVM logic (in `core/src/main/kotlin`), unit-tested on the JVM: geo maths, grid index, importers, alert engine, templates, PocketGPSWorld feed and page parsing |
-| `:app` | Android app (Kotlin, in `app/src/main/kotlin`): Car App Library screens, Navigation SDK map and guidance, Room, WorkManager (PocketGPSWorld sync), Compose phone UI |
+| `:core` | Plain Kotlin logic, tested on the JVM: geo maths, the grid index, importers, the alert engine, templates, the PocketGPSWorld feed and page parsing |
+| `:app` | The Android app: car screens (Car App Library), the Navigation SDK map and guidance, the Room database, WorkManager jobs, and the Compose phone screens |
 
-Main versions: AGP 9.4.1, Kotlin 2.4.21, Gradle 9.8.1, Car App Library 1.7.0, Navigation SDK 8.0.0. minSdk 26, targetSdk 36, compileSdk 37.
+Every source file starts with a comment that names its DESIGN.md section, the thread it runs on and the rule it upholds.
+DESIGN.md §3 maps every class to its job, and §2 has diagrams of how the parts fit together.
 
-## Data and licensing
-- The code is licensed under the **Apache License 2.0**; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-- **PocketGPSWorld data is never included in this repository or the app.**
-  - Each user signs in with their **own** subscription and gets their own watermarked copy, under PocketGPSWorld's licence.
-  - That copy is kept in private app storage and excluded from backups.
+Main versions: AGP 9.4.1, Kotlin 2.4.21, Gradle 9.8.1, Car App Library 1.7.0, Navigation SDK 8.0.0.
+Android: minSdk 26, targetSdk 36, compileSdk 37.
+
+## 12. Data and licensing
+
+- The code is licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+- **PocketGPSWorld data is never included in this repository or in the app.**
+  - Each user signs in with their own subscription and gets their own watermarked copy, under PocketGPSWorld's licence.
+  - That copy stays in private app storage and is excluded from backups.
   - Test fixtures are made up, and `.gitignore` blocks PocketGPSWorld files.
-- Google Maps, the Navigation SDK and Places are used under Google's terms, with your own API key.
+- Google Maps, the Navigation SDK and Places are used under Google's terms, with your own key.
+
+---
+
+First published: 2026-10-11
+Last updated: 2026-10-24
+Pictures: not added yet. The lines in square brackets mark where they go.

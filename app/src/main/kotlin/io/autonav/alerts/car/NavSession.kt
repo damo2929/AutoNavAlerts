@@ -45,6 +45,7 @@ import io.autonav.alerts.map.SpeedPanelView
 import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.nav.LimitAnnouncer
 import io.autonav.alerts.nav.StopReason
+import io.autonav.alerts.settings.AppSettings
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
@@ -97,14 +98,15 @@ class NavSession : Session(), DefaultLifecycleObserver {
     @Volatile private var speedingAtMs = 0L
     /** Google's limit worked out from the last speeding update, and when; kept for 60 s (§8.4). */
     @Volatile private var derivedLimit: Pair<Int, Long>? = null
+    /**
+     * The settings the session reads on every fix (units, speed panel, OSM limits, limit announcements, voice,
+     * mute), copied from the store's flow so the hot paths never touch DataStore; the defaults until it answers.
+     */
+    @Volatile private var settings = AppSettings()
     /** Display units from the settings: miles, yards and mph when true (§13). Read by every screen. */
-    @Volatile var imperial = true
-        private set
-    @Volatile private var speedPanelOn = true
-    @Volatile private var osmLimitsOn = true
-    @Volatile private var announceLimits = true
-    @Volatile private var voiceOn = true
-    @Volatile private var mutedUntilMs = 0L
+    val imperial: Boolean get() = settings.units == Units.IMPERIAL
+    /** The speed and a limit in the display units (§8.4). */
+    private val unit: String get() = if (imperial) "mph" else "km/h"
 
     init {
         lifecycle.addObserver(this)
@@ -120,7 +122,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         active = this
         deps = CarDeps.from(carContext)
         eventLog = deps.eventLog()
-        eventLog.record(EventLog.Channel.NAV, "Session", "create api=${carContext.carAppApiLevel} host=${runCatching { carContext.hostInfo?.packageName }.getOrNull() ?: "?"}")
+        session("create api=${carContext.carAppApiLevel} host=${runCatching { carContext.hostInfo?.packageName }.getOrNull() ?: "?"}")
         deps.driveRecorder().start("car")
         // The map is only created once the user's own Maps key is applied: no built-in key (hard rule 5, §1.4).
         surface = MapSurface(carContext) { deps.navigator().applyApiKey() }
@@ -135,7 +137,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
             // The X on the host's travel-estimate card (the one cancel on the car screen, DESIGN.md §8),
             // the system UI, or another navigation app taking over (§9.3): logged, then guidance stops.
             override fun onStopNavigation() {
-                eventLog.record(EventLog.Channel.NAV, "Session", "hostStopNavigation guiding=${deps.guidance().guiding.value}")
+                session("hostStopNavigation guiding=${deps.guidance().guiding.value}")
                 deps.guidance().stopGuidance(StopReason.HOST)
             }
             // The DHU's "auto drive" test hook (§9.3): simulate driving along the set route.
@@ -152,12 +154,12 @@ class NavSession : Session(), DefaultLifecycleObserver {
         // The alert engine runs on the app scope, so it outlives the session with the foreground service (§9.3).
         deps.alerts().start(App.appScope)
         deps.dispatcher().carSink = CarAlertSink(::showCarAlert)
-        tripPublisher = TripPublisher(carContext, deps, { imperial }, eventLog).also { it.start(lifecycleScope) }
+        tripPublisher = TripPublisher(carContext, deps) { imperial }.also { it.start(lifecycleScope) }
         startCollectors()
 
         val home = HomeScreen(carContext, this)
         handleNavigateIntent(intent)?.let { pending ->
-            carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(home)
+            push(home)
             return pending
         }
         return home
@@ -165,8 +167,13 @@ class NavSession : Session(), DefaultLifecycleObserver {
 
     /** A navigate intent while the session is up (Assistant, a share, a link): its screen goes on top (§9.1). */
     override fun onNewIntent(intent: Intent) {
-        handleNavigateIntent(intent)?.let { carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(it) }
+        handleNavigateIntent(intent)?.let(::push)
     }
+
+    private fun push(screen: Screen) = carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(screen)
+
+    /** A `Session …` line in debug-nav (§15.5): create, destroy, the host's stop, the SDK listener. */
+    private fun session(msg: String) = eventLog.record(EventLog.Channel.NAV, "Session", msg)
 
     /** Day or night changed in the car: our map buttons follow it (DESIGN.md §8). */
     override fun onCarConfigurationChanged(newConfiguration: android.content.res.Configuration) {
@@ -214,12 +221,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         // when it differs: setting it re-applies the view.
         lifecycleScope.launch {
             deps.settings().settings.collect {
-                imperial = it.units == Units.IMPERIAL
-                speedPanelOn = it.speedPanelOn
-                osmLimitsOn = it.osmLimitsOn
-                announceLimits = it.announceLimitChanges
-                voiceOn = it.voiceOn
-                mutedUntilMs = it.mutedUntilMs
+                settings = it
                 if (surface.satellite != it.satelliteMap) surface.satellite = it.satelliteMap
             }
         }
@@ -290,7 +292,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         deps.navigator().roadSnappedProvider()?.let { p ->
             p.addLocationListener(sdkListener)
             sdkProvider = p
-            eventLog.record(EventLog.Channel.NAV, "Session", "sdkLocationListener added")
+            session("sdkLocationListener added")
         }
     }
 
@@ -324,7 +326,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         val fix = deps.alerts().lastFix.value
         val heading = fix?.heading
         // No heading (parked, crawling): the walk along the road can't start, so nothing ahead (§8.4a).
-        if (fix == null || heading == null || !osmLimitsOn) { setUpcoming(null); return }
+        if (fix == null || heading == null || !settings.osmLimitsOn) { setUpcoming(null); return }
         val route = deps.guidance().routePointsAhead()
         // With a route the lookahead walks the route polyline; without one it follows the road by connectivity (§8.4a).
         val change = deps.speedLimits().nextChange(fix.lat, fix.lon, heading, route.takeIf { it.size >= 2 })
@@ -336,7 +338,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
             "limitAhead new=${change.newMph} d=${change.distanceM.toInt()} via=${if (change.viaRoute) "route" else "road"}"
         }
         if (!limitAnnouncer.shouldAnnounce(change.newMph, change.distanceM, fix.lat, fix.lon, fix.speedMps, heading, change.lat, change.lon)) return
-        val speak = announceLimits && voiceOn && mutedUntilMs <= System.currentTimeMillis()
+        val speak = settings.announceLimitChanges && settings.voiceOn && settings.mutedUntilMs <= System.currentTimeMillis()
         eventLog.record(EventLog.Channel.ALERT, "Alerts", "limitAhead announce new=${change.newMph} d=${change.distanceM.toInt()} spd=${fix.speedMps.roundToInt()} speak=$speak")
         // Its own kind: never reported, listed or traced as a camera stage (owner, 2026-10-13).
         if (speak) deps.tts().speak(LimitAnnouncer.text(upcoming!!), 10, -1, false, kind = io.autonav.alerts.core.alerts.AlertKind.LIMIT_CHANGE)
@@ -365,22 +367,20 @@ class NavSession : Session(), DefaultLifecycleObserver {
      */
     private fun updateSpeedPanel(speedMps: Double?, active: ActiveAlert?) {
         val panel = surface.speedPanel ?: return
-        if (!speedPanelOn) { panel.post { panel.visibility = android.view.View.GONE }; return }
+        if (!settings.speedPanelOn) { panel.post { panel.visibility = android.view.View.GONE }; return }
         if (speedMps == null) return
         if (panel.visibility != android.view.View.VISIBLE) panel.post { panel.visibility = android.view.View.VISIBLE }
         // The car's display speed matches its dashboard; otherwise the engine's speed (car raw or GPS).
         // Not while simulating on the bench: the car's real (parked) speed would hide the simulated one.
         val shownMps = deps.carData().freshSpeed()?.displayMps?.toDouble()
             ?.takeIf { !deps.guidance().simulating.value } ?: speedMps
-        val speed = if (imperial) shownMps / Geo.MPS_PER_MPH else shownMps * 3.6
-        val shown = speed.roundToInt()
+        val shown = display(shownMps).roundToInt()
         val now = System.currentTimeMillis()
         // While speeding, the SDK reports % over Google's limit, so the limit can be worked out: from
         // the engine's speed (GPS or the car's raw), not the dashboard figure, which reads high (§8.4).
         // Snapped to a limit that exists, and only from an update in the last 2 s (bench, 2026-10-23: "45").
         if (speedingSeverity != SpeedPanelView.Severity.NONE && speedingPct > 0f && now - speedingAtMs <= 2_000) {
-            val measured = if (imperial) speedMps / Geo.MPS_PER_MPH else speedMps * 3.6
-            val lim = io.autonav.alerts.core.osm.LimitSnap.snap(measured / (1 + speedingPct / 100.0), imperial)
+            val lim = io.autonav.alerts.core.osm.LimitSnap.snap(display(speedMps) / (1 + speedingPct / 100.0), imperial)
             derivedLimit = lim to now
         }
         // Source order (§8.4): Google (kept 60 s), then the camera being alerted (20 s; a zone exit has
@@ -388,7 +388,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         val google = derivedLimit?.takeIf { now - it.second < 60_000 }?.first
         val camera = active?.takeIf { now - it.timeMs < 20_000 && it.kind != AlertKind.ZONE_EXIT }?.limitShown(imperial)
         // OpenStreetMap last (DESIGN.md §8.4a): from the downloaded tiles, never a live lookup.
-        val osm = if (google == null && camera == null && osmLimitsOn) {
+        val osm = if (google == null && camera == null && settings.osmLimitsOn) {
             deps.alerts().lastFix.value?.let { f -> deps.speedLimits().limitAt(f.lat, f.lon, f.heading) }
                 ?.let { io.autonav.alerts.core.osm.OsmSpeedLimits.display(it, imperial) }
         } else null
@@ -419,7 +419,6 @@ class NavSession : Session(), DefaultLifecycleObserver {
             val moved = fix?.let { Geo.distanceM(held.lat, held.lon, it.lat, it.lon) } ?: 0.0
             if (now - held.timeMs < 30_000 && moved < 300) { limit = held.limit; source = held.source } else lastLimit = null
         }
-        val unit = if (imperial) "mph" else "km/h"
         // `Panel limit n src=` only when it changes (DESIGN.md §15.5), and `limitChanged a→b` to the
         // alert log when the shown limit flips, so the lookahead can be checked against what happened.
         eventLog.onChange("panel.limit", (limit ?: -1) to source, EventLog.Channel.NAV, "Panel") {
@@ -432,6 +431,9 @@ class NavSession : Session(), DefaultLifecycleObserver {
         }
         panel.post { panel.update(shown, limit, source, speedingSeverity, unit) }
     }
+
+    /** [mps] in the display units: mph, or km/h (§8.4). */
+    private fun display(mps: Double): Double = if (imperial) mps / Geo.MPS_PER_MPH else mps * 3.6
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
@@ -451,7 +453,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
         val bitmap = deps.icons().bitmap(alert.iconId, 128)
         val subtitle = buildString {
             if (alert.distanceM > 0) append(AlertCoordinator.distanceLabel(alert.distanceM, imperial))
-            alert.limitShown(imperial)?.let { if (isNotEmpty()) append(" · "); append(it).append(if (imperial) " mph" else " km/h") }
+            alert.limitShown(imperial)?.let { if (isNotEmpty()) append(" · "); append(it).append(' ').append(unit) }
         }
         // 8 s, or 5 s for the passing alert (§12.1); a new stage for the same POI restarts the time.
         val duration = if (alert.kind == AlertKind.PASSING) 5_000L else 8_000L
@@ -490,7 +492,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
      * service outlive the session); the logs are flushed so a kill right after loses nothing.
      */
     override fun onDestroy(owner: LifecycleOwner) {
-        eventLog.record(EventLog.Channel.NAV, "Session", "destroy guiding=${deps.guidance().guiding.value}")
+        session("destroy guiding=${deps.guidance().guiding.value}")
         detachNavigator()
         tripPublisher?.stop()
         tripPublisher = null

@@ -8,7 +8,6 @@ import io.autonav.alerts.core.poi.ImportResult
 import io.autonav.alerts.core.poi.ImportRow
 import io.autonav.alerts.core.poi.RowError
 import io.autonav.alerts.core.poi.SpeedUnit
-import io.autonav.alerts.core.poi.isPlausibleCoordinate
 import java.io.BufferedReader
 
 /**
@@ -61,12 +60,7 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
                 return@forEach
             }
             // X is longitude and Y latitude (§5.2 column table).
-            val lon = f[0].trim().toDoubleOrNull()
-            val lat = f[1].trim().toDoubleOrNull()
-            if (lat == null || lon == null || !isPlausibleCoordinate(lat, lon)) {
-                errors += RowError(lineNo, line, "bad coordinates")
-                return@forEach
-            }
+            val (lat, lon) = errors.checkCoordinate(f[1].trim().toDoubleOrNull(), f[0].trim().toDoubleOrNull(), lineNo, line) ?: return@forEach
             val speed = f.getOrNull(3)?.trim()?.toIntOrNull()?.takeIf { it > 0 }
             val dirTypeCode = f.getOrNull(4)?.trim()?.toIntOrNull()
             val direction = f.getOrNull(5)?.trim()?.toFloatOrNull()?.let { if (it >= 360f) it - 360f else it }
@@ -79,15 +73,7 @@ class IgoTxtImporter(private val speedUnit: SpeedUnit = SpeedUnit.MPH) {
                 dirTypeCode == 2 -> DirectionType.BOTH
                 else -> DirectionType.ANY
             }
-            rows += ImportRow(
-                lat = lat,
-                lon = lon,
-                categoryCode = type,
-                speed = speed,
-                speedUnit = speed?.let { speedUnit },
-                dirType = dirType,
-                bearing = if (dirType == DirectionType.ANY) null else direction,
-            )
+            rows += importRow(lat, lon, null, type, speed?.let { it to null }, speedUnit, dirType, direction)
         }
         return ImportResult(rows, errors, silent)
     }

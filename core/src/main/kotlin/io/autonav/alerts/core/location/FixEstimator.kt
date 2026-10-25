@@ -9,9 +9,8 @@ import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * Where a fix came from (DESIGN.md §10.6a, §10.7). The app maps it onto the engine's
- * `alerts.LocationSource` when it builds a `Fix`; the two enums are kept apart so `:core`'s
- * location and alert halves don't depend on each other.
+ * Where a fix came from (DESIGN.md §10.6a, §10.7). The engine's `alerts.LocationSource` is an
+ * alias of this one, so the app's `EstimateMapper` passes it through unchanged.
  */
 enum class LocationSource { PHONE, CAR, SIM }
 
@@ -165,10 +164,12 @@ class FixEstimator(private val config: Config = Config()) {
     var gpsBearingStale: Boolean = false
         private set
 
-    var lastResetReason: String? = null
-        private set
-
-    /** Forgets the track, the speed window and the displacement reference. The stale-bearing flag is kept. */
+    /**
+     * Forgets the track, the speed window and the displacement reference. The stale-bearing flag is
+     * kept. [reason] is the caller's own log line (handover, gap, jump); the automatic resets of
+     * [onFix] report theirs in [Estimate.resetReason].
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun resetTrack(reason: String) {
         ring.clear()
         smoother.reset()
@@ -181,7 +182,6 @@ class FixEstimator(private val config: Config = Config()) {
         trackAccDeg = null
         stillSinceMs = null
         last = null
-        lastResetReason = reason
     }
 
     /**
@@ -227,11 +227,7 @@ class FixEstimator(private val config: Config = Config()) {
                     val threshold = max(config.minDisplacementM, acc)
                     if (disp > threshold) {
                         // Two fixes in a row beyond the threshold: one jitter spike can't become a speed.
-                        if (dispPending) {
-                            closeWindow(disp / dt, f)
-                        } else {
-                            dispPending = true
-                        }
+                        if (dispPending) closeWindow(disp / dt, f) else dispPending = true
                     } else {
                         dispPending = false
                         // No displacement in a window: a stop, when the last speed would have shown

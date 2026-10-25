@@ -20,7 +20,6 @@ import io.autonav.alerts.core.diag.DriveLog
 import io.autonav.alerts.diag.DriveRecorder
 import io.autonav.alerts.diag.EventLog
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -60,18 +59,17 @@ data class CarSpeed(
  *
  * Lifecycle: a Hilt singleton. `NavSession` calls [start] with its `CarContext` when the car
  * session is created and [stop] when it's destroyed (the listeners belong to that session's
- * host connection). The listeners run on the car context's main executor, so [onSpeedUpdate]
- * and [onLocation] are invoked on the main thread; `AlertCoordinator` sets [enabled] from the
- * "Speed and location source" setting; [AdaptiveLocationSource] reads [freshSpeed] per fix.
+ * host connection). The listeners run on the car context's main executor, so [onLocation] is
+ * invoked on the main thread; `AlertCoordinator` sets [enabled] from the "Speed and location
+ * source" setting; [AdaptiveLocationSource] reads [freshSpeed] per fix.
  */
 @Singleton
 class CarDataSource @Inject constructor(
     private val eventLog: EventLog,
     private val driveRecorder: DriveRecorder,
 ) {
-    /** The latest report, fresh or not; readers go through [freshSpeed] for the 3 s rule. */
+    /** The latest report, fresh or not; every reader goes through [freshSpeed] for the 3 s rule. */
     private val _speed = MutableStateFlow<CarSpeed?>(null)
-    val speed: StateFlow<CarSpeed?> = _speed
 
     /** `elapsedRealtime` of the last car fix with status SUCCESS, for [carLocationFresh]; 0 before any. */
     @Volatile private var lastLocationMs = 0L
@@ -82,13 +80,6 @@ class CarDataSource @Inject constructor(
      * With it false both feeds are still listened to and logged (§15.5), but neither is handed on.
      */
     @Volatile var enabled = true
-
-    /**
-     * Called for each car speed report, so the GPS rate reacts at once.
-     *
-     * Set by nobody today: the phone's rate is fixed (§10.2), so this hook is spare. Kept for the GPS row.
-     */
-    @Volatile var onSpeedUpdate: ((CarSpeed) -> Unit)? = null
 
     /** Called for each car GPS fix. */
     @Volatile var onLocation: ((Location) -> Unit)? = null
@@ -155,15 +146,13 @@ class CarDataSource @Inject constructor(
                 if (zero) "zeroFix raw=0 disp=${display ?: "-"}" else "speed raw=${raw ?: "-"} disp=${display ?: "-"}"
             }
             // The dashboard figure reads a few % high: it is never passed off as the measured speed.
-            val cs = CarSpeed(raw, display, SystemClock.elapsedRealtime())
-            _speed.value = cs
+            _speed.value = CarSpeed(raw, display, SystemClock.elapsedRealtime())
             driveRecorder.record(
-                DriveRecorder.Row(
+                DriveLog.RecordedFix(
                     tMs = System.currentTimeMillis(), kind = DriveLog.KIND_SPEED, src = DriveLog.SRC_CAR, used = enabled,
-                    hasBrg = false, carRawMps = raw?.toDouble(), carDispMps = display?.toDouble(),
+                    carRawMps = raw?.toDouble(), carDispMps = display?.toDouble(),
                 ),
             )
-            if (enabled) onSpeedUpdate?.invoke(cs)
         }
         runCatching {
             hw.carInfo.addSpeedListener(executor, sl)

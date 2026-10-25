@@ -27,10 +27,6 @@ object PgwConfig {
     /** TomTom OV2, UK, speed zoned complete. No direction data. */
     const val PACKAGE_UK_OV2_SPEED_ZONED = 1
 
-    /** Kept for callers that want the default package id. */
-    // The name is historical: the default download is the OV2 package (§5.2a), not iGO.
-    const val PACKAGE_UK_IGO = PACKAGE_UK_OV2_SPEED_ZONED
-
     /** The PHP-Nuke login form fields (§6.1 step 2.1): no CSRF token, no captcha; the hidden fields are empty constants. */
     fun loginForm(user: String, password: String) = listOf(
         "username" to user, "user_password" to password, "op" to "login",
@@ -38,7 +34,8 @@ object PgwConfig {
     )
 
     /** The "Download Same Format" form fields (§6.1 step 2.2); [pendingMobiles] adds the pMobile file. */
-    fun downloadForm(idPackage: Int = PACKAGE_UK_IGO, pendingMobiles: Boolean = true) = listOf(
+    // The default download is the OV2 package (§5.2a).
+    fun downloadForm(idPackage: Int = PACKAGE_UK_OV2_SPEED_ZONED, pendingMobiles: Boolean = true) = listOf(
         "op" to "DownloadPackage", "idPackage" to idPackage.toString(),
         "getPmob" to if (pendingMobiles) "yes" else "no", "getFrance" to "no", "getSwiss" to "no",
     )

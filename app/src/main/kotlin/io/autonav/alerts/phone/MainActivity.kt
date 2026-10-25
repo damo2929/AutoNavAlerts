@@ -35,7 +35,6 @@ import io.autonav.alerts.nav.NavigatorHolder
 import io.autonav.alerts.pgw.PgwClient
 import io.autonav.alerts.pgw.PgwScheduler
 import io.autonav.alerts.alerts.NavTts
-import io.autonav.alerts.places.PlacesSearch
 import io.autonav.alerts.reports.CameraReportRepository
 import io.autonav.alerts.settings.SettingsStore
 import javax.inject.Inject
@@ -50,8 +49,8 @@ import javax.inject.Inject
  * coroutines for Room, network and settings writes.
  *
  * Lifecycle: an ordinary Activity, recreated on rotation; the chosen tab survives through
- * `rememberSaveable`. Everything the screens need is injected by Hilt and handed over in one
- * [PhoneDeps], so the composables stay plain functions.
+ * `rememberSaveable`. Everything the screens need is built by Hilt as one [PhoneDeps], so the
+ * composables stay plain functions.
  *
  * Camera reports are reviewed and sent from here, on the phone, and nowhere else (AGENTS.md §3.1
  * rule 8). No Maps or Navigation SDK call is made before a key is saved (rule 5): the Settings
@@ -59,40 +58,8 @@ import javax.inject.Inject
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    /** Settings, the encrypted Maps key and PGW login, and the setup state (DESIGN.md §13; docs/SETTINGS.md). */
-    @Inject lateinit var settings: SettingsStore
-    /** Navigation SDK gatekeeper: the terms record and `keyChanged()`; every SDK call goes through its key guard (DESIGN.md §1.4). */
-    @Inject lateinit var navigator: NavigatorHolder
-    /** POI sets and import (POIs and Cameras tabs; DESIGN.md §4, §5). */
-    @Inject lateinit var pois: PoiRepository
-    /** Built-in and user icons, as bitmaps for the set cards and the picker (DESIGN.md §7.1). */
-    @Inject lateinit var icons: IconRepository
-    /** PocketGPSWorld login and download (Cameras tab; DESIGN.md §6). */
-    @Inject lateinit var pgw: PgwClient
-    /** Sync now / Force re-download and the automatic update schedule (DESIGN.md §6.2). */
-    @Inject lateinit var scheduler: PgwScheduler
-    /** The camera-report drafts reviewed and sent on the Reports tab (DESIGN.md §8.5). */
-    @Inject lateinit var reports: CameraReportRepository
-    /** The real speech output, for Test speak in the template editor (DESIGN.md §13 item 7). */
-    @Inject lateinit var tts: NavTts
-    /** Places search; held for the screens that need it. */
-    @Inject lateinit var places: PlacesSearch
-    /** Whether sending reports is blocked (connected to the car or moving; DESIGN.md §8.5). */
-    @Inject lateinit var driving: io.autonav.alerts.reports.DrivingState
-    /** Create a key with my Google account, and the signing SHA-1 for the guided set-up (DESIGN.md §13.1, §13.2). */
-    @Inject lateinit var keyCreator: io.autonav.alerts.settings.MapsKeyCreator
-    /** The settings backup file: save, preview and restore (DESIGN.md §13.4). */
-    @Inject lateinit var backup: io.autonav.alerts.settings.SettingsBackup
-    /** Contacts' addresses, for Clear contact locations (DESIGN.md §8.3). */
-    @Inject lateinit var contacts: io.autonav.alerts.contacts.ContactsSource
-    /** The OpenStreetMap limits download and its state (DESIGN.md §8.4a). */
-    @Inject lateinit var speedLimits: io.autonav.alerts.osm.SpeedLimitRepository
-    /** The two debug logs shown, saved and shared under Diagnostics (DESIGN.md §15.5). */
-    @Inject lateinit var eventLog: io.autonav.alerts.diag.EventLog
-    /** The opt-in drive recorder: its latest CSV and recording state (DESIGN.md §15.5). */
-    @Inject lateinit var driveRecorder: io.autonav.alerts.diag.DriveRecorder
-    /** Engine now: the alert engine's snapshot text (DESIGN.md §15.5). */
-    @Inject lateinit var diagnostics: io.autonav.alerts.diag.DiagnosticsSnapshot
+    /** Everything the screens need, one Hilt-built holder (see [PhoneDeps] for what each member is used for). */
+    @Inject lateinit var deps: PhoneDeps
 
     /**
      * Builds the tab scaffold. The tab to open comes from the launching intent, else from the
@@ -101,8 +68,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val deps = PhoneDeps(settings, navigator, pois, icons, pgw, scheduler, reports, tts, places, driving, keyCreator, backup, contacts, speedLimits,
-            eventLog, driveRecorder, diagnostics)
         // -1 means "no tab asked for" (the launcher); a notification passes the tab it wants (DESIGN.md §8.5).
         val requestedTab = intent?.getIntExtra(EXTRA_TAB, -1) ?: -1
         setContent {
@@ -116,7 +81,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) {
                     if (!chosen) {
                         // termsAccepted() checks the app's own record first and only asks the SDK once a key is applied (DESIGN.md §1.4).
-                        if (settings.mapsApiKey() == null || !navigator.termsAccepted()) tab = TAB_SETTINGS
+                        if (deps.settings.mapsApiKey() == null || !deps.navigator.termsAccepted()) tab = TAB_SETTINGS
                         chosen = true
                     }
                 }
@@ -169,28 +134,41 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * Everything the phone screens need, injected once in [MainActivity] and passed down as one
- * value, so each composable in PhoneScreens.kt takes `deps` instead of a dozen parameters. All
- * members are the process-wide Hilt singletons shared with the car service (DESIGN.md §2);
- * see the matching properties on [MainActivity] for what each one is used for.
+ * Everything the phone screens need, built by Hilt and injected into [MainActivity] as one value, so each
+ * composable in PhoneScreens.kt takes `deps` instead of a dozen parameters. All members are the
+ * process-wide Hilt singletons shared with the car service (DESIGN.md §2).
  */
-class PhoneDeps(
+class PhoneDeps @Inject constructor(
+    /** Settings, the encrypted Maps key and PGW login, and the setup state (DESIGN.md §13; docs/SETTINGS.md). */
     val settings: SettingsStore,
+    /** Navigation SDK gatekeeper: the terms record and `keyChanged()`; every SDK call goes through its key guard (DESIGN.md §1.4). */
     val navigator: NavigatorHolder,
+    /** POI sets and import (POIs and Cameras tabs; DESIGN.md §4, §5). */
     val pois: PoiRepository,
+    /** Built-in and user icons, as bitmaps for the set cards and the picker (DESIGN.md §7.1). */
     val icons: IconRepository,
+    /** PocketGPSWorld login and download (Cameras tab; DESIGN.md §6). */
     val pgw: PgwClient,
+    /** Sync now / Force re-download and the automatic update schedule (DESIGN.md §6.2). */
     val scheduler: PgwScheduler,
+    /** The camera-report drafts reviewed and sent on the Reports tab (DESIGN.md §8.5). */
     val reports: CameraReportRepository,
+    /** The real speech output, for Test speak in the template editor (DESIGN.md §13 item 7). */
     val tts: NavTts,
-    val places: PlacesSearch,
+    /** Whether sending reports is blocked (connected to the car or moving; DESIGN.md §8.5). */
     val driving: io.autonav.alerts.reports.DrivingState,
+    /** Create a key with my Google account, and the signing SHA-1 for the guided set-up (DESIGN.md §13.1, §13.2). */
     val keyCreator: io.autonav.alerts.settings.MapsKeyCreator,
+    /** The settings backup file: save, preview and restore (DESIGN.md §13.4). */
     val backup: io.autonav.alerts.settings.SettingsBackup,
+    /** Contacts' addresses, for Clear contact locations (DESIGN.md §8.3). */
     val contacts: io.autonav.alerts.contacts.ContactsSource,
+    /** The OpenStreetMap limits download and its state (DESIGN.md §8.4a). */
     val speedLimits: io.autonav.alerts.osm.SpeedLimitRepository,
+    /** The two debug logs shown, saved and shared under Diagnostics (DESIGN.md §15.5). */
     val eventLog: io.autonav.alerts.diag.EventLog,
+    /** The opt-in drive recorder: its latest CSV and recording state (DESIGN.md §15.5). */
     val driveRecorder: io.autonav.alerts.diag.DriveRecorder,
-    /** Settings → Diagnostics → Engine now (DESIGN.md §15.5). */
+    /** Settings → Diagnostics → Engine now: the alert engine's snapshot text (DESIGN.md §15.5). */
     val diagnostics: io.autonav.alerts.diag.DiagnosticsSnapshot,
 )
