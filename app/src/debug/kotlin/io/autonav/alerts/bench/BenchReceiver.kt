@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.car.app.CarContext
 import androidx.car.app.ScreenManager
 import io.autonav.alerts.App
+import io.autonav.alerts.car.CarDeps
 import io.autonav.alerts.car.NavSession
 import io.autonav.alerts.car.screens.RoutePreviewScreen
 import io.autonav.alerts.contacts.Located
@@ -60,25 +61,17 @@ import kotlinx.coroutines.launch
  * log "No car session" otherwise.
  */
 class BenchReceiver : BroadcastReceiver() {
-    /**
-     * Hilt entry point for the singletons a receiver can't have injected (a `BroadcastReceiver` isn't
-     * a Hilt component). The car-side ones (`pois()`, `alerts()`, `guidance()`) come through
-     * `CarDeps.from(context)` instead.
-     */
-    @dagger.hilt.EntryPoint
-    @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
-    interface Deps {
-        fun speedLimits(): io.autonav.alerts.osm.SpeedLimitRepository
-        fun settings(): io.autonav.alerts.settings.SettingsStore
-        fun eventLog(): io.autonav.alerts.diag.EventLog
-    }
+    /** Car App Library and map calls go on the main looper (DESIGN.md §2 threads). */
+    private val main = Handler(Looper.getMainLooper())
 
     /**
      * Dispatches one command. Every broadcast is logged first, so a drive's log shows what the bench
      * did and when. Each branch returns; a broadcast with no known extra ends with a logcat hint.
+     * The singletons come through `CarDeps` (a `BroadcastReceiver` isn't a Hilt component, so nothing is injected).
      */
     override fun onReceive(context: Context, intent: Intent) {
-        val eventLog = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).eventLog()
+        val deps = CarDeps.from(context)
+        val eventLog = deps.eventLog()
         eventLog.record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Bench", describe(intent))
 
         if (intent.getBooleanExtra("diag", false)) {
@@ -92,7 +85,7 @@ class BenchReceiver : BroadcastReceiver() {
         }
         // Route options (DESIGN.md §8.3a), written through SettingsStore like the phone's switches, so the next preview sees them.
         if (intent.hasExtra("ev") || intent.hasExtra("tolls")) {
-            val store = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).settings()
+            val store = deps.settings()
             App.appScope.launch {
                 store.update { s ->
                     s.copy(
@@ -110,7 +103,7 @@ class BenchReceiver : BroadcastReceiver() {
             // lookup give its limit? Also facing the other way and standing still. Logs a summary
             // and a few positions to drive to.
             val n = intent.getIntExtra("osmcheck", 500)
-            val repo = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).speedLimits()
+            val repo = deps.speedLimits()
             // The whole check reads the limits file, so it runs on IO, never on the main thread the receiver was called on.
             App.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                 val r = repo.reader() ?: run { Log.w(TAG, "OSM check: no limits file"); return@launch }
@@ -142,7 +135,7 @@ class BenchReceiver : BroadcastReceiver() {
         }
         // The OpenStreetMap limits download (DESIGN.md §8.4a); download-any ignores the Wi-Fi-only setting for the bench.
         intent.getStringExtra("osm")?.let { cmd ->
-            val repo = dagger.hilt.android.EntryPointAccessors.fromApplication(context, Deps::class.java).speedLimits()
+            val repo = deps.speedLimits()
             when (cmd) {
                 "download" -> repo.download(wifiOnly = true)
                 "download-any" -> repo.download(wifiOnly = false)
@@ -170,7 +163,7 @@ class BenchReceiver : BroadcastReceiver() {
             val pending = goAsync()
             io.autonav.alerts.App.appScope.launch {
                 try {
-                    val pois = io.autonav.alerts.car.CarDeps.from(context).pois()
+                    val pois = deps.pois()
                     // Set names come from the file name (DESIGN.md §5), so the same file name means the same set: replace, don't duplicate.
                     val existing = pois.sets().values.firstOrNull { it.name == file.nameWithoutExtension || it.name == file.name }
                     val out = pois.importFile(android.net.Uri.fromFile(file), csvProfile = profile, replaceSetId = existing?.id)
@@ -186,7 +179,7 @@ class BenchReceiver : BroadcastReceiver() {
         if (intent.getBooleanExtra("engine", false)) {
             // The alert engine's snapshot (DESIGN.md §15.5): the same text as Settings → Diagnostics → Engine now,
             // to alert-debug and logcat. Needs no car session.
-            val text = io.autonav.alerts.car.CarDeps.from(context).alerts().snapshot()
+            val text = deps.alerts().snapshot()
             text.lines().filter { it.isNotBlank() }.forEach { line ->
                 eventLog.record(io.autonav.alerts.diag.EventLog.Channel.ALERT, "Engine", line)
                 Log.i(TAG, "Engine: $line")
@@ -199,13 +192,12 @@ class BenchReceiver : BroadcastReceiver() {
         if (session == null) { Log.w(TAG, "No car session"); return }
         if (intent.getBooleanExtra("go", false)) {
             // Go on the showing route preview (DESIGN.md §15.5): remembers, starts guidance, pops.
-            val carDeps = io.autonav.alerts.car.CarDeps.from(context)
-            Handler(Looper.getMainLooper()).post {
+            main.post {
                 val preview = RoutePreviewScreen.showing
                 if (preview == null) {
-                    Log.w(TAG, "No route preview showing (guiding=${carDeps.guidance().guiding.value}, dest=${carDeps.guidance().destination.value?.title})")
+                    Log.w(TAG, "No route preview showing (guiding=${deps.guidance().guiding.value}, dest=${deps.guidance().destination.value?.title})")
                 } else {
-                    Log.i(TAG, "Go on the preview for ${carDeps.guidance().destination.value?.title}")
+                    Log.i(TAG, "Go on the preview for ${deps.guidance().destination.value?.title}")
                     preview.go()
                 }
             }
@@ -219,7 +211,7 @@ class BenchReceiver : BroadcastReceiver() {
         }
         if (intent.getBooleanExtra("views", false)) {
             // What's in the car map window, to see what draws (and how the map renders).
-            Handler(Looper.getMainLooper()).post {
+            main.post {
                 fun walk(v: android.view.View, depth: Int) {
                     Log.i(TAG, "  ".repeat(depth) + "${v.javaClass.name} vis=${v.visibility} hw=${v.isHardwareAccelerated} layer=${v.layerType}")
                     if (v is android.view.ViewGroup && depth < 6) for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
@@ -230,7 +222,7 @@ class BenchReceiver : BroadcastReceiver() {
         }
         if (intent.hasExtra("follow")) {
             // false: like a tiny drag (the map stops following); true: like recenter.
-            Handler(Looper.getMainLooper()).post {
+            main.post {
                 if (intent.getBooleanExtra("follow", true)) session.surface.recenter() else session.surface.onScroll(0f, 0f)
                 Log.i(TAG, "Following: ${session.surface.isFollowing}")
             }
@@ -239,7 +231,7 @@ class BenchReceiver : BroadcastReceiver() {
         if (intent.hasExtra("overlays")) {
             // Show or hide our own overlays (speed panel, buttons, banner), leaving only the map.
             val show = intent.getBooleanExtra("overlays", true)
-            Handler(Looper.getMainLooper()).post {
+            main.post {
                 val root = session.surface.overlayRoot ?: return@post
                 for (i in 1 until root.childCount) root.getChildAt(i).visibility = if (show) android.view.View.VISIBLE else android.view.View.GONE
                 Log.i(TAG, "Overlays ${if (show) "shown" else "hidden"}")
@@ -248,7 +240,7 @@ class BenchReceiver : BroadcastReceiver() {
         }
         intent.getStringExtra("banner")?.let { text ->
             // A test alert banner (DESIGN.md §12.1), to check its place and size without a camera nearby.
-            Handler(Looper.getMainLooper()).post {
+            main.post {
                 val b = session.surface.alertBanner ?: run { Log.w(TAG, "No map window"); return@post }
                 b.show(-1L, null, text, "300 yd · 30 mph", 8_000)
                 b.post { Log.i(TAG, "Banner at x=${b.left} y=${b.top} ${b.width}x${b.height} in ${(b.parent as android.view.View).width}x${(b.parent as android.view.View).height}") }
@@ -273,9 +265,8 @@ class BenchReceiver : BroadcastReceiver() {
         intent.getStringExtra("contact")?.let { pickContact(session, it); return }
         // Like tapping the zoom pill (DESIGN.md §8, zoom capped at 17); the zoom is read back after the map's animation.
         intent.getStringExtra("zoom")?.toFloatOrNull()?.let { z ->
-            val h = Handler(Looper.getMainLooper())
-            h.post { session.surface.zoom(z) }
-            h.postDelayed({ Log.i(TAG, "Zoom now ${session.surface.map.value?.cameraPosition?.zoom}") }, 1_500)
+            main.post { session.surface.zoom(z) }
+            main.postDelayed({ Log.i(TAG, "Zoom now ${session.surface.map.value?.cameraPosition?.zoom}") }, 1_500)
             return
         }
         // The same ACTION_NAVIGATE intent Assistant and other apps send (DESIGN.md §9): geo:lat,lon previews a route; geo:0,0?q= opens Search with the text.
@@ -283,14 +274,12 @@ class BenchReceiver : BroadcastReceiver() {
             ?: intent.getStringExtra("q")?.let { Uri.parse("geo:0,0?q=" + Uri.encode(it)) }
         if (uri == null) { Log.w(TAG, "Nothing to do: give --es q <text> or --es geo <lat,lon>"); return }
         Log.i(TAG, "Bench: $uri")
-        Handler(Looper.getMainLooper()).post { session.onNewIntent(Intent(CarContext.ACTION_NAVIGATE, uri)) }
+        main.post { session.onNewIntent(Intent(CarContext.ACTION_NAVIGATE, uri)) }
     }
 
     /** Pushes a car screen on the main thread (for screenshots); the Car App Library is main-thread only (DESIGN.md §2). */
     private fun push(session: NavSession, screen: () -> androidx.car.app.Screen) {
-        Handler(Looper.getMainLooper()).post {
-            session.carContext.getCarService(androidx.car.app.ScreenManager::class.java).push(screen())
-        }
+        main.post { session.carContext.getCarService(ScreenManager::class.java).push(screen()) }
     }
 
     /**

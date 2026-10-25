@@ -182,7 +182,7 @@ The tree below is the source tree as it is (regenerated from the code on 2026-10
 app/src/main/kotlin/io/autonav/alerts/
   App.kt                      Hilt application; the app-wide coroutine scope
   alerts/
-    AlertCoordinator.kt       Runs AlertEngine on every fix; 5×5 cell cache; resolves each set's stages (lead-time slider); ActiveAlert for the UI; AlertTraceLog → alert-debug.log (§10–12, §11.1, §15.5)
+    AlertCoordinator.kt       Runs AlertEngine on every fix; 5×5 cell cache; resolves each set's stages (lead-time slider); ActiveAlert for the UI; feeds the core AlertTraceLog (§10–12, §11.1, §15.5)
     AlertDispatcher.kt        Routes an AlertEvent: the car banner via CarAlertSink, else a navigation heads-up notification; speech via NavTts (§12, §12.1, §12.2)
     NavTts.kt                 TextToSpeech on the navigation audio channel, audio focus (duck, never pause), drives the core SpeechScheduler; alerts and directions in one voice (§12.3)
   car/
@@ -197,7 +197,7 @@ app/src/main/kotlin/io/autonav/alerts/
     screens/ContactsScreen.kt Contacts with a postal address, recent first (§8.3)
     screens/VoiceCommentScreen.kt  Step 2 of a report: the spoken comment from the car mic; no review or Send in the car (§8.5)
     screens/ListScreens.kt    MoreScreen (live GPS/Alerts rows, re-sent only on change), RouteOptionsScreen, PoiLayersScreen, AlertsRecordsScreen, RecentsScreen, PlaceDetailScreen, ConfirmScreen (§8, §8.2, §8.3a, §12.3)
-    screens/CarUi.kt          Small helpers shared by the car screens
+    screens/CarUi.kt          Shared by the car screens: header/loading/list/row template helpers, icons, PlaceEntity.toDestination, the contact pick (§8, §8.3)
   contacts/ContactsSource.kt  Contacts' postal addresses, geocoded on pick and cached (§8.3)
   data/
     AppDatabase.kt            Room database, migrations, DatabaseModule (§4.1, §11.1 MIGRATION_6_7)
@@ -208,15 +208,15 @@ app/src/main/kotlin/io/autonav/alerts/
     StageRules.kt             The §11.1 stage checks shared by the set editor and the backup restore
   diag/
     EventLog.kt               The two always-on 15 s-batched logs, debug-nav.log and alert-debug.log (§15.5)
-    DriveRecorder.kt          Opt-in CSV of every fix and car report, for replay (§15.5)
+    DriveRecorder.kt          Opt-in CSV of every fix and car report, for replay; rows are DriveLog.RecordedFix (§15.5)
     DiagFiles.kt              Save/Share of the logs through the FileProvider; DiagnosticsSnapshot (§15.5)
   map/
     MapSurface.kt             SurfaceCallback → VirtualDisplay → Presentation → NavigationViewForAuto; overlays; visible/stable areas; gestures; traffic always on; zoom cap 17; FollowWatchdog (§8)
     AlertBannerView.kt        The alert banner at the bottom of the map (§12.1)
     SpeedPanelView.kt         Speed and limit in one white pill, bottom right (§8.4)
-    MapTypeButtonView.kt      The satellite toggle, top right (§8)
-    ZoomPillView.kt           + over − in one pill, right column (§8)
-    MapButtonView.kt          The round recenter button, right column; MapButtonColors (§8)
+    MapTypeButtonView.kt      The satellite toggle, top right; a MapButton (§8)
+    ZoomPillView.kt           + over − in one pill, right column; a MapButton (§8)
+    MapButtonView.kt          MapButton, the base of the three right-hand buttons (size, day/night palette, edge, dark setter); MapButtonView, the round recenter button (§8)
     LimitChangeMarker.kt      The next limit change on the map (§8.4a)
     PoiMarkerLayer.kt         Markers redrawn per fix as a diff; dimmed facing-away cameras; verdicts from the engine (§8.1)
     IncidentReporting.kt      Google's incident reporting: detected when a future SDK offers it on Android Auto (§16 #21)
@@ -237,33 +237,37 @@ app/src/main/kotlin/io/autonav/alerts/
     PgwClient.kt              PocketGPSWorld login, feed check, download, report submission over HTTPS (§6, §8.5)
     PgwWorkers.kt             PgwScheduler (daily), PgwFeedCheckWorker, PgwSyncWorker (never while guiding), ReportSubmitWorker (phone Send only) (§6.2, §6.2a, §8.5)
   phone/
-    MainActivity.kt           The phone UI host; PhoneDeps (§13)
+    MainActivity.kt           The phone UI host; PhoneDeps, built by Hilt (§13)
     PhoneScreens.kt           The Compose screens: Settings (setup, key creation, backup, diagnostics), POIs, Cameras, Reports (§13, docs/SETTINGS.md)
+    PhoneUi.kt                The phone screens' shared cards, rows, text styles, chips, folds, dialogs and save-to-file launcher (§13)
   places/PlacesSearch.kt      Places autocomplete with session tokens and location bias; recents (§8, §8.2)
+  util/Background.kt          WorkManager network constraints and notification channels shared by the PGW sync, the limit download and the report reminder (§6.2, §8.4a, §8.5)
   reports/
     CameraReportRepository.kt Reports captured in one tap, drafts, review and Send on the phone, "My reports" set (§8.5)
     DrivingState.kt           "Never while driving" guard for sending (§8.5)
     VoiceComment.kt           CarVoiceRecorder (car mic, 15 s) and Transcriber (on the phone) (§8.5)
   settings/
-    SettingsStore.kt          DataStore of every setting; AppSettings, PgwState, SpeedSource (docs/SETTINGS.md)
+    SettingsStore.kt          DataStore of every setting; AppSettings, PgwState, SpeedSource; the one field table (DataStore key, backup name, default, clamp) that SettingsBackup iterates too (docs/SETTINGS.md, §13.4)
     SecretBox.kt              AES-GCM with an Android Keystore key, for the Maps key, PGW login and cookies (§6.1, §13)
     MapsKeyCreator.kt         Creates the user's own Maps key in their Google Cloud account (§13.1)
     SettingsBackup.kt         The settings backup file (§13.4)
-app/src/debug/kotlin/io/autonav/alerts/bench/BenchReceiver.kt   Debug-only adb broadcast hooks for the bench (TESTING.md §3)
+app/src/debug/kotlin/io/autonav/alerts/bench/BenchReceiver.kt   Debug-only adb broadcast hooks for the bench, on CarDeps (TESTING.md §3)
 
 core/src/main/kotlin/io/autonav/alerts/core/
   alerts/
     AlertEngine.kt            The alert maths: Fix, AlertPoi, AlertStage, AlertEvent, RouteMatcher; the direction hard rule, stages, ratchet, zones (§11, §11.1)
     AlertTrace.kt             Verdict and ClearReason enums; the engine's optional diagnostic hook (§11 step 10, §8.1)
     AlertTemplateRenderer.kt  {category} {speed} {units} {distance} {direction} templates (§7.2)
-    SpeechScheduler.kt        The speech queue policy: replace, stale, never drop PASSING, record ring (§12.3)
+    SpeechScheduler.kt        The speech queue policy: replace, stale, never drop PASSING, record ring; the watchdog extension while the engine still speaks; Record.describe()/logLine() (§12.3)
+    AlertTraceLog.kt          The engine's trace as alert-debug lines and the PASSED passage summary; TraceInfo (§11 step 10, §15.5)
   contacts/ContactMatch.kt    Name matching, postcodes, geocode cache key (§8.3)
   diag/
     BatchLog.kt               One log channel's 15 s batches with a fix summary per block (§15.5)
     DriveLog.kt               The drive recorder's CSV format, read for replay (§15.5)
   geo/
-    Geo.kt                    Haversine, bearings, angle differences
+    Geo.kt                    Haversine, bearings, angle differences; unit constants (mile, yard, mph⇄km/h), flat-projection metres-per-degree and point/segment distances for the road matching
     LatLngLike.kt             A position type the app's map types can satisfy
+  io/Io.kt                    skipFully, the secure XML factory, SHA-256 hex, shared by the importers, the PGW feed and the limit file (§5, §6.2, §8.3, §8.4a)
   location/FixEstimator.kt    Speed (median of 3; displacement only without hasSpeed) and heading (adaptive chord, circular EMA, GPS-bearing blend, stale guard, none when still) (§10.2, §10.6a)
   nav/
     GuidanceState.kt          Everything a route must not pass to the next; reset by stopGuidance (§9.3)
@@ -272,14 +276,14 @@ core/src/main/kotlin/io/autonav/alerts/core/
     FollowWatchdog.kt         None / Refollow / Rebuild decision for the map camera (§8)
     EcoReaskPolicy.kt         When to ask for an energy-efficient route again (§8.3a)
   osm/
-    OsmSpeedLimits.kt         LimitSegment; maxspeed parsing, tiles, road matching (§8.4a)
+    OsmSpeedLimits.kt         maxspeed parsing, tiles, matching tolerances (§8.4a); LimitSegment and the segment matcher are test support (core/src/test OsmTestSupport.kt, §15.1)
     OsmLimitFile.kt           The compact on-phone limit file: writer and reader (§8.4a)
     LimitIndex.kt             A few tiles around the car in plain arrays; the nearest road's limit (§8.4a)
     LimitLookahead.kt         The next limit change along the road or route; roadAhead (§8.4a)
     LimitSnap.kt              Google's derived limit snapped to a real one (§8.4)
     RoadAheadMatcher.kt       Free drive's RouteMatcher over the road ahead (§11 step 4)
     ShapefileRoads.kt         Streaming readers for Geofabrik's roads shapefile (§8.4a)
-    NorthernIreland.kt        The border polygon used to keep Northern Ireland's roads (§8.4a)
+    NorthernIreland.kt        The border polygon used to keep Northern Ireland's roads; the ring itself is the resource core/src/main/resources/io/autonav/alerts/core/osm/ni_ring.txt (§8.4a)
   pgw/
     PgwPages.kt               PgwConfig (every URL, field and selector), page parsing, PgwDownload, PgwSubmission (§6.1, §8.5)
     PgwUpdateFeed.kt          speed-camera-rss.php → PgwRelease; version comparison (§6.2)
@@ -599,7 +603,7 @@ data class ImportRow(val lat: Double, val lon: Double, val name: String?, val ca
 >
 > The single-file notes below still describe the file format, which is identical in every file.
  — **checked against real download v24.101 (07 Oct 26)**
-**What's in the package** (`idPackage=61`, "UK - Single file with all cameras", with "Include pMobile files" ticked: the iGO package the format notes below were checked against. **As built the downloads offered are `PgwDownload.OV2` = `idPackage=1`, the default, §5.2a, and `PgwDownload.IGO` = `idPackage=288`, "consolidated by type"; `PgwConfig.PACKAGE_UK_IGO` is an alias of the OV2 package.) The zip contains:
+**What's in the package** (`idPackage=61`, "UK - Single file with all cameras", with "Include pMobile files" ticked: the iGO package the format notes below were checked against. **As built the downloads offered are `PgwDownload.OV2` = `idPackage=1`, the default, §5.2a, and `PgwDownload.IGO` = `idPackage=288`, "consolidated by type"; `PgwConfig.PACKAGE_UK_IGO` alias was removed on 2026-10-25 (the reuse pass); `downloadForm` defaults to the OV2 package.) The zip contains:
 
 | File | Contents |
 |---|---|
@@ -1292,7 +1296,7 @@ The panel shows the **same fix the engine used** (`displaySpeedMps ?: speedMps`)
 - **No heading when still**: after 30 s under 1 m/s the heading is **null**. (A parked car used to keep its last heading, and 5 m of jitter could invent a new one, which consumed alert stages for cameras within range before the car ever moved.) **The chord ring is emptied whenever the speed is under 1 m/s** (as built, 2026-10-13), so a chord never spans a stop and moving off in a new direction can't read as the old one through parked jitter.
 - **Right after a reset** (`resetTrack`, below) the ring is empty, so until a chord of at least 10 m exists the heading is the **GPS bearing alone** when it's trustworthy (over 3 m/s, accuracy ≤ 20°, not stale), otherwise none (as built, 2026-10-13).
 - **`resetTrack(reason)`**: on a car↔phone handover (§10.7), a gap over 5 s, a jump over 200 m, and when simulation starts or stops; logged as `Location TRACK_RESET reason=` (§15.5).
-- **What the engine sees** (as built, two enum sets: `FixEstimator` has its own `LocationSource`/`SpeedSource`/`HeadingSource` and the engine's `Fix` has its own, mapped by `EstimateMapper` in `AdaptiveLocationSource.kt`; the estimator's `DISPLACEMENT` is the engine's `DERIVED`): the `Fix` carries `headingSource` (track / gps / blended / none), `headingAccuracyDeg`, `speedSource`, `displaySpeedMps` (the car's dial speed when there is one), `locationSource` (car / phone / simulated) and `accuracyM`, all defaulted so `:core` callers without them still compile. Tests: `HeadingEstimatorTest`, `SpeedEstimatorTest` (§15.1).
+- **What the engine sees** (as built: `LocationSource` is one enum in `core.location`, aliased by `core.alerts` since 2026-10-25; `FixEstimator` has its own `SpeedSource`/`HeadingSource` and the engine's `Fix` has its own, mapped by `EstimateMapper` in `AdaptiveLocationSource.kt`; the estimator's `DISPLACEMENT` is the engine's `DERIVED`, and the two names are kept because the recorder logs `displacement` and the engine `derived`): the `Fix` carries `headingSource` (track / gps / blended / none), `headingAccuracyDeg`, `speedSource`, `displaySpeedMps` (the car's dial speed when there is one), `locationSource` (car / phone / simulated) and `accuracyM`, all defaulted so `:core` callers without them still compile. Tests: `HeadingEstimatorTest`, `SpeedEstimatorTest` (§15.1).
 
 ### 10.7 Car GPS for location
 The car's GPS position is read through `CarHardwareManager.carSensors.addCarHardwareLocationListener(UPDATE_RATE_FASTEST, …)` (car API 3+, uses the existing fine-location permission). It's controlled by the same setting as speed, renamed **Speed and location source**: **Car when available** (default) / **Phone only**.
@@ -1479,7 +1483,7 @@ The alert is drawn by us on the map surface, in the same `Presentation` as the s
   - **Ours is the only voice on the guidance channel**: the Navigation SDK's is off while we speak the directions (above), and it only comes back when our speech has failed, so the two never speak together. The detection of another guidance player and the bounded waits behind it (2 s for a stage, 0.5 s for a PASSING, a busy channel ignored after 5 s), built when the SDK spoke its own prompts, were removed on 2026-10-23 (owner: clean up what was left from when Google did the voice).
   - **Staleness by distance** (`staleBelowM`): a waiting FIRST or SECOND is not spoken once the car is already closer than the stage's distance makes sense for (it would be announcing a camera it's nearly at); PASSING is **never dropped**.
   - **Same POI**: only a **later stage** replaces an earlier one still waiting (the newest stage wins); the replaced one is recorded as `REPLACED`. SECOND/OVERSPEED jump the queue; otherwise first come, first served.
-  - **Speaking watchdog**: `speaking` is cleared by `onDone`, `onError` and **`onStop(id, interrupted)`** (an interruption by the car's audio handling used to leave the flag set forever, so every later alert queued silently), and by a timeout of **3000 + 120 × characters ms, capped at 15 s** (`TTS_STUCK`). While the engine still reports `isSpeaking` the deadline is extended in 1.5 s steps up to 15 s from `onStart` rather than cutting the sentence off: numbers speak far longer than their characters ("148 yards" is "one hundred and forty-eight yards"), and on the bench the old 1500 + 70/char allowance killed every SECOND mid-sentence (2026-10-13).
+  - **Speaking watchdog**: `speaking` is cleared by `onDone`, `onError` and **`onStop(id, interrupted)`** (an interruption by the car's audio handling used to leave the flag set forever, so every later alert queued silently), and by a timeout of **3000 + 120 × characters ms, capped at 15 s** (`TTS_STUCK`). While the engine still reports `isSpeaking` the deadline is extended in 1.5 s steps (`SpeechScheduler.Config.watchdogExtendMs`, the rule lives in the scheduler since 2026-10-25) up to 15 s from `onStart` rather than cutting the sentence off: numbers speak far longer than their characters ("148 yards" is "one hundred and forty-eight yards"), and on the bench the old 1500 + 70/char allowance killed every SECOND mid-sentence (2026-10-13).
   - **Errors**: a non-SUCCESS `speak()` or `onError` → **retry once**, then the chime plus the banner and a one-off toast, so an alert is never silently lost; the audio-focus request's result is recorded.
   - **Every decision is recorded** (`QUEUED / REPLACED / SPOKEN / DROPPED reason / INTERRUPTED / TTS_ERROR status / TTS_STUCK`) in a 50-entry ring shown in car More → Alerts and the phone's Diagnostics, and written to `alert-debug.log` (§15.5); `spoken`/`spokenDelayMs` are written back onto the STAGE event, so a silent alert can always be explained.
 ```mermaid

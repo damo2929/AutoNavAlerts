@@ -4,20 +4,23 @@
 package io.autonav.alerts.settings
 
 import android.content.Context
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.autonav.alerts.BuildConfig
 import io.autonav.alerts.core.alerts.Units
+import io.autonav.alerts.core.pgw.PgwDownload
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,7 +41,7 @@ enum class SpeedSource { CAR_WHEN_AVAILABLE, PHONE_GPS }
  * Every user setting, as one immutable snapshot (DESIGN.md §13 item 9; each one explained in docs/SETTINGS.md).
  * Read as a Flow from [SettingsStore.settings] or once with [SettingsStore.current]; changed only through
  * [SettingsStore.update]. All but [mutedUntilMs], [simulationSpeed] and [driveRecordingOn] go in the settings
- * backup file (§13.4).
+ * backup file (§13.4). The store key, backup name and clamp of each field are one row of [SETTINGS_FIELDS].
  */
 data class AppSettings(
     /** mph and miles, or km/h and km, on the car screen and in speech (§7.2 `{units}`). */
@@ -79,7 +82,7 @@ data class AppSettings(
     /** See [SpeedSource] (§10.6). */
     val speedSource: SpeedSource = SpeedSource.CAR_WHEN_AVAILABLE,
     /** Which PocketGPSWorld download to use (Cameras tab). */
-    val pgwDownload: io.autonav.alerts.core.pgw.PgwDownload = io.autonav.alerts.core.pgw.PgwDownload.DEFAULT,
+    val pgwDownload: PgwDownload = PgwDownload.DEFAULT,
     /** Record every fix to a CSV for bench replay (DESIGN.md §15.5). Not in the settings backup. */
     val driveRecordingOn: Boolean = false,
 )
@@ -122,82 +125,20 @@ data class PgwState(
 class SettingsStore @Inject constructor(@ApplicationContext private val context: Context) {
     private val ds get() = context.dataStore
 
-    /** The DataStore keys. Names are stable storage: never rename one without a migration. `_enc` keys hold [SecretBox] output. */
+    /** The DataStore keys for the terms record and the secrets; the settings and the PGW state have theirs in [SettingsCodec]. `_enc` keys hold [SecretBox] output. */
     private object K {
-        val units = stringPreferencesKey("units")
-        val voice = booleanPreferencesKey("voice")
-        val chime = booleanPreferencesKey("chime")
-        val overspeed = doublePreferencesKey("overspeed_pct")
-        val alertLead = intPreferencesKey("alert_lead_seconds")
-        val announceLimits = booleanPreferencesKey("announce_limit_changes")
-        val pgwAuto = booleanPreferencesKey("pgw_auto")
-        val pgwWifi = booleanPreferencesKey("pgw_wifi_only")
-        val speedPanel = booleanPreferencesKey("speed_panel")
-        val satellite = booleanPreferencesKey("satellite_map")
-        val osmLimits = booleanPreferencesKey("osm_limits")
-        val osmWifiOnly = booleanPreferencesKey("osm_wifi_only")
-        val evRoutes = booleanPreferencesKey("ev_efficient_routes")
-        val avoidTolls = booleanPreferencesKey("avoid_tolls")
-        val mutedUntil = longPreferencesKey("muted_until")
-        val speedSource = stringPreferencesKey("speed_source")
-        val pgwDownload = stringPreferencesKey("pgw_download")
-        val simSpeed = androidx.datastore.preferences.core.floatPreferencesKey("sim_speed")
-        val driveRecording = booleanPreferencesKey("drive_recording")
-
         val mapsKey = stringPreferencesKey("maps_api_key_enc")
         val pgwUser = stringPreferencesKey("pgw_user_enc")
         val pgwPass = stringPreferencesKey("pgw_pass_enc")
         val pgwCookies = stringPreferencesKey("pgw_cookies_enc")
-
         val termsAcceptedAt = longPreferencesKey("nav_terms_accepted_at")
-        val pgwInstalled = stringPreferencesKey("pgw_installed")
-        val pgwInstalledPackage = intPreferencesKey("pgw_installed_package")
-        val pgwInstalledLayout = intPreferencesKey("pgw_installed_layout")
-        val pgwLatest = stringPreferencesKey("pgw_latest")
-        val pgwLatestSummary = stringPreferencesKey("pgw_latest_summary")
-        val pgwPending = stringPreferencesKey("pgw_pending")
-        val pgwFeedCheck = longPreferencesKey("pgw_feed_check")
-        val pgwLastSync = longPreferencesKey("pgw_last_sync")
-        val pgwResult = stringPreferencesKey("pgw_result")
-        val pgwEtag = stringPreferencesKey("pgw_etag")
-        val pgwLastModified = stringPreferencesKey("pgw_last_modified")
     }
 
     /** Live settings; emits again after every [update]. The alert coordinator keeps the latest value rather than reading per fix (§4.3). */
-    val settings: Flow<AppSettings> = ds.data.map { p -> read(p) }
-
-    /** Preferences → [AppSettings]. Every value has a default and the numeric ones are clamped, so a stray or old value can't break the app. */
-    private fun read(p: Preferences): AppSettings =
-        AppSettings(
-            units = p[K.units]?.let { runCatching { Units.valueOf(it) }.getOrNull() } ?: Units.IMPERIAL,
-            voiceOn = p[K.voice] ?: true,
-            chimeOn = p[K.chime] ?: true,
-            overspeedPct = (p[K.overspeed] ?: DEFAULT_OVERSPEED).coerceIn(-0.05, 0.20),
-            alertLeadSeconds = (p[K.alertLead] ?: DEFAULT_ALERT_LEAD_SECONDS).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
-            announceLimitChanges = p[K.announceLimits] ?: true,
-            pgwAutoSync = p[K.pgwAuto] ?: true,
-            pgwWifiOnly = p[K.pgwWifi] ?: false,
-            speedPanelOn = p[K.speedPanel] ?: true,
-            satelliteMap = p[K.satellite] ?: false,
-            evEfficientRoutes = p[K.evRoutes] ?: false,
-            avoidTolls = p[K.avoidTolls] ?: true,
-            osmLimitsOn = p[K.osmLimits] ?: true,
-            osmWifiOnly = p[K.osmWifiOnly] ?: true,
-            mutedUntilMs = p[K.mutedUntil] ?: 0,
-            simulationSpeed = p[K.simSpeed] ?: 1f,
-            pgwDownload = io.autonav.alerts.core.pgw.PgwDownload.fromName(p[K.pgwDownload]),
-            speedSource = p[K.speedSource]?.let { runCatching { SpeedSource.valueOf(it) }.getOrNull() } ?: SpeedSource.CAR_WHEN_AVAILABLE,
-            driveRecordingOn = p[K.driveRecording] ?: false,
-        )
+    val settings: Flow<AppSettings> = ds.data.map(SettingsCodec::read)
 
     /** Live PGW sync state for the Cameras tab. */
-    val pgwState: Flow<PgwState> = ds.data.map { p ->
-        PgwState(
-            installedVersion = p[K.pgwInstalled], installedPackage = p[K.pgwInstalledPackage], installedLayout = p[K.pgwInstalledLayout], latestVersion = p[K.pgwLatest], latestSummary = p[K.pgwLatestSummary],
-            pendingVersion = p[K.pgwPending], lastFeedCheckMs = p[K.pgwFeedCheck] ?: 0, lastSyncMs = p[K.pgwLastSync] ?: 0,
-            lastResult = p[K.pgwResult], feedEtag = p[K.pgwEtag], feedLastModified = p[K.pgwLastModified],
-        )
-    }
+    val pgwState: Flow<PgwState> = ds.data.map(SettingsCodec::readPgw)
 
     /** One-off reads of the latest values. */
     suspend fun current(): AppSettings = settings.first()
@@ -205,28 +146,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
 
     /** Read-modify-write inside one DataStore transaction, so two updates at once can't lose either. */
     suspend fun update(block: (AppSettings) -> AppSettings) {
-        ds.edit { p ->
-            val s = block(read(p))
-            p[K.units] = s.units.name
-            p[K.voice] = s.voiceOn
-            p[K.chime] = s.chimeOn
-            p[K.overspeed] = s.overspeedPct
-            p[K.alertLead] = s.alertLeadSeconds
-            p[K.announceLimits] = s.announceLimitChanges
-            p[K.pgwAuto] = s.pgwAutoSync
-            p[K.pgwWifi] = s.pgwWifiOnly
-            p[K.speedPanel] = s.speedPanelOn
-            p[K.satellite] = s.satelliteMap
-            p[K.evRoutes] = s.evEfficientRoutes
-            p[K.avoidTolls] = s.avoidTolls
-            p[K.osmLimits] = s.osmLimitsOn
-            p[K.osmWifiOnly] = s.osmWifiOnly
-            p[K.mutedUntil] = s.mutedUntilMs
-            p[K.simSpeed] = s.simulationSpeed
-            p[K.speedSource] = s.speedSource.name
-            p[K.pgwDownload] = s.pgwDownload.name
-            p[K.driveRecording] = s.driveRecordingOn
-        }
+        ds.edit { p -> SettingsCodec.write(p, block(SettingsCodec.read(p))) }
     }
 
     /**
@@ -236,16 +156,7 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
      */
     suspend fun updatePgw(block: (PgwState) -> PgwState) {
         val s = block(currentPgw())
-        ds.edit { p ->
-            fun put(k: Preferences.Key<String>, v: String?) { if (v == null) p.remove(k) else p[k] = v }
-            put(K.pgwInstalled, s.installedVersion); put(K.pgwLatest, s.latestVersion)
-            put(K.pgwLatestSummary, s.latestSummary); put(K.pgwPending, s.pendingVersion)
-            put(K.pgwResult, s.lastResult); put(K.pgwEtag, s.feedEtag); put(K.pgwLastModified, s.feedLastModified)
-            s.installedPackage?.let { p[K.pgwInstalledPackage] = it } ?: p.remove(K.pgwInstalledPackage)
-            s.installedLayout?.let { p[K.pgwInstalledLayout] = it } ?: p.remove(K.pgwInstalledLayout)
-            p[K.pgwFeedCheck] = s.lastFeedCheckMs
-            p[K.pgwLastSync] = s.lastSyncMs
-        }
+        ds.edit { p -> SettingsCodec.writePgw(p, s) }
     }
 
     // --- Navigation SDK terms (accepted once, DESIGN.md §13) --------------------------------
@@ -295,4 +206,122 @@ class SettingsStore @Inject constructor(@ApplicationContext private val context:
     /** The persisted PGW session, one cookie per line, as `PgwClient` serialises it (§6.1 step 2.1). */
     suspend fun pgwCookies(): String? = getSecret(K.pgwCookies)
     suspend fun setPgwCookies(serialized: String?) = putSecret(K.pgwCookies, serialized)
+}
+
+// --- The field table (DESIGN.md §13 item 9, §13.4) -------------------------------------------
+
+/** The enum constant named [name], or null when there is none (an unknown name in the store or the backup file). */
+internal inline fun <reified E : Enum<E>> enumOrNull(name: String?): E? = enumValues<E>().firstOrNull { it.name == name }
+
+/** The enum constant named [name], or [default] when there is none. */
+internal inline fun <reified E : Enum<E>> enumOr(name: String?, default: E): E = enumOrNull<E>(name) ?: default
+
+/**
+ * One [AppSettings] field, as stored in DataStore under [key] (type [R]) and, when [json] is set, in the backup
+ * file's `settings` object (§13.4). Reading from either source applies [clamp] and treats a missing or
+ * unreadable value as "keep what we have" (the default when reading the store, the current setting on
+ * restore; §13.4 step 4). Built by the factories below; the rows are [SETTINGS_FIELDS].
+ */
+internal class Field<T, R : Any>(
+    private val key: Preferences.Key<R>,
+    /** The name in the backup file, or null for a field that stays out of it (§13.4 "Not included"). */
+    val json: String?,
+    private val get: (AppSettings) -> T,
+    private val set: AppSettings.(T) -> AppSettings,
+    private val toStored: (T) -> R,
+    private val fromStored: (R) -> T?,
+    private val fromJson: (JSONObject, String) -> T?,
+    private val toJson: (T) -> Any,
+    private val clamp: (T) -> T,
+) {
+    /** The stored value onto [s], clamped; absent or unreadable leaves [s] as it is. */
+    fun read(p: Preferences, s: AppSettings): AppSettings = p[key]?.let(fromStored)?.let { s.set(clamp(it)) } ?: s
+    fun write(p: MutablePreferences, s: AppSettings) { p[key] = toStored(get(s)) }
+    /** The file's value onto [s], clamped; a field outside the backup, or one missing or unreadable, leaves [s] as it is. */
+    fun restore(j: JSONObject, s: AppSettings): AppSettings = json?.let { fromJson(j, it) }?.let { s.set(clamp(it)) } ?: s
+    fun backup(j: JSONObject, s: AppSettings) { if (json != null) j.put(json, toJson(get(s))) }
+}
+
+// A field outside the backup has nothing to read from the file.
+private val noJson: (JSONObject, String) -> Nothing? = { _, _ -> null }
+
+private fun bool(key: String, json: String?, get: (AppSettings) -> Boolean, set: AppSettings.(Boolean) -> AppSettings) =
+    Field(booleanPreferencesKey(key), json, get, set, { it }, { it }, { j, k -> runCatching { j.getBoolean(k) }.getOrNull() }, { it }, { it })
+
+private fun int(key: String, json: String, range: IntRange, get: (AppSettings) -> Int, set: AppSettings.(Int) -> AppSettings) =
+    Field(intPreferencesKey(key), json, get, set, { it }, { it }, { j, k -> j.optDouble(k).takeIf { !it.isNaN() }?.toInt() }, { it }, { it.coerceIn(range) })
+
+private fun double(key: String, json: String, range: ClosedFloatingPointRange<Double>, get: (AppSettings) -> Double, set: AppSettings.(Double) -> AppSettings) =
+    Field(doublePreferencesKey(key), json, get, set, { it }, { it }, { j, k -> j.optDouble(k).takeIf { !it.isNaN() } }, { it }, { it.coerceIn(range) })
+
+private fun long(key: String, get: (AppSettings) -> Long, set: AppSettings.(Long) -> AppSettings) =
+    Field(longPreferencesKey(key), null, get, set, { it }, { it }, noJson, { it }, { it })
+
+private fun float(key: String, get: (AppSettings) -> Float, set: AppSettings.(Float) -> AppSettings) =
+    Field(floatPreferencesKey(key), null, get, set, { it }, { it }, noJson, { it }, { it })
+
+private inline fun <reified E : Enum<E>> enum(key: String, json: String, noinline get: (AppSettings) -> E, noinline set: AppSettings.(E) -> AppSettings) =
+    Field(stringPreferencesKey(key), json, get, set, { it.name }, { enumOrNull<E>(it) }, { j, k -> enumOrNull<E>(j.optString(k)) }, { it.name }, { it })
+
+/**
+ * Every [AppSettings] field: its DataStore key (stable storage, never rename without a migration), its name in
+ * the backup file, and its clamp. In the backup file's order (§13.4 "What's in it"), with the three fields the
+ * backup leaves out last.
+ */
+internal val SETTINGS_FIELDS: List<Field<*, *>> = listOf(
+    enum<Units>("units", "units", { it.units }, { copy(units = it) }),
+    bool("voice", "voiceOn", { it.voiceOn }, { copy(voiceOn = it) }),
+    bool("chime", "chimeOn", { it.chimeOn }, { copy(chimeOn = it) }),
+    double("overspeed_pct", "overspeedPct", -0.05..0.20, { it.overspeedPct }, { copy(overspeedPct = it) }),
+    int("alert_lead_seconds", "alertLeadSeconds", MIN_ALERT_LEAD_SECONDS..MAX_ALERT_LEAD_SECONDS, { it.alertLeadSeconds }, { copy(alertLeadSeconds = it) }),
+    bool("announce_limit_changes", "announceLimitChanges", { it.announceLimitChanges }, { copy(announceLimitChanges = it) }),
+    enum<SpeedSource>("speed_source", "speedSource", { it.speedSource }, { copy(speedSource = it) }),
+    bool("speed_panel", "speedPanelOn", { it.speedPanelOn }, { copy(speedPanelOn = it) }),
+    bool("satellite_map", "satelliteMap", { it.satelliteMap }, { copy(satelliteMap = it) }),
+    bool("ev_efficient_routes", "evEfficientRoutes", { it.evEfficientRoutes }, { copy(evEfficientRoutes = it) }),
+    bool("avoid_tolls", "avoidTolls", { it.avoidTolls }, { copy(avoidTolls = it) }),
+    bool("osm_limits", "osmLimitsOn", { it.osmLimitsOn }, { copy(osmLimitsOn = it) }),
+    bool("osm_wifi_only", "osmWifiOnly", { it.osmWifiOnly }, { copy(osmWifiOnly = it) }),
+    bool("pgw_auto", "pgwAutoSync", { it.pgwAutoSync }, { copy(pgwAutoSync = it) }),
+    bool("pgw_wifi_only", "pgwWifiOnly", { it.pgwWifiOnly }, { copy(pgwWifiOnly = it) }),
+    enum<PgwDownload>("pgw_download", "pgwDownload", { it.pgwDownload }, { copy(pgwDownload = it) }),
+    long("muted_until", { it.mutedUntilMs }, { copy(mutedUntilMs = it) }),
+    float("sim_speed", { it.simulationSpeed }, { copy(simulationSpeed = it) }),
+    bool("drive_recording", null, { it.driveRecordingOn }, { copy(driveRecordingOn = it) }),
+)
+
+/** One [PgwState] field under [key]; a null value removes the key, and an absent key reads as null (0 for the two times, via [set]). */
+private class PgwField<R : Any>(val key: Preferences.Key<R>, val get: (PgwState) -> R?, val set: PgwState.(R?) -> PgwState) {
+    fun read(p: Preferences, s: PgwState): PgwState = s.set(p[key])
+    fun write(p: MutablePreferences, s: PgwState) { get(s)?.let { p[key] = it } ?: p.remove(key) }
+}
+
+/** Every [PgwState] field and its DataStore key (stable storage). */
+private val PGW_FIELDS = listOf(
+    PgwField(stringPreferencesKey("pgw_installed"), { it.installedVersion }, { copy(installedVersion = it) }),
+    PgwField(intPreferencesKey("pgw_installed_package"), { it.installedPackage }, { copy(installedPackage = it) }),
+    PgwField(intPreferencesKey("pgw_installed_layout"), { it.installedLayout }, { copy(installedLayout = it) }),
+    PgwField(stringPreferencesKey("pgw_latest"), { it.latestVersion }, { copy(latestVersion = it) }),
+    PgwField(stringPreferencesKey("pgw_latest_summary"), { it.latestSummary }, { copy(latestSummary = it) }),
+    PgwField(stringPreferencesKey("pgw_pending"), { it.pendingVersion }, { copy(pendingVersion = it) }),
+    PgwField(longPreferencesKey("pgw_feed_check"), { it.lastFeedCheckMs }, { copy(lastFeedCheckMs = it ?: 0) }),
+    PgwField(longPreferencesKey("pgw_last_sync"), { it.lastSyncMs }, { copy(lastSyncMs = it ?: 0) }),
+    PgwField(stringPreferencesKey("pgw_result"), { it.lastResult }, { copy(lastResult = it) }),
+    PgwField(stringPreferencesKey("pgw_etag"), { it.feedEtag }, { copy(feedEtag = it) }),
+    PgwField(stringPreferencesKey("pgw_last_modified"), { it.feedLastModified }, { copy(feedLastModified = it) }),
+)
+
+/**
+ * [AppSettings] and [PgwState] to and from DataStore `Preferences`, row by row of the tables above; shared by
+ * [SettingsStore] and tested on the JVM without a DataStore (`SettingsBackupJsonTest`). Pure functions, any thread.
+ */
+internal object SettingsCodec {
+    /** Preferences → [AppSettings]: the defaults, then every stored value that reads, clamped. */
+    fun read(p: Preferences): AppSettings = SETTINGS_FIELDS.fold(AppSettings()) { s, f -> f.read(p, s) }
+    /** [AppSettings] → Preferences, every field written. */
+    fun write(p: MutablePreferences, s: AppSettings) = SETTINGS_FIELDS.forEach { it.write(p, s) }
+    /** Preferences → [PgwState]. */
+    fun readPgw(p: Preferences): PgwState = PGW_FIELDS.fold(PgwState()) { s, f -> f.read(p, s) }
+    /** [PgwState] → Preferences; a null field removes its key. */
+    fun writePgw(p: MutablePreferences, s: PgwState) = PGW_FIELDS.forEach { it.write(p, s) }
 }

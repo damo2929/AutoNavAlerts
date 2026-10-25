@@ -3,6 +3,7 @@
 
 package io.autonav.alerts.core.osm
 
+import io.autonav.alerts.core.io.skipFully
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -117,7 +118,7 @@ object OsmLimitFile {
                             val k = try { r.readLong() } catch (e: java.io.EOFException) { break }
                             val len = r.readInt()
                             val at = fill[k]
-                            if (at == null) { var left = len; while (left > 0) { val k2 = r.skipBytes(left); if (k2 <= 0) throw java.io.EOFException(); left -= k2 }; continue }
+                            if (at == null) { r.skipFully(len.toLong()); continue }
                             val dst = if (len <= rec.size) rec else ByteArray(len)
                             r.readFully(dst, 0, len)
                             System.arraycopy(dst, 0, buf, at, len)
@@ -193,13 +194,6 @@ object OsmLimitFile {
                     lat = nl; lon = nn
                 }
             }
-        }
-
-        /** The road pieces of one tile, as segments (empty if the tile has none). Tests and tools. */
-        fun segments(tile: Long): List<LimitSegment> {
-            val out = ArrayList<LimitSegment>()
-            forEachSegment(tile) { a, b, c, d, mph -> out += LimitSegment(a / 1e6, b / 1e6, c / 1e6, d / 1e6, mph.toDouble(), LimitSegment.BOTH) }
-            return out
         }
 
         override fun close() = raf.close()

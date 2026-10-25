@@ -25,6 +25,17 @@ object Geo {
     const val METRES_PER_YARD = 0.9144
     /** Exact: 70 mph is 31.29 m/s. */
     const val MPS_PER_MPH = 0.44704
+    /** Exact: the statute mile, for the distance words of §7.2 and §12.3. */
+    const val METRES_PER_MILE = 1_609.344
+    /** Exact: the mph ⇄ km/h factor for the display units (§8.4 "Units"). */
+    const val KMH_PER_MPH = 1.609344
+    /** Metres per degree of latitude on the flat projection the road matching uses (§8.4a). */
+    const val METRES_PER_DEG_LAT = 110_540.0
+    /** Metres per degree of longitude at the equator; [metresPerDegLon] scales it by latitude. */
+    const val METRES_PER_DEG_LON_EQUATOR = 111_320.0
+
+    /** Metres per degree of longitude at [lat]: the x scale of the flat projection around a fix. */
+    fun metresPerDegLon(lat: Double): Double = METRES_PER_DEG_LON_EQUATOR * cos(Math.toRadians(lat))
 
     private fun Double.rad() = this * PI / 180.0
     private fun Double.deg() = this * 180.0 / PI
@@ -90,5 +101,31 @@ object Geo {
             along > dAB -> distanceM(bLat, bLon, pLat, pLon)
             else -> abs(dXt)
         }
+    }
+
+    /**
+     * Distance in metres from P to the point (lat, lon) on a flat projection around P: [kx] metres
+     * per degree of longitude there ([metresPerDegLon]), [METRES_PER_DEG_LAT] per degree of latitude.
+     * Plenty at the 20–50 m scale of the road matching (§8.4a); the great-circle [distanceM] serves the rest.
+     */
+    fun flatDistanceM(pLat: Double, pLon: Double, lat: Double, lon: Double, kx: Double): Double {
+        val x = (lon - pLon) * kx; val y = (lat - pLat) * METRES_PER_DEG_LAT
+        return sqrt(x * x + y * y)
+    }
+
+    /** Distance in metres from P to the segment A→B on the same flat projection as [flatDistanceM], clamped to the segment. */
+    fun flatDistanceToSegmentM(
+        pLat: Double, pLon: Double,
+        aLat: Double, aLon: Double,
+        bLat: Double, bLon: Double,
+        kx: Double,
+    ): Double {
+        val ax = (aLon - pLon) * kx; val ay = (aLat - pLat) * METRES_PER_DEG_LAT
+        val bx = (bLon - pLon) * kx; val by = (bLat - pLat) * METRES_PER_DEG_LAT
+        val dx = bx - ax; val dy = by - ay
+        val len2 = dx * dx + dy * dy
+        val t = if (len2 == 0.0) 0.0 else ((-ax * dx - ay * dy) / len2).coerceIn(0.0, 1.0)
+        val px = ax + t * dx; val py = ay + t * dy
+        return sqrt(px * px + py * py)
     }
 }

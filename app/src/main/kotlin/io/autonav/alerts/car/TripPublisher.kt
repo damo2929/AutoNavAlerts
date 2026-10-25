@@ -39,8 +39,8 @@ class TripPublisher(
     private val carContext: CarContext,
     private val deps: CarDeps,
     private val imperial: () -> Boolean,
-    private val eventLog: EventLog,
 ) {
+    private val eventLog: EventLog = deps.eventLog()
     private var active = false
     private var job: Job? = null
 
@@ -68,12 +68,12 @@ class TripPublisher(
     // the edges are tracked here with `active`, not taken from the SDK's state (which has none for ended).
     private fun publish(info: NavInfo?, guiding: Boolean) {
         if (guiding && !active) {
-            runCatching { manager.navigationStarted() }.onFailure { Log.w(TAG, "navigationStarted", it) }
+            tryManager("navigationStarted") { navigationStarted() }
             active = true
             log("navigationStarted")
         }
         if (!guiding && active) {
-            runCatching { manager.navigationEnded() }.onFailure { Log.w(TAG, "navigationEnded", it) }
+            tryManager("navigationEnded") { navigationEnded() }
             active = false
             log("navigationEnded")
         }
@@ -85,13 +85,18 @@ class TripPublisher(
             NavState.REROUTING -> Trip.Builder().setLoading(true).build()
             else -> null
         } ?: return
-        runCatching { manager.updateTrip(trip) }.onFailure { Log.w(TAG, "updateTrip", it) }
+        tryManager("updateTrip") { updateTrip(trip) }
         eventLog.sample("trip.update", 5_000, EventLog.Channel.NAV, "Trip") {
             if (info.navState == NavState.REROUTING) "update loading (rerouting)"
             else "update step=\"${info.currentStep?.fullInstructionText ?: info.currentStep?.simpleRoadName ?: "-"}\" " +
                 "d=${info.distanceToCurrentStepMeters ?: -1} next=\"${info.remainingSteps?.firstOrNull()?.simpleRoadName ?: "-"}\" " +
                 "toDest=${info.distanceToFinalDestinationMeters ?: -1}"
         }
+    }
+
+    /** One `NavigationManager` [call], named for the warning when the host refuses it; never thrown at the collector. */
+    private fun tryManager(name: String, call: NavigationManager.() -> Unit) {
+        runCatching { manager.call() }.onFailure { Log.w(TAG, name, it) }
     }
 
     private fun log(msg: String) = eventLog.record(EventLog.Channel.NAV, "Trip", msg)

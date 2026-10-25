@@ -62,7 +62,6 @@ class EstimateMapperTest {
         )
         assertEquals(LocationSource.entries.size, expected.size)
         for (l in LocationSource.entries) {
-            assertEquals(l.name, expected.getValue(l).first, EstimateMapper.locationSource(l))
             assertEquals(l.name, expected.getValue(l).second, EstimateMapper.recorderSrc(l))
             assertEquals(l.name, expected.getValue(l).first, EstimateMapper.toFix(estimate(location = l), 51.0, -1.0, 4.0).locationSource)
         }

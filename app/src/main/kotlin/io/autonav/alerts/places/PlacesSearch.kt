@@ -64,7 +64,7 @@ class PlacesSearch @Inject constructor(
         val req = FindAutocompletePredictionsRequest.builder().setQuery(query).setSessionToken(t).apply {
             near?.let {
                 setOrigin(LatLng(it.latitude, it.longitude))
-                setLocationBias(CircularBounds.newInstance(LatLng(it.latitude, it.longitude), 50_000.0))
+                setLocationBias(bounds(it))
             }
         }.build()
         val resp = client.findAutocompletePredictions(req).awaitOrNull() ?: return emptyList()
@@ -83,7 +83,7 @@ class PlacesSearch @Inject constructor(
         val client = holder.placesClient() ?: run { log(0, t0, "error noClient"); return emptyList() }
         val fields = listOf(Place.Field.ID, Place.Field.DISPLAY_NAME, Place.Field.FORMATTED_ADDRESS, Place.Field.LOCATION)
         val req = SearchByTextRequest.builder(query, fields).setMaxResultCount(6).apply {
-            near?.let { setLocationBias(CircularBounds.newInstance(LatLng(it.latitude, it.longitude), 50_000.0)) }
+            near?.let { setLocationBias(bounds(it)) }
         }.build()
         val resp = client.searchByText(req).awaitOrNull() ?: run { log(0, t0, "error"); return emptyList() }
         val hits = resp.places.mapNotNull { p ->
@@ -94,6 +94,9 @@ class PlacesSearch @Inject constructor(
         log(hits.size, t0, if (hits.isEmpty()) "empty" else "OK")
         return hits
     }
+
+    /** The 50 km bias around the car for autocomplete and text search (§16 #12). */
+    private fun bounds(near: Location): CircularBounds = CircularBounds.newInstance(LatLng(near.latitude, near.longitude), 50_000.0)
 
     /** The §15.5 log line for a text search. */
     private fun log(n: Int, t0: Long, status: String) =

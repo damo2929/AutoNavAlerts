@@ -33,7 +33,11 @@ object DriveLog {
     const val SRC_CAR = "car"
     const val SRC_SIM = "sim"
 
-    /** One row. [kind] is [KIND_FIX] or [KIND_SPEED]; [src] one of the SRC_ values. */
+    /**
+     * One row. [kind] is [KIND_FIX] or [KIND_SPEED]; [src] one of the SRC_ values. The app builds
+     * these directly (`AdaptiveLocationSource` for a fix, `CarDataSource` for a speed report, where
+     * only the car's two speeds are set); the fields a row lacks default to null (empty in the CSV).
+     */
     data class RecordedFix(
         /** Wall-clock time the row was recorded, ms. */
         val tMs: Long,
@@ -41,21 +45,24 @@ object DriveLog {
         val src: String,
         /** Whether the location source used it (a phone fix is dropped while the car's GPS is fresh). */
         val used: Boolean,
-        val lat: Double?,
-        val lon: Double?,
-        val accM: Double?,
-        val spdMps: Double?,
-        val brgDeg: Double?,
-        val hasBrg: Boolean,
-        val altM: Double?,
-        /** The fix's own timestamp, ms. */
-        val fixTMs: Long?,
-        /** What the engine was given for this fix at the time. */
-        val engSpdMps: Double?,
-        val engHdgDeg: Double?,
-        val hdgSrc: String?,
-        val carRawMps: Double?,
-        val carDispMps: Double?,
+        // A fix's own fields as Android gave them: degrees, metres, m/s, degrees true; null when absent.
+        val lat: Double? = null,
+        val lon: Double? = null,
+        val accM: Double? = null,
+        val spdMps: Double? = null,
+        val brgDeg: Double? = null,
+        /** Whether the fix carried a bearing at all (a 0 bearing with hasBrg=false is "none"). */
+        val hasBrg: Boolean = false,
+        val altM: Double? = null,
+        /** The fix's own timestamp (Location.time), ms, as opposed to [tMs] when the app saw it. */
+        val fixTMs: Long? = null,
+        /** What the engine was given for this fix at the time, after the speed/heading rules. */
+        val engSpdMps: Double? = null,
+        val engHdgDeg: Double? = null,
+        val hdgSrc: String? = null,
+        // The car's measured and dial speeds, m/s: when fresh for a fix row, the report itself for a speed row.
+        val carRawMps: Double? = null,
+        val carDispMps: Double? = null,
     ) {
         /** The engine's fix, as recorded (the engine's speed and heading of the time). */
         fun toFix(): Fix = Fix(

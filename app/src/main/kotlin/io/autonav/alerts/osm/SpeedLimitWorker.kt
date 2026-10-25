@@ -3,7 +3,6 @@
 
 package io.autonav.alerts.osm
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
@@ -21,6 +20,7 @@ import io.autonav.alerts.R
 import io.autonav.alerts.core.osm.NorthernIreland
 import io.autonav.alerts.core.osm.OsmLimitFile
 import io.autonav.alerts.core.osm.ShapefileRoads
+import io.autonav.alerts.util.ensureChannel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -133,10 +133,7 @@ class SpeedLimitWorker @AssistedInject constructor(
 
     /** The ongoing progress notification with a Cancel action (§8.4a "with a progress notification and Cancel"); indeterminate until the total is known. */
     private fun notification(text: String, done: Long, total: Long): android.app.Notification {
-        val nm = applicationContext.getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Speed limit download", NotificationManager.IMPORTANCE_LOW))
-        }
+        ensureChannel(applicationContext, CHANNEL, "Speed limit download", NotificationManager.IMPORTANCE_LOW)
         val cancel = WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)
         return NotificationCompat.Builder(applicationContext, CHANNEL)
             .setSmallIcon(R.drawable.ic_poi_camera_fixed)

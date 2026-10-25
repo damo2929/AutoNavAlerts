@@ -3,14 +3,14 @@
 
 package io.autonav.alerts.core.pgw
 
+import io.autonav.alerts.core.io.secureDocumentBuilderFactory
+import io.autonav.alerts.core.io.sha256Hex
 import org.w3c.dom.Element
 import java.io.InputStream
-import java.security.MessageDigest
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.util.Locale
-import javax.xml.parsers.DocumentBuilderFactory
 
 /**
  * A PocketGPSWorld database release, as announced by
@@ -70,16 +70,8 @@ object PgwUpdateFeed {
 
     /** Every item of the feed as a [PgwRelease], in feed order; an unparseable title gets a hash identity. */
     fun parse(input: InputStream): List<PgwRelease> {
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            isNamespaceAware = false
-            // Each feature is set with runCatching: Android's parser may not know a name, and that must not stop the parse.
-            // Hardening: no external entities or DTDs from a remote feed.
-            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
-            runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
-            runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
-            isExpandEntityReferences = false
-        }
-        val doc = factory.newDocumentBuilder().parse(input)
+        // Hardening: no external entities or DTDs from a remote feed.
+        val doc = secureDocumentBuilderFactory().newDocumentBuilder().parse(input)
         val items = doc.getElementsByTagName("item")
         return (0 until items.length).map { i ->
             val item = items.item(i) as Element
@@ -102,7 +94,7 @@ object PgwUpdateFeed {
                 link = link,
             )
         } else {
-            PgwRelease(0, 0, null, description.trim(), link, hashKey = "h:" + sha256(title + "\n" + description).take(16))
+            PgwRelease(0, 0, null, description.trim(), link, hashKey = "h:" + (title + "\n" + description).sha256Hex().take(16))
         }
     }
 
@@ -118,7 +110,4 @@ object PgwUpdateFeed {
 
     private fun Element.text(tag: String): String =
         getElementsByTagName(tag).item(0)?.textContent ?: ""
-
-    private fun sha256(s: String): String =
-        MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
 }

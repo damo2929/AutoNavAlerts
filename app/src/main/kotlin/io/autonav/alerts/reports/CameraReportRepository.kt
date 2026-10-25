@@ -3,7 +3,6 @@
 
 package io.autonav.alerts.reports
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -26,6 +25,7 @@ import io.autonav.alerts.data.PoiEntity
 import io.autonav.alerts.data.PoiRepository
 import io.autonav.alerts.data.ReportKind
 import io.autonav.alerts.data.ReportStatus
+import io.autonav.alerts.util.ensureChannel
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 import javax.inject.Inject
@@ -65,6 +65,9 @@ class CameraReportRepository @Inject constructor(
 
     /** Where a report's recording lives: private storage, `files/report-audio/report-<id>.pcm`, deleted once sent or discarded (§8.5 "Privacy"). */
     fun audioFile(id: Long) = File(File(context.filesDir, "report-audio").apply { mkdirs() }, "report-$id.pcm")
+
+    /** Deletes a report's recording, if it has one (§8.5 "Privacy": gone with Undo, Discard and a successful send). */
+    private fun deleteAudio(r: CameraReportEntity) { r.audioPath?.let { File(it).delete() } }
 
     /**
      * One-tap capture (§8.5 "Car flow" step 1): saves the snapshot as a DRAFT with [limit] (mph) and where it came
@@ -129,7 +132,7 @@ class CameraReportRepository @Inject constructor(
     suspend fun undo(id: Long) {
         val r = db.reports().get(id) ?: return
         r.localPoiId?.let { pois.deletePoi(it) }
-        r.audioPath?.let { File(it).delete() }
+        deleteAudio(r)
         db.reports().delete(id)
     }
 
@@ -169,7 +172,7 @@ class CameraReportRepository @Inject constructor(
     /** Discard on the phone: a draft's marker goes, the recording is deleted (§8.5 "Privacy"), the row stays as DISCARDED. */
     suspend fun discard(r: CameraReportEntity) {
         if (r.status == ReportStatus.DRAFT) r.localPoiId?.let { pois.deletePoi(it) }
-        r.audioPath?.let { File(it).delete() }
+        deleteAudio(r)
         db.reports().update(r.copy(status = ReportStatus.DISCARDED, audioPath = null))
     }
 
@@ -182,7 +185,7 @@ class CameraReportRepository @Inject constructor(
 
     /** The worker's success path: SENT, and the recording deleted (§8.5 "Audio files are deleted once the report is sent"). */
     suspend fun markSent(r: CameraReportEntity) {
-        r.audioPath?.let { File(it).delete() }
+        deleteAudio(r)
         db.reports().update(r.copy(status = ReportStatus.SENT, lastError = null, audioPath = null))
     }
 
@@ -194,10 +197,7 @@ class CameraReportRepository @Inject constructor(
         val n = drafts().size
         if (n == 0) return
         if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val nm = context.getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Camera reports", NotificationManager.IMPORTANCE_DEFAULT))
-        }
+        val nm = ensureChannel(context, CHANNEL, "Camera reports", NotificationManager.IMPORTANCE_DEFAULT)
         val open = Intent(context, io.autonav.alerts.phone.MainActivity::class.java)
             .putExtra(io.autonav.alerts.phone.MainActivity.EXTRA_TAB, io.autonav.alerts.phone.MainActivity.TAB_REPORTS)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -210,11 +210,7 @@ class CameraReportRepository @Inject constructor(
     }
 
     /** Like [toSubmission], filling idCam from the related camera's PGW id when known (`Poi.sourceId`, carried in the OV2 download's names, §5.2a; the iGO download has none). */
-    suspend fun toSubmissionWithId(r: CameraReportEntity): PgwSubmission {
-        val id = r.relatedPoiId?.let { pois.poi(it) }?.sourceId
-        val base = toSubmission(r, id)
-        return base
-    }
+    suspend fun toSubmissionWithId(r: CameraReportEntity): PgwSubmission = toSubmission(r, r.relatedPoiId?.let { pois.poi(it) }?.sourceId)
 
     /**
      * Maps a report onto PGW's form fields (DESIGN.md §8.5 "Mapping our report types" and the field table):

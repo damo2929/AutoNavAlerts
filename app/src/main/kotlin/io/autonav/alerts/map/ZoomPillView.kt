@@ -8,7 +8,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
-import android.view.View
 import androidx.core.content.ContextCompat
 import io.autonav.alerts.R
 
@@ -25,43 +24,25 @@ import io.autonav.alerts.R
  *
  * @param onZoom called with +1 (in) or −1 (out) zoom levels.
  */
-class ZoomPillView(context: Context, private val onZoom: (Float) -> Unit) : View(context) {
-    private val density = resources.displayMetrics.density
-    private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+class ZoomPillView(context: Context, private val onZoom: (Float) -> Unit) : MapButton(context, WIDTH_DP, HEIGHT_DP) {
     private val line = Paint(Paint.ANTI_ALIAS_FLAG)
     private val plus = ContextCompat.getDrawable(context, R.drawable.ic_action_zoom_in)!!.mutate()
     private val minus = ContextCompat.getDrawable(context, R.drawable.ic_action_zoom_out)!!.mutate()
     private val rect = RectF()
 
-    /** Day or night colours; redraws only when it changes. */
-    var dark = true
-        set(v) {
-            if (v == field) return
-            field = v
-            invalidate()
-        }
-
     /** A tap [y] pixels below the pill's top: returns which half it hit ("zoomIn" or "zoomOut"), for the tap log. */
     fun tap(y: Float): String = if (y < height / 2f) { onZoom(1f); "zoomIn" } else { onZoom(-1f); "zoomOut" }
-
-    /** A fixed [WIDTH_DP] × [HEIGHT_DP] pill. */
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension((WIDTH_DP * density).toInt(), (HEIGHT_DP * density).toInt())
-    }
 
     /** The pill, the hairline between the halves and the + and − icons; runs only on a day/night change. */
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
-        MapButtonColors.apply(dark, bg, edge, density)
         rect.set(edge.strokeWidth / 2, edge.strokeWidth / 2, w - edge.strokeWidth / 2, h - edge.strokeWidth / 2)
-        canvas.drawRoundRect(rect, w / 2, w / 2, bg)
-        if (!dark) canvas.drawRoundRect(rect, w / 2, w / 2, edge)
+        drawShape(canvas) { drawRoundRect(rect, w / 2, w / 2, it) }
         // The hairline between the halves (§8 "Map buttons"), 1 dp, over the middle 60 % of the width.
         line.color = if (dark) Color.argb(90, 255, 255, 255) else edge.color
         canvas.drawRect(w * 0.2f, h / 2 - density / 2, w * 0.8f, h / 2 + density / 2, line)
-        val tint = MapButtonColors.icon(dark)
+        val tint = iconColor
         // Each icon half the pill's width, centred in its half.
         val size = width / 2
         val left = (width - size) / 2

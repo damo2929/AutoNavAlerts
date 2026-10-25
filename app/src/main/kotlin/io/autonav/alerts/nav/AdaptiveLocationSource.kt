@@ -74,9 +74,10 @@ data class LocationStats(
 
 /**
  * The bridge from the estimator's [Estimate] to the engine's [Fix] (DESIGN.md §10.6a "what the
- * engine sees"). Pure, so it is unit-tested on the JVM: the two `SpeedSource`/`HeadingSource`
- * enums differ between `core.location` and `core.alerts`, and the mapping between them is kept
- * here in one place rather than in the location source's fix path.
+ * engine sees"). Pure, so it is unit-tested on the JVM: the `SpeedSource`/`HeadingSource` enums
+ * differ between `core.location` and `core.alerts` (DISPLACEMENT is logged as `derived` by the engine),
+ * and the mapping between them is kept here in one place rather than in the location source's fix
+ * path. `LocationSource` is one enum (core.location; core.alerts aliases it), so it passes straight through.
  */
 object EstimateMapper {
     /** The estimator's speed source as the engine names it (DISPLACEMENT is the engine's DERIVED). */
@@ -97,12 +98,6 @@ object EstimateMapper {
         HeadingSource.NONE -> io.autonav.alerts.core.alerts.HeadingSource.NONE
     }
 
-    /** Which feed the fix came from, as the engine names it (phone / car / simulated). */
-    fun locationSource(l: LocationSource): io.autonav.alerts.core.alerts.LocationSource = when (l) {
-        LocationSource.PHONE -> io.autonav.alerts.core.alerts.LocationSource.PHONE
-        LocationSource.CAR -> io.autonav.alerts.core.alerts.LocationSource.CAR
-        LocationSource.SIM -> io.autonav.alerts.core.alerts.LocationSource.SIM
-    }
 
     /** The recorder's `src` column for a feed. */
     fun recorderSrc(l: LocationSource): String = when (l) {
@@ -132,7 +127,7 @@ object EstimateMapper {
             headingSource = headingSource(e.headingSource),
             speedSource = if (carRawMps != null) io.autonav.alerts.core.alerts.SpeedSource.CAR_RAW else speedSource(e.speedSource),
             displaySpeedMps = if (carRawMps != null) carDispMps else null,
-            locationSource = locationSource(e.locationSource),
+            locationSource = e.locationSource,
             accuracyM = accuracyM,
         )
     }
@@ -239,7 +234,7 @@ class AdaptiveLocationSource @Inject constructor(
         running = true
         carData.onLocation = { loc -> if (!simulated) onCarLocation(loc) }
         thread = HandlerThread("adaptive-location").also { it.start() }
-        request(GPS_HZ)
+        request()
     }
 
     /**
@@ -299,18 +294,16 @@ class AdaptiveLocationSource @Inject constructor(
     }
 
     /**
-     * Sends the one phone request (DESIGN.md §10.2). [wantedHz] is always [GPS_HZ]; the parameter is
-     * kept so the request can be re-sent unchanged after a restart without a second code path. Does
-     * nothing when the same rate is already requested or the thread isn't up.
+     * Sends the one phone request (DESIGN.md §10.2), always at [GPS_HZ]. Does nothing when it is
+     * already requested (a second [start] without a [stop]) or the thread isn't up.
      */
     @SuppressLint("MissingPermission")
-    private fun request(wantedHz: Int) {
+    private fun request() {
         val looper = thread?.looper ?: return
-        val hz = wantedHz
-        if (hz == phoneHz) return
-        phoneHz = hz
+        if (phoneHz == GPS_HZ) return
+        phoneHz = GPS_HZ
         // 1 Hz → a 1000 ms interval: the natural GPS rate, which still refreshes the car map promptly after a restart (§10.2).
-        val interval = 1000L / hz
+        val interval = 1000L / GPS_HZ
         client.removeLocationUpdates(callback)
         // The phone's own rate, never forced (DESIGN.md §10.2, owner 2026-10-24): asked at the natural
         // GPS rate, and any faster fix the phone already delivers is taken rather than dropped.
@@ -322,17 +315,20 @@ class AdaptiveLocationSource @Inject constructor(
         runCatching { client.requestLocationUpdates(req, callback, looper) }
             .onFailure {
                 Log.w(TAG, "Location request failed: ${it.message}")
-                eventLog.record(EventLog.Channel.NAV, "Location", "request failed: ${it.message}")
+                navLog("request failed: ${it.message}")
             }
-        eventLog.record(EventLog.Channel.NAV, "Location", "request interval=${interval}ms min=0")
+        navLog("request interval=${interval}ms min=0")
     }
 
     /** Forgets the track (handover, simulation on/off) and says so (§10.6a, §15.5). */
     private fun reset(reason: String) {
         estimator.resetTrack(reason)
         lastReset = reason
-        eventLog.record(EventLog.Channel.NAV, "Location", "TRACK_RESET reason=$reason")
+        navLog("TRACK_RESET reason=$reason")
     }
+
+    /** A `Location …` line in debug-nav (§15.5). */
+    private fun navLog(msg: String) = eventLog.record(EventLog.Channel.NAV, "Location", msg)
 
     /**
      * One used fix from any feed: runs the estimator, builds the engine's [Fix], updates the stats,
@@ -358,26 +354,24 @@ class AdaptiveLocationSource @Inject constructor(
                 }
                 val flip = "${prevSource.name.lowercase()}→${source.name.lowercase()}"
                 reset("handover $flip")
-                eventLog.record(EventLog.Channel.NAV, "Location", "source $flip (+$sinceOther ms)")
+                navLog("source $flip (+$sinceOther ms)")
             } else {
-                eventLog.record(EventLog.Channel.NAV, "Location", "source ${source.name.lowercase()}")
+                navLog("source ${source.name.lowercase()}")
             }
             lastSource = source
         }
         usingCarLocation = source == LocationSource.CAR
         // A gap over 5 s between used fixes is logged here; the estimator resets its track on the same gap (§10.6a).
-        if (prevArrival > 0 && arrival - prevArrival > GAP_MS) {
-            eventLog.record(EventLog.Channel.NAV, "Location", "gap ms=${arrival - prevArrival}")
-        }
+        if (prevArrival > 0 && arrival - prevArrival > GAP_MS) navLog("gap ms=${arrival - prevArrival}")
 
         val estimate = estimator.onFix(toInput(loc, source, arrival))
         estimate.resetReason?.let { r ->
             lastReset = r
-            eventLog.record(EventLog.Channel.NAV, "Location", "TRACK_RESET reason=$r")
+            navLog("TRACK_RESET reason=$r")
         }
         // Car speed when the head unit provides it (DESIGN.md §10.6); simulated drives use their own.
         val car = if (simulated) null else carData.freshSpeed(arrival)
-        val accuracy = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null
+        val accuracy = loc.accM
         val fix = EstimateMapper.toFix(
             estimate, loc.latitude, loc.longitude, accuracy,
             carRawMps = car?.rawMps?.toDouble(), carDispMps = car?.displayMps?.toDouble(),
@@ -410,7 +404,7 @@ class AdaptiveLocationSource @Inject constructor(
         val poor = accuracy != null && accuracy > POOR_ACCURACY_M
         if (poor != accuracyPoor) {
             accuracyPoor = poor
-            eventLog.record(EventLog.Channel.NAV, "Location", if (poor) "accuracy>50m acc=${accuracy?.toInt()}" else "accuracy ok acc=${accuracy?.toInt()}")
+            navLog(if (poor) "accuracy>50m acc=${accuracy?.toInt()}" else "accuracy ok acc=${accuracy?.toInt()}")
         }
         eventLog.sample("fix", 5_000, EventLog.Channel.NAV, "Location") {
             "fix lat=${"%.5f".format(loc.latitude)} lon=${"%.5f".format(loc.longitude)} acc=${accuracy?.toInt() ?: "-"}" +
@@ -433,27 +427,25 @@ class AdaptiveLocationSource @Inject constructor(
         // One monotonic clock for every feed (§10.7): the fix's own boot-time stamp when it's sane,
         // else when it reached us. Location.time is a GNSS or car clock and some feeds stamp 0.
         timeMs = (loc.elapsedRealtimeNanos / 1_000_000).takeIf { it > 0 && abs(arrivalMs - it) < 10_000 } ?: arrivalMs,
-        accuracyM = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
-        speedMps = if (loc.hasSpeed()) loc.speed.toDouble() else null,
-        bearingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null,
+        accuracyM = loc.accM, speedMps = loc.spdMps, bearingDeg = loc.brgDeg,
         bearingAccuracyDeg = if (loc.hasBearingAccuracy()) loc.bearingAccuracyDegrees.toDouble() else null,
         source = source,
     )
 
+    // A `Location`'s optional fields as the estimator and the recorder take them: metres, m/s and
+    // degrees true as Double, null when the fix lacks the field (a missing speed is not 0, §10.2).
+    private val Location.accM: Double? get() = if (hasAccuracy()) accuracy.toDouble() else null
+    private val Location.spdMps: Double? get() = if (hasSpeed()) speed.toDouble() else null
+    private val Location.brgDeg: Double? get() = if (hasBearing()) bearing.toDouble() else null
+
     /** One recorder row per `Location` (DESIGN.md §15.5), dropped ones included. Cheap when not recording. */
     private fun record(loc: Location, source: LocationSource, used: Boolean, estimate: Estimate?, fix: Fix? = null, car: CarSpeed? = null) {
         driveRecorder.record(
-            DriveRecorder.Row(
+            DriveLog.RecordedFix(
                 tMs = System.currentTimeMillis(), kind = DriveLog.KIND_FIX, src = EstimateMapper.recorderSrc(source), used = used,
-                lat = loc.latitude, lon = loc.longitude,
-                accM = if (loc.hasAccuracy()) loc.accuracy else null,
-                spdMps = if (loc.hasSpeed()) loc.speed else null,
-                brgDeg = if (loc.hasBearing()) loc.bearing else null,
-                hasBrg = loc.hasBearing(),
-                altM = if (loc.hasAltitude()) loc.altitude else null,
-                fixTMs = loc.time,
-                engSpdMps = fix?.speedMps, engHdgDeg = fix?.heading,
-                hdgSrc = estimate?.headingSource?.name?.lowercase(),
+                lat = loc.latitude, lon = loc.longitude, accM = loc.accM, spdMps = loc.spdMps, brgDeg = loc.brgDeg, hasBrg = loc.hasBearing(),
+                altM = if (loc.hasAltitude()) loc.altitude else null, fixTMs = loc.time,
+                engSpdMps = fix?.speedMps, engHdgDeg = fix?.heading, hdgSrc = estimate?.headingSource?.name?.lowercase(),
                 carRawMps = car?.rawMps?.toDouble(), carDispMps = car?.displayMps?.toDouble(),
             ),
         )

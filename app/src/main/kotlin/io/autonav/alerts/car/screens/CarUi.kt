@@ -3,23 +3,68 @@
 
 package io.autonav.alerts.car.screens
 
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Typeface
 import androidx.annotation.DrawableRes
 import androidx.car.app.CarContext
+import androidx.car.app.CarToast
+import androidx.car.app.Screen
 import androidx.car.app.model.Action
 import androidx.car.app.model.CarIcon
-import androidx.core.graphics.createBitmap
+import androidx.car.app.model.Header
+import androidx.car.app.model.ItemList
+import androidx.car.app.model.ListTemplate
+import androidx.car.app.model.Row
 import androidx.core.graphics.drawable.IconCompat
+import androidx.lifecycle.lifecycleScope
+import io.autonav.alerts.R
+import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.contacts.ContactAddress
+import io.autonav.alerts.contacts.Located
+import io.autonav.alerts.data.PlaceEntity
+import io.autonav.alerts.nav.Destination
+import io.autonav.alerts.places.SearchHit
+import kotlinx.coroutines.launch
 
 /**
- * Small helpers shared by the car screens (DESIGN.md §8): icons and actions for the templates,
- * the host's list limit, and distance text in the display units. Stateless; called from the
- * screens' `onGetTemplate` on the main thread.
+ * Small helpers shared by the car screens (DESIGN.md §8): icons, actions, headers, rows and list
+ * templates built the one way, the host's list limit, distance text in the display units, and the
+ * contact pick shared by Search and Contacts (§8.3). Stateless; called from the screens'
+ * `onGetTemplate` on the main thread. They only build what each screen built before, so every
+ * template stays as it was (hard rules 2 and 3 are the screens' own).
  */
 object CarUi {
+    /** A header with [title] and the host's Back, as on every pushed list and message screen. */
+    fun header(title: String): Header = Header.Builder().setTitle(title).setStartHeaderAction(Action.BACK).build()
+
+    /** A list still loading under [header]; the host shows its own spinner. */
+    fun loading(header: Header): ListTemplate = ListTemplate.Builder().setHeader(header).setLoading(true).build()
+
+    /** A one-list template under [header], with any [actions] (Refresh…). */
+    fun list(header: Header, items: ItemList, vararg actions: Action): ListTemplate =
+        ListTemplate.Builder().setHeader(header).setSingleList(items).apply { actions.forEach(::addAction) }.build()
+
+    /** A row with an icon and up to two [text] lines that runs [onClick] (More's and Search's navigation rows). */
+    fun row(ctx: CarContext, title: String, @DrawableRes res: Int, vararg text: String, onClick: () -> Unit): Row =
+        Row.Builder().setTitle(title).apply { text.forEach { addText(it) } }.setImage(icon(ctx, res)).setOnClickListener(onClick).build()
+
+    /** A stored place as a destination (Recents, the place detail and Search's empty state, §8.2). */
+    fun PlaceEntity.toDestination(): Destination = Destination(name, lat, lon, placeId)
+
+    /**
+     * A tapped contact address (§8.3): located now (the 90-day cache, else one Places Text Search billed to the
+     * user's own key; never the whole address book), then the route preview; several matches go to [onChoose];
+     * none gives a toast. Shared by `SearchScreen` and `ContactsScreen`, which differ only in [onChoose].
+     */
+    fun pickContact(screen: Screen, session: NavSession, c: ContactAddress, onChoose: (List<SearchHit>) -> Unit) {
+        val ctx = screen.carContext
+        screen.lifecycleScope.launch {
+            when (val r = session.deps.contacts().locate(c, session.deps.location().lastLocation.value)) {
+                is Located.Found -> screen.screenManager.push(RoutePreviewScreen(ctx, session, r.destination.copy(address = r.address)))
+                is Located.Choose -> onChoose(r.options)
+                Located.NotFound -> CarToast.makeText(ctx, ctx.getString(R.string.car_contact_not_found, c.name), CarToast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     /** A drawable resource as a car icon; the host tints it to its theme. */
     fun icon(ctx: CarContext, @DrawableRes res: Int): CarIcon =
         CarIcon.Builder(IconCompat.createWithResource(ctx, res)).build()

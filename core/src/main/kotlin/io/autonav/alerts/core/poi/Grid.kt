@@ -3,6 +3,7 @@
 
 package io.autonav.alerts.core.poi
 
+import io.autonav.alerts.core.geo.Geo
 import kotlin.math.floor
 
 /**
@@ -55,7 +56,7 @@ object Grid {
      * 0.01° tall (≈ 1.11 km) and 0.01° × cos(lat) wide, so the column count grows towards the poles.
      */
     fun reachCells(lat: Double, metres: Double): Pair<Int, Int> {
-        val cellNs = CELL_DEG * 111_320.0
+        val cellNs = CELL_DEG * Geo.METRES_PER_DEG_LON_EQUATOR
         val cellEw = cellNs * kotlin.math.cos(Math.toRadians(lat.coerceIn(-85.0, 85.0)))
         return kotlin.math.ceil(metres / cellNs).toInt() to kotlin.math.ceil(metres / cellEw).toInt()
     }

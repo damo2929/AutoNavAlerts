@@ -32,18 +32,22 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Speech on the navigation-guidance channel (DESIGN.md §12.3), the alerts and the directions in
  * one voice: ducks media, never pauses it. The policy lives in the core [SpeechScheduler]
- * (staleness by distance, PASSING never dropped, retry then fall back, a 50-entry record ring); this class is the Android side: the `TextToSpeech` engine, audio focus, the chime,
- * the watchdog timer and the `Tts …` lines in alert-debug. Everything runs on the main handler.
+ * (staleness by distance, PASSING never dropped, retry then fall back, the watchdog allowance and
+ * its extension while the engine still speaks, a 50-entry record ring); this class is the Android
+ * side: the `TextToSpeech` engine, audio focus, the chime, the watchdog timer and the `Tts …`
+ * lines in alert-debug. Everything runs on the main handler, and the scheduler's own state (what
+ * is speaking, when it started) is the one copy: nothing is mirrored here.
  *
  * Rules upheld here (AGENTS.md §3.2; DESIGN.md §9.4, §12.3): audio focus is
  * `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK` with `setWillPauseWhenDucked(false)`, so media is ducked,
  * never paused; it is taken just before speaking and given back when nothing waits. Mute
  * ([muteNow], [recordMuted]) silences speech only; the cards are the coordinator's and still
  * show. The voice is the phone's default text-to-speech voice (owner, 2026-10-23); there is no
- * voice setting. The watchdog's allowance (3000 + 120 × characters ms, capped at 15 s) is the
- * scheduler's; [WATCHDOG_HARD_CAP_MS] is the cap applied here while the engine still says it is
- * speaking. One engine failure is retried once, then the chime, the banner and a one-off toast
- * (§12.3 Errors), so an alert is never silently lost.
+ * voice setting. The watchdog's allowance (3000 + 120 × characters ms, capped at 15 s) and the
+ * extension while the engine still says it is speaking are the scheduler's
+ * ([SpeechScheduler.extendWhileSpeaking]); this class only asks the engine. One engine failure is
+ * retried once, then the chime, the banner and a one-off toast (§12.3 Errors), so an alert is
+ * never silently lost.
  *
  * Lifecycle: a Hilt singleton. `NavSession` calls [warmUp] when the car connects and
  * `DirectionsSpeaker` when guidance starts; the phone's Settings use [speak] for the test
@@ -71,13 +75,10 @@ class NavTts @Inject constructor(
     private var focus: AudioFocusRequest? = null
     /** The pure queue policy (§12.3); driven on the main handler with `elapsedRealtime` as its clock. */
     private val scheduler = SpeechScheduler()
-    /** Utterance ids, unique for the process; the engine id is `autonav-<id>`. */
+    /** Utterance ids, unique for the process; the engine id is `autonav-<id>` ([engineId]). */
     private var nextId = 1L
-    /** The utterance handed to the engine, by its engine id. */
-    private var current: Utterance? = null
-    /** When the engine reported `onStart` for [current]; null until it has. */
-    private var currentStartedMs: Long? = null
-    private var currentEngineId: String? = null
+    /** The utterance handed to the engine, as the scheduler has it; null when nothing is speaking. */
+    private val current: Utterance? get() = scheduler.speaking
     private var lastRecord: Record? = null
     private var toastShown = false
     /** The engine failed to start: queued speech falls back to the chime until a retry succeeds. */
@@ -173,15 +174,13 @@ class NavTts @Inject constructor(
     /** Releases the engine, the tone generator and audio focus. Nothing queued survives. Main thread. */
     fun shutdown() {
         main.removeCallbacks(pumpRunnable)
-        main.removeCallbacks(watchdogRunnable)
         main.removeCallbacks(retryInitRunnable)
+        stopWatchdog()
         runCatching { tone?.release() }
         tone = null
         tts?.shutdown()
         tts = null
         ready = false
-        current = null
-        currentEngineId = null
         abandonFocus()
     }
 
@@ -213,13 +212,13 @@ class NavTts @Inject constructor(
 
     /**
      * Mute pressed (DESIGN.md §12.3): stops what is being said and drops what is waiting, PASSING
-     * included, each recorded as MUTED. Mute silences speech only: the cards still show.
+     * included, each recorded as MUTED. Mute silences speech only: the cards still show. A direction
+     * being spoken is left alone (the scheduler keeps it current), so its own `onDone` still lands.
      */
     fun muteNow() {
         main.post {
             val wasSpeaking = scheduler.muteAll(now())
-            if (wasSpeaking) runCatching { tts?.stop() }
-            clearCurrent()
+            if (wasSpeaking) { runCatching { tts?.stop() }; stopWatchdog() }
             log("mute: stopped=${wasSpeaking}")
             afterTerminal()
         }
@@ -240,25 +239,21 @@ class NavTts @Inject constructor(
     }
 
     /** For the engine snapshot (§15.5): what's speaking and what's waiting. */
-    fun snapshot(): String {
-        val s = scheduler.speaking
+    fun snapshot(): String = buildString {
         val w = scheduler.waiting
-        val sb = StringBuilder()
-        sb.append("tts ready=").append(ready).append(" speaking=")
-        sb.append(s?.let { "${it.kind} poi=${it.poiId} \"${it.text}\"" } ?: "-")
-        sb.append(" waiting=").append(w.size)
-        for (u in w) sb.append("\n  ").append(u.kind).append(" poi=").append(u.poiId).append(" pri=").append(u.priority).append(" \"").append(u.text).append('"')
+        append("tts ready=").append(ready).append(" speaking=")
+        append(current?.let { "${it.kind} poi=${it.poiId} \"${it.text}\"" } ?: "-")
+        append(" waiting=").append(w.size)
+        for (u in w) append("\n  ").append(u.kind).append(" poi=").append(u.poiId).append(" pri=").append(u.priority).append(" \"").append(u.text).append('"')
         val recent = scheduler.records().takeLast(5)
-        if (recent.isNotEmpty()) sb.append("\nrecent:")
-        for (r in recent.asReversed()) sb.append("\n  ").append(describe(r))
-        return sb.toString()
+        if (recent.isNotEmpty()) append("\nrecent:")
+        for (r in recent.asReversed()) append("\n  ").append(r.describe())
     }
 
     private val listener = object : UtteranceProgressListener() {
         override fun onStart(id: String?) {
             main.post {
                 val u = forEngineId(id) ?: return@post
-                currentStartedMs = now()
                 scheduler.onStarted(u, now())
                 scheduleWatchdog()
             }
@@ -268,7 +263,7 @@ class NavTts @Inject constructor(
             main.post {
                 val u = forEngineId(id) ?: return@post
                 scheduler.onDone(u, now())
-                clearCurrent()
+                stopWatchdog()
                 afterTerminal()
             }
         }
@@ -277,7 +272,7 @@ class NavTts @Inject constructor(
             main.post {
                 val u = forEngineId(id) ?: return@post
                 scheduler.onInterrupted(u, now())
-                clearCurrent()
+                stopWatchdog()
                 log("interrupted ${u.kind} poi=${u.poiId} byHost=$interrupted")
                 afterTerminal()
             }
@@ -294,16 +289,14 @@ class NavTts @Inject constructor(
 
     }
 
-    /** The utterance an engine callback is about, or null for a stale callback from an earlier one. */
-    private fun forEngineId(id: String?): Utterance? = if (id != null && id == currentEngineId) current else null
+    /** The engine's utterance id for [u]. */
+    private fun engineId(u: Utterance) = "autonav-${u.id}"
 
-    /** Nothing is being spoken any more: forget it and stop the watchdog. */
-    private fun clearCurrent() {
-        current = null
-        currentEngineId = null
-        currentStartedMs = null
-        main.removeCallbacks(watchdogRunnable)
-    }
+    /** The utterance an engine callback is about, or null for a stale callback from an earlier one. */
+    private fun forEngineId(id: String?): Utterance? = current?.takeIf { id == engineId(it) }
+
+    /** Nothing is being spoken any more (or it is being given up on): stop the watchdog. */
+    private fun stopWatchdog() = main.removeCallbacks(watchdogRunnable)
 
     /** After any terminal outcome: write the records, drop focus if the queue is empty, start the next. */
     private fun afterTerminal() {
@@ -323,7 +316,7 @@ class NavTts @Inject constructor(
             // retried once and then chimed, never left queued and silent for the whole drive.
             if (initFailed && current == null) {
                 val d = scheduler.next(now())
-                if (d is Decision.Speak) { current = d.utterance; engineError(d.utterance, ERROR_NO_ENGINE) }
+                if (d is Decision.Speak) engineError(d.utterance, ERROR_NO_ENGINE)
                 else if (d is Decision.Wait) main.postDelayed(pumpRunnable, max(50L, d.untilMs - now()))
             }
             return
@@ -346,9 +339,6 @@ class NavTts @Inject constructor(
      */
     private fun start(u: Utterance, waitedMs: Long) {
         val engine = tts ?: return
-        current = u
-        val engineId = "autonav-${u.id}"
-        currentEngineId = engineId
         log("start ${u.kind} poi=${u.poiId} waited=$waitedMs queue=${scheduler.waiting.size}")
         val granted = requestFocus()
         scheduler.onFocus(u, granted, now())
@@ -357,7 +347,7 @@ class NavTts @Inject constructor(
         val delay = if (u.chime) 250L else 0L
         main.postDelayed({
             if (current?.id != u.id) return@postDelayed
-            val r = runCatching { engine.speak(u.text, TextToSpeech.QUEUE_FLUSH, null, engineId) }.getOrDefault(TextToSpeech.ERROR)
+            val r = runCatching { engine.speak(u.text, TextToSpeech.QUEUE_FLUSH, null, engineId(u)) }.getOrDefault(TextToSpeech.ERROR)
             if (r != TextToSpeech.SUCCESS) engineError(u, r) else { engineErrors = 0; scheduleWatchdog() }
         }, delay)
         scheduleWatchdog()
@@ -369,7 +359,7 @@ class NavTts @Inject constructor(
      * to the SDK's voice (`GuidanceController`).
      */
     private fun engineError(u: Utterance, code: Int) {
-        clearCurrent()
+        stopWatchdog()
         // Two errors in a row from a running engine: its service has most likely died. Start a new one.
         if (code != ERROR_NO_ENGINE && ++engineErrors >= 2 && tts != null) {
             log("engine restart after $engineErrors errors")
@@ -398,54 +388,45 @@ class NavTts @Inject constructor(
 
     /** Arms the stuck-speech timer at the scheduler's deadline for what is speaking (§12.3 watchdog). */
     private fun scheduleWatchdog() {
-        main.removeCallbacks(watchdogRunnable)
+        stopWatchdog()
         val deadline = scheduler.deadlineMs() ?: return
         main.postDelayed(watchdogRunnable, max(100L, deadline - now() + 50))
     }
 
-    /** The deadline passed: extend while the engine is audibly speaking (up to the hard cap), else cut it off as TTS_STUCK. */
+    /** The deadline passed: extend while the engine is audibly speaking (up to the scheduler's cap), else cut it off as TTS_STUCK. */
     private fun onWatchdog() {
-        // Still audibly speaking? Then it isn't stuck: give it longer (up to the cap) rather than cut
-        // it off. On the bench every SECOND ("…, 148 yards") was killed mid-sentence (2026-10-13).
+        // Still audibly speaking? Then it isn't stuck: the scheduler gives it longer (up to its cap) rather
+        // than cut it off. On the bench every SECOND ("…, 148 yards") was killed mid-sentence (2026-10-13).
         val speakingNow = runCatching { tts?.isSpeaking == true }.getOrDefault(false)
-        val startedMs = currentStartedMs
-        if (speakingNow && startedMs != null && now() - startedMs < WATCHDOG_HARD_CAP_MS) {
-            log("watchdog extend ${current?.kind} poi=${current?.poiId} speaking=true after=${now() - startedMs}ms")
-            main.postDelayed(watchdogRunnable, 1_500)
+        val since = if (speakingNow) scheduler.extendWhileSpeaking(now()) else null
+        if (since != null) {
+            log("watchdog extend ${current?.kind} poi=${current?.poiId} speaking=true after=${since}ms")
+            main.postDelayed(watchdogRunnable, scheduler.config.watchdogExtendMs)
             return
         }
         val u = scheduler.onWatchdog(now())
         if (u == null) { scheduleWatchdog(); return }
         log("stuck ${u.kind} poi=${u.poiId} after=${scheduler.expectedMs(u)}ms")
         runCatching { tts?.stop() }
-        clearCurrent()
+        stopWatchdog()
         afterTerminal()
     }
 
-    /** Every new scheduler record becomes a `Tts …` line and, for terminal outcomes, the coordinator's callback. */
+    /**
+     * Every new scheduler record becomes a `Tts …` line (where the scheduler decided it; the rest are
+     * logged where they happen) and, for terminal outcomes, the coordinator's callback.
+     */
     private fun syncRecords() {
         val all = scheduler.records()
         val last = lastRecord
         val from = if (last == null) 0 else all.lastIndexOf(last) + 1
-        for (i in from until all.size) onRecord(all[i])
+        for (i in from until all.size) {
+            val r = all[i]
+            r.logLine()?.let { log(it) }
+            if (r.terminal) spokenCallback?.invoke(r.utterance.poiId, r.utterance.kind, r.outcome == Outcome.SPOKEN, r.waitedMs, r.outcome.name)
+        }
         lastRecord = all.lastOrNull()
         _records.value = all
-    }
-
-    /** One scheduler record: its `Tts …` line (where not logged at the event) and, if terminal, the coordinator's callback. */
-    private fun onRecord(r: Record) {
-        val u = r.utterance
-        val terminal = when (r.outcome) {
-            Outcome.SPOKEN -> { log("done ${u.kind} poi=${u.poiId} dur=${r.atMs - (r.startMs ?: r.atMs)} waited=${r.waitedMs ?: "-"}"); true }
-            Outcome.REPLACED -> { log("replaced ${u.kind} poi=${u.poiId} by=${r.byKind}"); true }
-            Outcome.STALE -> { log("dropped ${u.kind} poi=${u.poiId} reason=stale ${r.detail ?: ""}"); true }
-            Outcome.INTERRUPTED -> true // logged where it happened, with the host flag
-            Outcome.TIMED_OUT -> true // logged by the watchdog
-            Outcome.TTS_ERROR -> true // logged by engineError
-            Outcome.MUTED -> { log("muted ${u.kind} poi=${u.poiId}"); true }
-            Outcome.FOCUS_DENIED -> false
-        }
-        if (terminal) spokenCallback?.invoke(u.poiId, u.kind, r.outcome == Outcome.SPOKEN, r.waitedMs, r.outcome.name)
     }
 
     /** Kept only when granted: a refused request isn't "held", so the next utterance asks again. */
@@ -485,8 +466,6 @@ class NavTts @Inject constructor(
     fun wallMs(atMs: Long): Long = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - atMs)
 
     companion object {
-        /** An utterance the engine still calls "speaking" is cut off only after this long (DESIGN.md §12.3). */
-        private const val WATCHDOG_HARD_CAP_MS = 15_000L
         /** Waits before trying a failed engine again: 5 s, 30 s, then every minute. */
         private val RETRY_INIT_MS = longArrayOf(5_000, 30_000, 60_000)
         /**
@@ -495,15 +474,5 @@ class NavTts @Inject constructor(
          * A code of our own, outside the engine's range, so the restart rule can tell it from a real engine error.
          */
         private const val ERROR_NO_ENGINE = -100
-
-        /** One line for a record: `KIND poi=… OUTCOME waited=…`. */
-        fun describe(r: Record): String {
-            val u = r.utterance
-            val sb = StringBuilder().append(u.kind).append(" poi=").append(u.poiId).append(' ').append(r.outcome)
-            r.waitedMs?.let { sb.append(" waited=").append(it).append("ms") }
-            r.byKind?.let { sb.append(" by=").append(it) }
-            r.detail?.let { sb.append(' ').append(it) }
-            return sb.toString()
-        }
     }
 }

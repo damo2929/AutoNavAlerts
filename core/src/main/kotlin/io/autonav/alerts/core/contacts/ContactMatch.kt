@@ -3,7 +3,7 @@
 
 package io.autonav.alerts.core.contacts
 
-import java.security.MessageDigest
+import io.autonav.alerts.core.io.sha256Hex
 
 /**
  * Name matching, postcodes and the geocode cache key for contacts' addresses (DESIGN.md §8.3).
@@ -41,8 +41,7 @@ object ContactMatch {
         address.lowercase().replace(Regex("""\s+"""), " ").replace(" ,", ",").trim()
 
     /** Cache key: SHA-256 of the normalised address, so the address itself isn't stored. */
-    fun key(address: String): String =
-        MessageDigest.getInstance("SHA-256").digest(normalise(address).toByteArray()).joinToString("") { "%02x".format(it) }
+    fun key(address: String): String = normalise(address).sha256Hex()
 
     // Postcodes are compared without spaces or case (§8.3 "Choosing the result").
     /**

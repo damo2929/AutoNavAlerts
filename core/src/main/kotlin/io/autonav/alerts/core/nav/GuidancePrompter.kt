@@ -3,6 +3,8 @@
 
 package io.autonav.alerts.core.nav
 
+import io.autonav.alerts.core.geo.Geo
+
 /**
  * When and what to say for the turn-by-turn directions, now that we speak them ourselves in the
  * alerts' voice (DESIGN.md §12.3 "Directions in our voice", owner 2026-10-23). Pure: the app feeds
@@ -95,8 +97,8 @@ class GuidancePrompter(private val config: Config = Config()) {
     }
 
     companion object {
-        private const val YARD_M = 0.9144
-        private const val MILE_M = 1_609.344
+        private const val YARD_M = Geo.METRES_PER_YARD
+        private const val MILE_M = Geo.METRES_PER_MILE
 
         private val IMPERIAL = listOf(
             100 * YARD_M to "100 yards", 200 * YARD_M to "200 yards", 300 * YARD_M to "300 yards", 500 * YARD_M to "500 yards",

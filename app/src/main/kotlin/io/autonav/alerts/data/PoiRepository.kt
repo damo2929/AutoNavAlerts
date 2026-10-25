@@ -10,8 +10,6 @@ import androidx.room.withTransaction
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.core.alerts.AlertStage
 import io.autonav.alerts.core.alerts.AlertTemplateRenderer
-import io.autonav.alerts.core.alerts.DistanceMode
-import io.autonav.alerts.core.pgw.PgwConfig
 import io.autonav.alerts.core.poi.Grid
 import io.autonav.alerts.core.poi.ImportResult
 import io.autonav.alerts.core.poi.ImportRow
@@ -98,7 +96,6 @@ class PoiRepository @Inject constructor(
     // Set and category edits from the phone (and the backup restore); each one signals the caches.
     suspend fun updateSet(set: PoiSetEntity) { db.poiSets().update(set); notifyChanged() }
     suspend fun updateSets(sets: List<PoiSetEntity>) { db.poiSets().updateAll(sets); notifyChanged() }
-    suspend fun updateCategory(c: PoiCategoryEntity) { db.categories().update(c); notifyChanged() }
     /** Deletes a set and, by cascade, its categories and POIs (§4.1). */
     suspend fun deleteSet(id: Long) { db.poiSets().delete(id); notifyChanged() }
 
@@ -123,7 +120,7 @@ class PoiRepository @Inject constructor(
         replaceSetId: Long? = null,
     ): ImportOutcome = withContext(Dispatchers.IO) {
         val name = displayName(uri)
-        val entry: Pair<String, ByteArray> = if (name.endsWith(".zip", true)) {
+        if (name.endsWith(".zip", true)) {
             // Copied to a temp file (streamed), then each file is read from it only when needed.
             val tmp = copyToTemp(uri) ?: return@withContext fail("Couldn't open the file")
             try {
@@ -132,7 +129,9 @@ class PoiRepository @Inject constructor(
                     if (poiFiles.isEmpty()) return@withContext fail("No POI file found in the zip")
                     // Every file in the zip becomes its own set (never merged), with its own icon if supplied.
                     if (poiFiles.size > 1) return@withContext importZipFiles(name, entries, poiFiles, csvProfile)
-                    poiFiles.keys.first().let { it to poiFiles.getValue(it) }
+                    val entryName = poiFiles.keys.first()
+                    val data = poiFiles.getValue(entryName)
+                    importOne(entryName, data.copyOf(minOf(512, data.size)), format, { data.inputStream() }, csvProfile, replaceSetId)
                 }
             } finally { tmp.delete() }
         } else {
@@ -140,20 +139,27 @@ class PoiRepository @Inject constructor(
             val tmp = copyToTemp(uri, ".poi") ?: return@withContext fail("Couldn't open the file")
             try {
                 val head = tmp.inputStream().use { i -> ByteArray(512).let { b -> b.copyOf(i.read(b).coerceAtLeast(0)) } }
-                val fmt = format ?: FormatSniffer.detect(name, head) ?: return@withContext fail("Unknown file format")
-                if ((fmt == PoiFormat.KML || fmt == PoiFormat.GPX) && tmp.length() > MAX_XML_BYTES) {
-                    return@withContext fail("This ${fmt.name} file is too large (over ${MAX_XML_BYTES / 1_000_000} MB). Split it, or use CSV or OV2.")
-                }
-                val result = parse(fmt, { tmp.inputStream() }, csvProfile) ?: return@withContext fail("CSV files need a column mapping")
-                return@withContext storeImport(result, setNameFor(name), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
+                importOne(name, head, format, { tmp.inputStream() }, csvProfile, replaceSetId, sizeBytes = tmp.length())
             } finally { tmp.delete() }
         }
-        val (entryName, data) = entry
-        val fmt = format ?: FormatSniffer.detect(entryName, data.copyOf(minOf(512, data.size)))
-            ?: return@withContext fail("Unknown file format")
-        val result = parse(fmt, { data.inputStream() }, csvProfile) ?: return@withContext fail("CSV files need a column mapping")
-        // Set name comes from the file itself, never asked for.
-        storeImport(result, setNameFor(entryName), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
+    }
+
+    /**
+     * One picked POI file, as itself or as the one POI file in a zip: its format ([format], else sniffed from
+     * [name] and the first bytes in [head]), parsed from [open] and stored as a set named after the file (never
+     * asked for). [sizeBytes] is the file's size on disk for the KML/GPX cap of [MAX_XML_BYTES]; a zip entry,
+     * already inflated, passes 0 and isn't capped.
+     */
+    private suspend fun importOne(
+        name: String, head: ByteArray, format: PoiFormat?, open: () -> java.io.InputStream,
+        csvProfile: CsvProfile?, replaceSetId: Long?, sizeBytes: Long = 0L,
+    ): ImportOutcome {
+        val fmt = format ?: FormatSniffer.detect(name, head) ?: return fail("Unknown file format")
+        if ((fmt == PoiFormat.KML || fmt == PoiFormat.GPX) && sizeBytes > MAX_XML_BYTES) {
+            return fail("This ${fmt.name} file is too large (over ${MAX_XML_BYTES / 1_000_000} MB). Split it, or use CSV or OV2.")
+        }
+        val result = parse(fmt, open, csvProfile) ?: return fail("CSV files need a column mapping")
+        return storeImport(result, setNameFor(name), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
     }
 
     /** An outcome for a file that couldn't be read at all. */
@@ -287,9 +293,10 @@ class PoiRepository @Inject constructor(
         // The _X2 icons' licence text travels with the download and must be kept beside the icons (§5.2a).
         entries.entries.firstOrNull { it.key.equals(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_LICENCE_FILE, true) }
             ?.let { icons.savePgwIconLicence(it.value) }
-        if (files.isEmpty()) return ImportOutcome(null, 0, 0, emptyList(), true,
+        if (files.isEmpty()) return fail(
             "No camera files in the download. The zip contained: " +
-                entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" })
+                entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" },
+        )
         val keptFormats = HashSet<String>()
         var total = 0
         var firstId: Long? = null
@@ -411,8 +418,8 @@ class PoiRepository @Inject constructor(
         val setName: String,
         val source: PoiSourceType,
         val icon: String,
-        val alertsByDefault: Boolean,
         val categoryName: (String) -> String,
+        val alertsByDefault: Boolean = true,
     ) {
         companion object {
             /** OV2 stems are "<family>_<speed>" ("gatso_30", "specs_var"): the family picks the base and the speed part names the set (§5.2a). */
@@ -429,16 +436,16 @@ class PoiRepository @Inject constructor(
 
             /** The iGO package's file stems (§5.2 table); "sc" is the older single-file package 61; anything else gets a generic name. */
             fun of(stem: String): PgwFile = when (stem) {
-                "gatso" -> PgwFile("PGW fixed cameras", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true) { c ->
+                "gatso" -> PgwFile("PGW fixed cameras", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, { c ->
                     if (c == "11") "Fixed camera (type 11)" else "Fixed camera"
-                }
-                "mobile" -> PgwFile("PGW mobile camera sites", PoiSourceType.PGW, IconRepository.CAMERA_MOBILE, true) { "Mobile camera site" }
-                "redlight" -> PgwFile("PGW red light cameras", PoiSourceType.PGW, IconRepository.CAMERA_REDLIGHT, true) { "Red light camera" }
-                "specs" -> PgwFile("PGW average speed cameras (SPECS)", PoiSourceType.PGW, IconRepository.CAMERA_AVERAGE, true) { "Average speed camera" }
+                })
+                "mobile" -> PgwFile("PGW mobile camera sites", PoiSourceType.PGW, IconRepository.CAMERA_MOBILE, { "Mobile camera site" })
+                "redlight" -> PgwFile("PGW red light cameras", PoiSourceType.PGW, IconRepository.CAMERA_REDLIGHT, { "Red light camera" })
+                "specs" -> PgwFile("PGW average speed cameras (SPECS)", PoiSourceType.PGW, IconRepository.CAMERA_AVERAGE, { "Average speed camera" })
                 // Pending sites alert by default (owner, 2026-10-23, §5.2) but stay a separate set so they can be turned off.
-                "pmobile" -> PgwFile("PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING, IconRepository.CAMERA_PENDING, true) { "Pending mobile site" }
-                "sc" -> PgwFile("PocketGPSWorld cameras (all)", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
-                else -> PgwFile("PGW ${stem.replaceFirstChar { it.uppercase() }}", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, true, IgoTxtImporter::categoryName)
+                "pmobile" -> PgwFile("PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING, IconRepository.CAMERA_PENDING, { "Pending mobile site" })
+                "sc" -> PgwFile("PocketGPSWorld cameras (all)", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, IgoTxtImporter::categoryName)
+                else -> PgwFile("PGW ${stem.replaceFirstChar { it.uppercase() }}", PoiSourceType.PGW, IconRepository.CAMERA_FIXED, IgoTxtImporter::categoryName)
             }
         }
     }
@@ -463,10 +470,7 @@ class PoiRepository @Inject constructor(
         db.poiSets().bySource(PoiSourceType.REPORT)?.let { return it.id }
         val now = System.currentTimeMillis()
         return db.poiSets().insert(
-            defaultSet("My reports", PoiSourceType.REPORT, "REPORT", true, now).copy(
-                defaultIconId = IconRepository.CAMERA_MOBILE,
-                firstAlert = AlertStage.DEFAULT_FIRST.toCols(),
-            ),
+            defaultSet("My reports", PoiSourceType.REPORT, "REPORT", true, now).copy(defaultIconId = IconRepository.CAMERA_MOBILE),
         )
     }
 

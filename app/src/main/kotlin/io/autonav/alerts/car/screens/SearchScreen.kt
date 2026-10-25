@@ -16,8 +16,8 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
 import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.screens.CarUi.toDestination
 import io.autonav.alerts.contacts.ContactAddress
-import io.autonav.alerts.contacts.Located
 import io.autonav.alerts.data.PlaceEntity
 import io.autonav.alerts.data.PlaceKind
 import io.autonav.alerts.diag.EventLog
@@ -112,18 +112,15 @@ class SearchScreen(
                             PlaceKind.FAVOURITE -> R.drawable.ic_action_star
                             PlaceKind.RECENT -> R.drawable.ic_action_recents
                         }))
-                        .setOnClickListener { go(Destination(p.name, p.lat, p.lon, p.placeId)) }
+                        .setOnClickListener { go(p.toDestination()) }
                         .build(),
                 )
             }
             if (!contactsOnly && deps.contacts().available) {
                 // Contacts (DESIGN.md §8.3): the list of contacts with an address, recently used first.
-                list.addItem(
-                    Row.Builder().setTitle(carContext.getString(R.string.car_contacts)).addText(carContext.getString(R.string.car_contacts_hint))
-                        .setImage(CarUi.icon(carContext, R.drawable.ic_action_contact))
-                        .setOnClickListener { screenManager.push(ContactsScreen(carContext, session)) }
-                        .build(),
-                )
+                list.addItem(CarUi.row(carContext, carContext.getString(R.string.car_contacts), R.drawable.ic_action_contact, carContext.getString(R.string.car_contacts_hint)) {
+                    screenManager.push(ContactsScreen(carContext, session))
+                })
             }
             if (recents.isEmpty() && !deps.contacts().available) list.setNoItemsMessage(carContext.getString(R.string.car_search_empty))
             if (contactsOnly) list.setNoItemsMessage(carContext.getString(R.string.car_contacts_type_name))
@@ -216,15 +213,7 @@ class SearchScreen(
     }
 
     /** A contact's address: located (cached or by Places), or a choice of results (§8.3). */
-    private fun pickContact(c: ContactAddress) {
-        lifecycleScope.launch {
-            when (val r = deps.contacts().locate(c, deps.location().lastLocation.value)) {
-                is Located.Found -> go(r.destination.copy(address = r.address))
-                is Located.Choose -> { choosing = c to r.options; invalidate() }
-                Located.NotFound -> CarToast.makeText(carContext, carContext.getString(R.string.car_contact_not_found, c.name), CarToast.LENGTH_SHORT).show()
-            }
-        }
-    }
+    private fun pickContact(c: ContactAddress) = CarUi.pickContact(this, session, c) { options -> choosing = c to options; invalidate() }
 
     // An autocomplete hit has no position yet: one Place Details call resolves it (billed to the user's key, §1.4).
     private fun pick(h: SearchHit) {

@@ -11,16 +11,16 @@ import io.autonav.alerts.core.alerts.AlertKind
 import io.autonav.alerts.core.alerts.AlertPoi
 import io.autonav.alerts.core.alerts.AlertStage
 import io.autonav.alerts.core.alerts.AlertTemplateRenderer
-import io.autonav.alerts.core.alerts.AlertTrace
-import io.autonav.alerts.core.alerts.ClearReason
+import io.autonav.alerts.core.alerts.AlertTraceLog
 import io.autonav.alerts.core.alerts.DistanceMode
 import io.autonav.alerts.core.alerts.Fix
 import io.autonav.alerts.core.alerts.RouteMatcher
 import io.autonav.alerts.core.alerts.TemplateValues
+import io.autonav.alerts.core.alerts.TraceInfo
+import io.autonav.alerts.core.alerts.Units
 import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.osm.RoadAheadMatcher
-import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.core.poi.Grid
 import io.autonav.alerts.core.poi.SpeedUnit
 import io.autonav.alerts.data.PoiCategoryEntity
@@ -87,202 +87,6 @@ data class ActiveAlert(
 ) {
     /** The limit in the display units (DESIGN.md §8.4 "Units"). */
     fun limitShown(imperial: Boolean): Int? = speedLimit?.let { speedUnit.toDisplay(it, imperial) }
-}
-
-/**
- * What the trace needs to know about a POI it is writing about: its set's name, its stored
- * [bearing] (degrees true, null for none) and its [dirType] (ANY / ONE_WAY / BOTH, §11 step 3).
- */
-data class TraceInfo(val setName: String, val bearing: Float?, val dirType: DirectionType)
-
-/**
- * The engine's [AlertTrace] as `alert-debug.log` lines (DESIGN.md §11 step 10, §15.5): `Trace
- * enter/leave/suppressed/stage/spoken/stateClear/dim/undim`, and one `PASSED` passage summary per
- * camera when its state clears, assembled from what the trace saw on that approach. Pure Kotlin
- * (JVM-tested): [info] names the POI, [fix] gives the current fix, [sink] takes `(tag, msg)`.
- */
-class AlertTraceLog(
-    private val info: (Long) -> TraceInfo?,
-    private val fix: () -> Fix?,
-    private val sink: (tag: String, msg: String) -> Unit,
-) : AlertTrace {
-    /** One stage fired on an approach and, once NavTts reports back, whether it was heard. */
-    private class StageRec(val kind: AlertKind, val d: Double) {
-        var spoken: Boolean? = null
-        var delayMs: Long? = null
-        var outcome: String? = null
-    }
-
-    /** Everything seen for one POI since it came into the lookahead, for the PASSED line. */
-    private class Passage {
-        var enterD: Double? = null
-        var enterHdg: Double? = null
-        var enterAcc: Double? = null
-        val stages = ArrayList<StageRec>()
-        var lastSuppress: String? = null
-        var dimmedAtD: Double? = null
-        var lastVerdict = Verdict.OUT_OF_RANGE
-        var lastD = 0.0
-    }
-
-    private val passages = HashMap<Long, Passage>()
-    /** The last stage line and the last suppression, for the bench's engine snapshot. */
-    @Volatile var lastStage: String? = null
-        private set
-    @Volatile var lastSuppress: String? = null
-        private set
-
-    /**
-     * The engine's verdict for a POI changed (§11 step 10): `enter` when it becomes AHEAD_OK, else
-     * `leave` (if it was) and `suppressed reason=` with the geometry that failed. [d] metres,
-     * [offAxisDeg] the bearing-to-POI against the heading, [headingDeg] degrees true or null,
-     * [poiBearing] the camera's stored bearing, [lateralM] against [allowedM] the corridor test.
-     */
-    @Synchronized
-    override fun verdict(
-        poiId: Long, verdict: Verdict, d: Double, offAxisDeg: Double, headingDeg: Double?,
-        poiBearing: Float?, dirType: DirectionType, lateralM: Double, allowedM: Double,
-    ) {
-        val p = passages.getOrPut(poiId) { Passage() }
-        val set = info(poiId)?.setName ?: "?"
-        if (verdict == Verdict.AHEAD_OK) {
-            if (p.enterD == null) { p.enterD = d; p.enterHdg = headingDeg; p.enterAcc = fix()?.headingAccuracyDeg }
-            sink("Trace", "enter poi=$poiId set=\"$set\" d=${d.toInt()} hdg=${deg(headingDeg)} camBrg=${deg(poiBearing?.toDouble())} dir=$dirType")
-        } else {
-            if (p.lastVerdict == Verdict.AHEAD_OK) sink("Trace", "leave poi=$poiId set=\"$set\" d=${d.toInt()} verdict=$verdict")
-            val reason = reasonOf(verdict)
-            val mismatch = mismatchDeg(poiBearing, dirType, headingDeg)
-            val detail = if (verdict == Verdict.WRONG_DIRECTION && mismatch != null) "$reason(${mismatch.toInt()}°)" else reason
-            p.lastSuppress = detail
-            lastSuppress = "$detail poi=$poiId d=${d.toInt()}"
-            sink(
-                "Trace",
-                "suppressed reason=$reason poi=$poiId set=\"$set\" d=${d.toInt()} offAxis=${deg(offAxisDeg)} hdg=${deg(headingDeg)}" +
-                    " camBrg=${deg(poiBearing?.toDouble())} dir=$dirType lateral=${metres(lateralM)} allowed=${metres(allowedM)}",
-            )
-        }
-        p.lastVerdict = verdict
-        p.lastD = d
-    }
-
-    /** A stage fired: the `Trace stage` line with distance, speed, heading, camera bearing and how late it was. */
-    @Synchronized
-    override fun stage(event: AlertEvent) {
-        val f = fix()
-        val i = info(event.poiId)
-        val p = passages.getOrPut(event.poiId) { Passage() }
-        val late = event.triggerM - event.distanceM
-        val line = "stage ${event.kind} poi=${event.poiId} set=\"${i?.setName ?: "?"}\" d=${event.distanceM.toInt()}" +
-            " spd=${f?.let { "%.1f".format(it.speedMps) } ?: "-"} hdg=${deg(f?.heading)} brg=${deg(i?.bearing?.toDouble())}" +
-            " expectedD=${event.triggerM.toInt()} late=${late.toInt()} overspeed=${event.overspeed}"
-        sink("Trace", line)
-        lastStage = "${event.kind} poi=${event.poiId} d=${event.distanceM.toInt()}"
-        p.stages += StageRec(event.kind, event.distanceM)
-    }
-
-    /** NavTts reported the outcome of a stage's speech (through the coordinator's callback). */
-    @Synchronized
-    fun onSpoken(poiId: Long, kind: AlertKind, spoken: Boolean, delayMs: Long?, outcome: String) {
-        if (kind == AlertKind.LIMIT_CHANGE) {
-            // A speed-limit change is its own thing, never a camera stage (owner, 2026-10-13).
-            sink("Alerts", "limitChange spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
-            return
-        }
-        // Directions are spoken by DirectionsSpeaker (§12.3), never a camera stage.
-        if (kind == AlertKind.GUIDANCE) {
-            sink("Alerts", "directions spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
-            return
-        }
-        sink("Trace", "spoken $kind poi=$poiId spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
-        val p = passages[poiId] ?: return
-        val rec = p.stages.lastOrNull { it.kind == kind && it.spoken == null } ?: return
-        rec.spoken = spoken
-        rec.delayMs = delayMs
-        rec.outcome = outcome
-    }
-
-    /**
-     * The engine forgot the POI (passed, stale, behind, pruned; §11 step 7): the `stateClear` line and
-     * the one-line `PASSED` passage summary (§15.5), which answers what was done as the car passed it.
-     */
-    @Synchronized
-    override fun cleared(poiId: Long, reason: ClearReason) {
-        sink("Trace", "stateClear poi=$poiId reason=$reason")
-        val p = passages.remove(poiId) ?: return
-        val i = info(poiId)
-        val f = fix()
-        val hdg = p.enterHdg ?: f?.heading
-        val acc = p.enterAcc ?: f?.headingAccuracyDeg
-        val sb = StringBuilder()
-        sb.append("poi=").append(poiId).append(" set=\"").append(i?.setName ?: "?").append('"')
-        sb.append(" dir=").append(i?.dirType ?: "?").append(" camBrg=").append(deg(i?.bearing?.toDouble()))
-        sb.append(" ourHdg=").append(deg(hdg))
-        if (hdg != null && acc != null) sb.append('±').append(acc.roundToInt())
-        sb.append(" clear=").append(reason).append(" approach: ")
-        if (p.stages.isEmpty()) {
-            sb.append("NOT ALERTED reason=").append(p.lastSuppress ?: if (p.enterD != null) "noStageReached" else "none")
-            p.dimmedAtD?.let { sb.append(" dimmed at d=").append(it.toInt()) }
-            p.enterD?.let { sb.append(" (entered d=").append(it.toInt()).append(')') }
-        } else {
-            sb.append("enter d=").append(p.enterD?.toInt()?.toString() ?: "-")
-            for (s in p.stages) {
-                sb.append(" → ").append(s.kind).append(" d=").append(s.d.toInt()).append(' ').append(spokenWord(s))
-            }
-        }
-        sink("PASSED", sb.toString())
-    }
-
-    /** A facing-away camera was dimmed or undimmed on the map (§8.1, hard rule 1: dimmed, never hidden). */
-    @Synchronized
-    override fun dimmed(poiId: Long, dimmed: Boolean, mismatchDeg: Double, headingAccuracyDeg: Double) {
-        sink("Trace", "${if (dimmed) "dim" else "undim"} poi=$poiId bearingDiff=${mismatchDeg.toInt()} headingAcc=${headingAccuracyDeg.toInt()}")
-        if (dimmed) passages[poiId]?.let { it.dimmedAtD = it.lastD }
-    }
-
-    /** Forgets passages of POIs no longer among the candidates, so the map can't grow for the whole process. */
-    @Synchronized
-    fun prune(keep: Set<Long>) {
-        passages.keys.retainAll(keep)
-    }
-
-    /** Session end: forget every passage. */
-    @Synchronized
-    fun reset() = passages.clear()
-
-    private fun spokenWord(s: StageRec): String = when {
-        s.spoken == true -> "spoken" + (s.delayMs?.let { "(+${"%.1f".format(it / 1000.0)} s)" } ?: "")
-        s.outcome == "MUTED" -> "muted"
-        s.spoken == false -> "NOT spoken(${s.outcome})"
-        else -> "unreported"
-    }
-
-    companion object {
-        /** The verdict as the `suppressed reason=` word of §15.5. */
-        fun reasonOf(v: Verdict): String = when (v) {
-            Verdict.WRONG_DIRECTION -> "direction"
-            Verdict.OFF_ROAD -> "offRoad"
-            Verdict.NOT_AHEAD -> "notAhead"
-            Verdict.NOT_MOVING -> "notMoving"
-            Verdict.NO_HEADING -> "noHeading"
-            Verdict.OUT_OF_RANGE -> "outOfRange"
-            Verdict.BEHIND -> "behind"
-            Verdict.AHEAD_OK -> "ok"
-        }
-
-        /** The camera's bearing against our heading (both ways for BOTH), or null when either is unknown. */
-        fun mismatchDeg(bearing: Float?, dirType: DirectionType, heading: Double?): Double? {
-            val b = bearing?.toDouble() ?: return null
-            val h = heading ?: return null
-            return when (dirType) {
-                DirectionType.ANY -> 0.0
-                DirectionType.ONE_WAY -> Geo.absAngleDiffDeg(b, h)
-                DirectionType.BOTH -> minOf(Geo.absAngleDiffDeg(b, h), Geo.absAngleDiffDeg(b + 180.0, h))
-            }
-        }
-
-        private fun deg(v: Double?): String = if (v == null || v.isNaN()) "-" else v.roundToInt().toString()
-        private fun metres(v: Double): String = if (v.isNaN()) "-" else v.roundToInt().toString()
-    }
 }
 
 /**
@@ -532,7 +336,7 @@ class AlertCoordinator @Inject constructor(
         )
         var out = renderer.render(template, values)
         if (e.overspeed && e.kind != AlertKind.OVERSPEED) {
-            out = out.copy(display = out.display, spoken = out.spoken + ", " + AlertTemplateRenderer.OVERSPEED_SUFFIX)
+            out = out.copy(spoken = out.spoken + ", " + AlertTemplateRenderer.OVERSPEED_SUFFIX)
         }
         return ActiveAlert(
             poiId = e.poiId, kind = e.kind, display = out.display, spoken = out.spoken,
@@ -588,40 +392,38 @@ class AlertCoordinator @Inject constructor(
      * The engine's state as text (DESIGN.md §15.5): the last fix, the feed stats, the cache, the
      * route state, the mutes, the five nearest POIs with their verdicts, and the TTS queue.
      */
-    fun snapshot(): String {
-        val sb = StringBuilder()
+    fun snapshot(): String = buildString {
         val fix = _lastFix.value
         val st = location.stats.value
         val now = System.currentTimeMillis()
-        if (fix == null) sb.append("fix: none yet\n") else {
-            sb.append("fix: lat=${"%.5f".format(fix.lat)} lon=${"%.5f".format(fix.lon)} spd=${"%.1f".format(fix.speedMps)} m/s (${fix.speedSource})")
-            sb.append(" hdg=${fix.heading?.roundToInt() ?: "-"}±${fix.headingAccuracyDeg?.roundToInt() ?: "-"} (${fix.headingSource})")
-            sb.append(" src=${fix.locationSource} acc=${fix.accuracyM?.roundToInt() ?: "-"} age=${SystemClock.elapsedRealtime() - fix.timeMs} ms\n")
+        if (fix == null) append("fix: none yet\n") else {
+            append("fix: lat=${"%.5f".format(fix.lat)} lon=${"%.5f".format(fix.lon)} spd=${"%.1f".format(fix.speedMps)} m/s (${fix.speedSource})")
+            append(" hdg=${fix.heading?.roundToInt() ?: "-"}±${fix.headingAccuracyDeg?.roundToInt() ?: "-"} (${fix.headingSource})")
+            append(" src=${fix.locationSource} acc=${fix.accuracyM?.roundToInt() ?: "-"} age=${SystemClock.elapsedRealtime() - fix.timeMs} ms\n")
         }
-        sb.append("stats: req ${st.requestedHz} Hz act ${"%.1f".format(st.actualHz)} Hz speed ${"%.0f".format(st.speedMph)} mph (${st.speedSrc}, car=${st.speedFromCar})")
-        sb.append(" dial=${st.dialSpeedMph?.let { "%.0f".format(it) } ?: "-"} heading ${st.headingSrc} chord=${st.chordM?.roundToInt() ?: "-"} gpsBrg=${st.gpsBrgDeg?.roundToInt() ?: "-"} lastReset=${st.lastReset ?: "-"}\n")
-        sb.append("cache: n=${cache.size} alertable=${alertable.size} cell=$cacheCentre lead=$leadSeconds s overspeed=${"%.3f".format(engine.overspeedPct)}\n")
-        sb.append("route: guiding=${guidance.guiding.value} destination=${guidance.destination.value?.title ?: "-"} zone=${engine.isInZone}\n")
+        append("stats: req ${st.requestedHz} Hz act ${"%.1f".format(st.actualHz)} Hz speed ${"%.0f".format(st.speedMph)} mph (${st.speedSrc}, car=${st.speedFromCar})")
+        append(" dial=${st.dialSpeedMph?.let { "%.0f".format(it) } ?: "-"} heading ${st.headingSrc} chord=${st.chordM?.roundToInt() ?: "-"} gpsBrg=${st.gpsBrgDeg?.roundToInt() ?: "-"} lastReset=${st.lastReset ?: "-"}\n")
+        append("cache: n=${cache.size} alertable=${alertable.size} cell=$cacheCentre lead=$leadSeconds s overspeed=${"%.3f".format(engine.overspeedPct)}\n")
+        append("route: guiding=${guidance.guiding.value} destination=${guidance.destination.value?.title ?: "-"} zone=${engine.isInZone}\n")
         val s = latest
         val activeSetMutes = setMutes.filterValues { it > now }.keys
-        sb.append("mutes: global=${s?.let { it.mutedUntilMs > now || !it.voiceOn } ?: "?"} sets=$activeSetMutes quiet=$quiet\n")
-        _active.value?.let { sb.append("active: ${it.kind} poi=${it.poiId} \"${it.display}\" ${now - it.timeMs} ms ago\n") }
+        append("mutes: global=${s?.let { it.mutedUntilMs > now || !it.voiceOn } ?: "?"} sets=$activeSetMutes quiet=$quiet\n")
+        _active.value?.let { append("active: ${it.kind} poi=${it.poiId} \"${it.display}\" ${now - it.timeMs} ms ago\n") }
         if (fix != null) {
             val verdicts = _verdicts.value
             val nearest = cache.sortedBy { Geo.distanceM(fix.lat, fix.lon, it.poi.lat, it.poi.lon) }.take(5)
-            sb.append("nearest:\n")
+            append("nearest:\n")
             for (r in nearest) {
                 val d = Geo.distanceM(fix.lat, fix.lon, r.poi.lat, r.poi.lon)
                 val toPoi = Geo.bearingDeg(fix.lat, fix.lon, r.poi.lat, r.poi.lon)
                 val off = fix.heading?.let { Geo.absAngleDiffDeg(toPoi, it).roundToInt() }
-                sb.append("  poi=${r.poi.id} set=\"${r.set.name}\" d=${d.roundToInt()} brgTo=${toPoi.roundToInt()} offAxis=${off ?: "-"}")
-                sb.append(" camBrg=${r.poi.bearing?.roundToInt() ?: "-"} dir=${r.poi.directionType} verdict=${verdicts[r.poi.id] ?: if (r.alertsOn) "-" else "alertsOff"}")
-                if (r.poi.id in _facingAway.value) sb.append(" dimmed")
-                sb.append('\n')
+                append("  poi=${r.poi.id} set=\"${r.set.name}\" d=${d.roundToInt()} brgTo=${toPoi.roundToInt()} offAxis=${off ?: "-"}")
+                append(" camBrg=${r.poi.bearing?.roundToInt() ?: "-"} dir=${r.poi.directionType} verdict=${verdicts[r.poi.id] ?: if (r.alertsOn) "-" else "alertsOff"}")
+                if (r.poi.id in _facingAway.value) append(" dimmed")
+                append('\n')
             }
         }
-        sb.append(tts.snapshot())
-        return sb.toString()
+        append(tts.snapshot())
     }
 
     /**
@@ -717,13 +519,8 @@ class AlertCoordinator @Inject constructor(
                 cat?.name?.contains("mobile", ignoreCase = true) == true
         }
 
-        /** A short distance for cards and rows: tens of yards or metres under 1000, else tenths of a mile or km. */
+        /** A short distance for cards and rows: the renderer's [AlertTemplateRenderer.shortDistance] (§7.2) by the display units. */
         fun distanceLabel(m: Double, imperial: Boolean): String =
-            if (imperial) {
-                val yd = m / Geo.METRES_PER_YARD
-                if (yd < 1000) "${(yd / 10).roundToInt() * 10} yd" else "%.1f mi".format(m / 1609.344)
-            } else {
-                if (m < 1000) "${(m / 10).roundToInt() * 10} m" else "%.1f km".format(m / 1000)
-            }
+            AlertTemplateRenderer(if (imperial) Units.IMPERIAL else Units.METRIC).shortDistance(m)
     }
 }

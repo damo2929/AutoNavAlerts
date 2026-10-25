@@ -78,20 +78,16 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
      * Saves an icon shipped in a PGW download (BMP) as `user:pgw_<stem>`; null if it can't be decoded (§5.2a
      * "Icons supplied in the download are used"). Overwrites on every sync, so a refreshed icon shows at once.
      */
-    fun savePgwIcon(stem: String, bmp: ByteArray): String? {
-        val decoded = BitmapFactory.decodeByteArray(bmp, 0, bmp.size) ?: return null
-        val id = "pgw_" + stem.replace(Regex("[^a-z0-9_]"), "_")
-        File(dirUser(), "$id.png").outputStream().use { decoded.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        // The old rendering of this id may be cached; drop everything rather than track which keys hold it.
-        cache.evictAll()
-        return "user:$id"
-    }
+    fun savePgwIcon(stem: String, bmp: ByteArray): String? = saveIcon("pgw_" + stem.replace(Regex("[^a-z0-9_]"), "_"), bmp)
 
     /** Saves an icon supplied inside an imported zip (BMP/PNG) as `user:imp_<name>` (§5: "icons from matching .bmp/.png"); null if it can't be decoded. */
-    fun saveImportedIcon(name: String, bytes: ByteArray): String? {
+    fun saveImportedIcon(name: String, bytes: ByteArray): String? = saveIcon("imp_" + name.lowercase().replace(Regex("[^a-z0-9_]"), "_"), bytes)
+
+    /** A supplied icon's [bytes] decoded and written as `<id>.png`, replacing any older file; null if they don't decode. */
+    private fun saveIcon(id: String, bytes: ByteArray): String? {
         val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
-        val id = "imp_" + name.lowercase().replace(Regex("[^a-z0-9_]"), "_")
         File(dirUser(), "$id.png").outputStream().use { decoded.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        // The old rendering of this id may be cached; drop everything rather than track which keys hold it.
         cache.evictAll()
         return "user:$id"
     }
@@ -175,14 +171,8 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
             lineTo(w * 0.50f, w * 0.06f)
             lineTo(w * 0.70f, w * 0.25f)
         }
-        val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = stroke * 2.2f
-            strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; alpha = alphaOf(emphasis)
-        }
-        val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(200, 30, 30); style = Paint.Style.STROKE; strokeWidth = stroke
-            strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; alpha = alphaOf(emphasis)
-        }
+        val halo = arrowStroke(Color.WHITE, stroke * 2.2f, emphasis)
+        val ink = arrowStroke(Color.rgb(200, 30, 30), stroke, emphasis)
         c.drawPath(head, halo)
         c.drawPath(head, ink)
         if (directionType == DirectionType.BOTH) {
@@ -196,6 +186,12 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         if (arrows.size >= 8) arrows.clear()
         arrows[key] = d
         return d
+    }
+
+    /** A round-capped stroke of [color] and [width] for the arrow's chevron, dimmed with the [emphasis]. */
+    private fun arrowStroke(color: Int, width: Float, emphasis: Emphasis) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        this.color = color; style = Paint.Style.STROKE; strokeWidth = width
+        strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; alpha = alphaOf(emphasis)
     }
 
     /** Marker opacity per emphasis (§8.1 step 3): full, 60% for OTHER, 35% for FACING_AWAY (dimmed, never hidden; hard rule 1). */
@@ -260,23 +256,26 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
          * package): by iGO type code (§5.2: 1 fixed, 3 red light, 4 average speed, 5 mobile, 11 red light + speed)
          * or by OV2 type name (§5.2a). Pending mobile sites get the lighter "P" icon whatever the code (§5.2).
          */
-        fun pgwIconFor(code: String, source: PoiSourceType): String = when {
-            source == PoiSourceType.PGW_PENDING || code == "pMOBILE" -> CAMERA_PENDING
-            // TomTom OV2 type codes (optional "t" prefix = temporary)
-            code.removePrefix("t") in setOf("GATSO", "MONITRON", "TRUVELO") -> CAMERA_FIXED
-            code.removePrefix("t") == "REDSPEED" -> CAMERA_REDLIGHT_SPEED
-            code.removePrefix("t") == "REDLIGHT" -> CAMERA_REDLIGHT
-            code.removePrefix("t") == "SPECS" -> CAMERA_AVERAGE
-            code.removePrefix("t") == "MOBILE" -> CAMERA_MOBILE
-            // iGO TXT type codes (§5.2)
-            code == "1" -> CAMERA_FIXED
-            code == "3" -> CAMERA_REDLIGHT
-            code == "4" -> CAMERA_AVERAGE
-            code == "5" -> CAMERA_MOBILE
-            // 11 is the OV2 download's REDSPEED (§5.2a); §5.2 shows it as "Fixed camera (type 11)".
-            code == "11" -> CAMERA_REDLIGHT_SPEED
-            // An unknown code becomes a "Type N" category (§5.2) with the fixed-camera icon.
-            else -> CAMERA_FIXED
+        fun pgwIconFor(code: String, source: PoiSourceType): String {
+            // TomTom OV2 type codes carry an optional "t" prefix (= temporary).
+            val ov2 = code.removePrefix("t")
+            return when {
+                source == PoiSourceType.PGW_PENDING || code == "pMOBILE" -> CAMERA_PENDING
+                ov2 in setOf("GATSO", "MONITRON", "TRUVELO") -> CAMERA_FIXED
+                ov2 == "REDSPEED" -> CAMERA_REDLIGHT_SPEED
+                ov2 == "REDLIGHT" -> CAMERA_REDLIGHT
+                ov2 == "SPECS" -> CAMERA_AVERAGE
+                ov2 == "MOBILE" -> CAMERA_MOBILE
+                // iGO TXT type codes (§5.2)
+                code == "1" -> CAMERA_FIXED
+                code == "3" -> CAMERA_REDLIGHT
+                code == "4" -> CAMERA_AVERAGE
+                code == "5" -> CAMERA_MOBILE
+                // 11 is the OV2 download's REDSPEED (§5.2a); §5.2 shows it as "Fixed camera (type 11)".
+                code == "11" -> CAMERA_REDLIGHT_SPEED
+                // An unknown code becomes a "Type N" category (§5.2) with the fixed-camera icon.
+                else -> CAMERA_FIXED
+            }
         }
     }
 }

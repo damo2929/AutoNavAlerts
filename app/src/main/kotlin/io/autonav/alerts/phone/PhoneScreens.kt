@@ -9,7 +9,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -70,7 +69,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.ApiException
@@ -145,35 +144,13 @@ import io.autonav.alerts.settings.SpeedSource
 //                                                                    docs/SETTINGS.md §1.8; DESIGN.md §15.5
 //                    Connecting to a car (CarConnectionSection)      docs/SETTINGS.md §1.8a
 //                    About                                           docs/SETTINGS.md §1.9
-//   Shared         Section (one card), SwitchRow, granted, sizeText, pctLabel, halfSecondsLabel,
-//                  leadDistanceText, FIRST_ALERT_FLOOR_M
+//   Shared         SetListHost (the editor swap and delete confirm of the POIs and Cameras tabs),
+//                  sizeText, pctLabel, halfSecondsLabel, leadDistanceText, FIRST_ALERT_FLOOR_M;
+//                  the cards, rows, text styles, chips, folds and dialogs are in PhoneUi.kt
 //
 // Every screen takes the one [PhoneDeps] from MainActivity and runs on the main thread; Room,
 // network and settings writes go through `rememberCoroutineScope()` and the repositories'
 // own dispatchers.
-
-/** One settings card: a title and its controls, the shape every tab uses (docs/SETTINGS.md §1 "one scrolling page of cards"). */
-@Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            content()
-        }
-    }
-}
-
-/** A labelled switch filling the row: the shape of every on/off setting on the phone. */
-@Composable
-private fun SwitchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChange)
-    }
-}
-
-/** True when the runtime permission [p] is granted. */
-private fun granted(ctx: Context, p: String) = ContextCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
 
 // --- Setup -------------------------------------------------------------------------------------
 
@@ -209,12 +186,7 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
         termsAcceptedAt = deps.settings.navTermsAcceptedAt()
     }
     // Refresh statuses when returning from the permission dialog or system Settings.
-    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
-    androidx.compose.runtime.DisposableEffect(lifecycle) {
-        val obs = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh++ }
-        lifecycle.addObserver(obs)
-        onDispose { lifecycle.removeObserver(obs) }
-    }
+    LifecycleResumeEffect(Unit) { refresh++; onPauseOrDispose { } }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
     val bgLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
@@ -225,22 +197,17 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
     val complete = hasKey && termsOk && st.missingForeground().isEmpty() && st.background
     var showSetup by remember { mutableStateOf(false) }
     if (complete) Section("Setup") {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("✓ Maps key saved, permissions allowed, navigation terms accepted.", Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
-            TextButton(onClick = { showSetup = !showSetup }) { Text(if (showSetup) "Hide" else "Show") }
-        }
+        ShowHideRow(showSetup, { showSetup = !showSetup }) { Ok("✓ Maps key saved, permissions allowed, navigation terms accepted.", Modifier.weight(1f)) }
     }
     if (complete && !showSetup) return
 
     // Step 0 (DESIGN.md §13 item 1): the user's own key, or nothing. No built-in or fallback key exists (AGENTS.md §3.1 rule 5; DESIGN.md §1.4).
     Section("Google Maps API key") {
-        if (hasKey) Text("✓ Your key is saved.", color = MaterialTheme.colorScheme.primary)
-        else Text("No key yet: the map, search and navigation won't work until you add one.",
-            color = MaterialTheme.colorScheme.error)
+        if (hasKey) Ok("✓ Your key is saved.")
+        else Err("No key yet: the map, search and navigation won't work until you add one.")
         CreateKeyWithGoogle(activity, deps, onCreated = { refresh++ })
         HorizontalDivider()
-        Text("Or paste a key you already have. It needs the Navigation SDK and Places API (New) enabled.",
-            style = MaterialTheme.typography.bodySmall)
+        Help("Or paste a key you already have. It needs the Navigation SDK and Places API (New) enabled.")
         OutlinedTextField(keyText, { keyText = it }, label = { Text("API key") }, singleLine = true,
             visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -264,21 +231,15 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
         PermLine("Car speed (speed panel uses the car's own speed)", st.carSpeed)
         PermLine("Contacts (optional: drive to a contact's address)", st.contacts)
         val missing = st.missingForeground()
-        when {
-            missing.isNotEmpty() -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { askedOnce = true; permLauncher.launch(missing.toTypedArray()) }) { Text("Allow") }
-                if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
-            }
+        if (missing.isNotEmpty() || !st.background) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             // Background location is asked for on its own, after the foreground grant: Android 10+ refuses it in the same request.
-            !st.background -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    askedOnce = true
-                    if (Build.VERSION.SDK_INT >= 29) bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                }) { Text("Allow all the time") }
-                if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
-            }
-            else -> Text("✓ All permissions allowed.", color = MaterialTheme.colorScheme.primary)
-        }
+            if (missing.isNotEmpty()) Button(onClick = { askedOnce = true; permLauncher.launch(missing.toTypedArray()) }) { Text("Allow") }
+            else Button(onClick = {
+                askedOnce = true
+                if (Build.VERSION.SDK_INT >= 29) bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            }) { Text("Allow all the time") }
+            if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
+        } else Ok("✓ All permissions allowed.")
         // Contacts are optional, so they have their own button rather than being part of Allow (DESIGN.md §8.3).
         if (!st.contacts) {
             OutlinedButton(onClick = { permLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS)) }) { Text("Allow contacts") }
@@ -288,22 +249,20 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
             }) { Text("Clear contact locations") }
         }
         if (askedOnce && (missing.isNotEmpty() || !st.background)) {
-            Text("If no prompt appears, Android has stopped asking. Use \"Open app settings\" → Permissions to allow them there.",
-                style = MaterialTheme.typography.bodySmall)
+            Help("If no prompt appears, Android has stopped asking. Use \"Open app settings\" → Permissions to allow them there.")
         }
-        Text("\"All the time\" keeps camera alerts working while another app (like music) fills the car screen.",
-            style = MaterialTheme.typography.bodySmall)
+        Help("\"All the time\" keeps camera alerts working while another app (like music) fills the car screen.")
     }
 
     // Step 4 (DESIGN.md §13 item 1). The dialog is a Navigation SDK call, so the button stays disabled until a key is saved: no SDK call before applyApiKey() (DESIGN.md §1.4; AGENTS.md §3.1 rule 5).
     Section("Navigation terms") {
         if (termsOk) {
-            Text("✓ Accepted" + (termsAcceptedAt?.let { " on " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it)) } ?: "") +
-                ". You won't be asked again.", color = MaterialTheme.colorScheme.primary)
+            Ok("✓ Accepted" + (termsAcceptedAt?.let { " on " + DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(it)) } ?: "") +
+                ". You won't be asked again.")
         } else {
             Text("Google's navigation terms must be accepted on the phone before using the car screen.")
-            termsMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (!hasKey) Text("Add your Google Maps API key above first.", style = MaterialTheme.typography.bodySmall)
+            termsMessage?.let { Err(it) }
+            if (!hasKey) Help("Add your Google Maps API key above first.")
             Button(enabled = hasKey, onClick = {
                 termsMessage = null
                 runCatching {
@@ -326,15 +285,13 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
         Text("Installed from Google Play? There is nothing to turn on: pick AutoNavAlerts as your navigation app on the car screen. " +
             "A sideloaded developer build also needs Android Auto's developer mode (tap the version number repeatedly) " +
             "and \"Unknown sources\" in its developer settings.")
-        OutlinedButton(onClick = {
-            runCatching { ctx.startActivity(Intent("com.google.android.projection.gearhead.SETTINGS").setPackage("com.google.android.projection.gearhead")) }
-        }) { Text("Open Android Auto settings") }
+        OpenAndroidAutoButton()
     }
 }
 
 /** The steps behind Settings → Connecting to a car (DESIGN.md §13 item 12). */
 @Composable
-private fun CarConnectionSection(activity: Activity) {
+private fun CarConnectionSection() {
     @Composable
     fun Steps(title: String, steps: List<String>) {
         Text(title, style = MaterialTheme.typography.titleSmall)
@@ -360,9 +317,7 @@ private fun CarConnectionSection(activity: Activity) {
         "The app's logs are in Diagnostics above (Share or Save).",
         "When done: Android Auto ⋮ → Stop head unit server, before driving.",
     ))
-    OutlinedButton(onClick = {
-        runCatching { activity.startActivity(Intent("com.google.android.projection.gearhead.SETTINGS").setPackage("com.google.android.projection.gearhead")) }
-    }) { Text("Open Android Auto settings") }
+    OpenAndroidAutoButton()
 }
 
 /**
@@ -440,30 +395,27 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
             .addOnFailureListener { stop = signInProblem(it) }
     }
 
-    Text("Let the app make your own key in your own Google Cloud account, using a Google account on this phone.",
-        style = MaterialTheme.typography.bodySmall)
+    Help("Let the app make your own key in your own Google Cloud account, using a Google account on this phone.")
     // An unregistered app disables the button for the rest of the visit: pressing again only showed the account picker and failed the same way (DESIGN.md §13.1 Errors).
     Button(enabled = !busy && stop !is MapsKeyCreator.Stop.NotSetUp, onClick = { confirm = true }) {
         Text(if (busy) "Creating key…" else "Create a key with my Google account")
     }
-    progress?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-    done?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+    progress?.let { Help(it) }
+    done?.let { Ok(it) }
     stop?.let { s ->
-        Text(s.message.orEmpty(), color = MaterialTheme.colorScheme.error)
+        Err(s.message.orEmpty())
         when (s) {
             is MapsKeyCreator.Stop.ChooseBilling -> s.accounts.forEach { a ->
                 OutlinedButton(onClick = { token?.let { createWith(it, a.name) } ?: signIn() }) { Text(a.displayName) }
             }
             is MapsKeyCreator.Stop.NoBilling -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(MapsKeyCreator.BILLING_CREATE_URL))) }) {
-                    Text("Add billing account")
-                }
+                OutlinedButton(onClick = { activity.openUrl(MapsKeyCreator.BILLING_CREATE_URL) }) { Text("Add billing account") }
                 Button(onClick = { signIn() }) { Text("Try again") }
             }
             is MapsKeyCreator.Stop.NotSetUp -> Unit // the guided steps below open instead
             is MapsKeyCreator.Stop.Refused -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 s.consoleUrl?.let { url ->
-                    OutlinedButton(onClick = { activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }) { Text("Open in Google Cloud") }
+                    OutlinedButton(onClick = { activity.openUrl(url) }) { Text("Open in Google Cloud") }
                 }
                 Button(onClick = { signIn() }) { Text("Try again") }
             }
@@ -479,21 +431,15 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
     if (guided) GuidedKeySetup(activity, deps, onSaved = { done = "✓ Key saved."; stop = null; onCreated() })
 
     // Says what will be made in the user's Google Cloud, and that Google may charge, before anything starts (DESIGN.md §13.1).
-    if (confirm) AlertDialog(
-        onDismissRequest = { confirm = false },
-        title = { Text("Create your Maps key?") },
-        text = {
-            Text("After you choose a Google account, the app will, in that account's Google Cloud:\n\n" +
-                "• create a project called \"AutoNavAlerts\" (or reuse it)\n" +
-                "• link it to your billing account\n" +
-                "• turn on the Navigation SDK, Maps SDK for Android and Places API (New)\n" +
-                "• create a key that only this app can use\n\n" +
-                "Google Maps needs a billing account, and Google may charge for use beyond its free allowance. " +
-                "Only the key is kept on this phone, never your Google sign-in.")
-        },
-        confirmButton = { Button(onClick = { confirm = false; signIn() }) { Text("Continue") } },
-        dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
-    )
+    if (confirm) ConfirmDialog("Create your Maps key?", "Continue", onConfirm = { confirm = false; signIn() }, onDismiss = { confirm = false }) {
+        Text("After you choose a Google account, the app will, in that account's Google Cloud:\n\n" +
+            "• create a project called \"AutoNavAlerts\" (or reuse it)\n" +
+            "• link it to your billing account\n" +
+            "• turn on the Navigation SDK, Maps SDK for Android and Places API (New)\n" +
+            "• create a key that only this app can use\n\n" +
+            "Google Maps needs a billing account, and Google may charge for use beyond its free allowance. " +
+            "Only the key is kept on this phone, never your Google sign-in.")
+    }
 }
 
 /** Current runtime-permission state for the setup sections. */
@@ -545,7 +491,6 @@ private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> U
     val scope = rememberCoroutineScope()
     val sha1 = remember { deps.keyCreator.signingSha1() }
     var pasteMessage by remember { mutableStateOf<String?>(null) }
-    fun open(url: String) = activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     fun copy(label: String, text: String) =
         activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
 
@@ -554,31 +499,28 @@ private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> U
         Text("$n. $text", style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { buttons() }
     }
+    // The usual step: one Open button for its Console page.
+    @Composable
+    fun Step(n: Int, text: String, url: String) = Step(n, text) { OutlinedButton(onClick = { activity.openUrl(url) }) { Text("Open") } }
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Each Open button shows the page in your browser, signed in to your Google account. Do the steps in order: " +
-            "Google Cloud applies each page to the project you created in step 1.", style = MaterialTheme.typography.bodySmall)
-        Step(1, "Create a project, for example \"AutoNavAlerts\".") {
-            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_PROJECT_CREATE) }) { Text("Open") }
-        }
-        Step(2, "Link a billing account to it (add one first if you have none). Google Maps needs billing.") {
-            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_BILLING) }) { Text("Open") }
-        }
+        Help("Each Open button shows the page in your browser, signed in to your Google account. Do the steps in order: " +
+            "Google Cloud applies each page to the project you created in step 1.")
+        Step(1, "Create a project, for example \"AutoNavAlerts\".", MapsKeyCreator.CONSOLE_PROJECT_CREATE)
+        Step(2, "Link a billing account to it (add one first if you have none). Google Maps needs billing.", MapsKeyCreator.CONSOLE_BILLING)
         Step(3, "Turn on these APIs: press Enable on each page. The Routes API is only needed for energy-efficient routes.") {
-            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_NAVIGATION) }) { Text("Navigation SDK") }
+            OutlinedButton(onClick = { activity.openUrl(MapsKeyCreator.CONSOLE_NAVIGATION) }) { Text("Navigation SDK") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_MAPS_ANDROID) }) { Text("Maps SDK for Android") }
-            OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_PLACES) }) { Text("Places API (New)") }
+            OutlinedButton(onClick = { activity.openUrl(MapsKeyCreator.CONSOLE_MAPS_ANDROID) }) { Text("Maps SDK for Android") }
+            OutlinedButton(onClick = { activity.openUrl(MapsKeyCreator.CONSOLE_PLACES) }) { Text("Places API (New)") }
         }
-        OutlinedButton(onClick = { open(MapsKeyCreator.CONSOLE_ROUTES) }) { Text("Routes API") }
+        OutlinedButton(onClick = { activity.openUrl(MapsKeyCreator.CONSOLE_ROUTES) }) { Text("Routes API") }
         Step(4, "Create credentials → API key. Then edit the key: under Application restrictions pick Android apps and add this " +
-            "app's package name and SHA-1; under API restrictions pick the APIs from step 3.") {
-            OutlinedButton(onClick = { open(MapsKeyCreator.CREDENTIALS_URL) }) { Text("Open") }
-        }
-        Text("Package: ${activity.packageName}", style = MaterialTheme.typography.bodySmall)
+            "app's package name and SHA-1; under API restrictions pick the APIs from step 3.", MapsKeyCreator.CREDENTIALS_URL)
+        Help("Package: ${activity.packageName}")
         // The SHA-1 of the certificate this APK is signed with, read from PackageManager, so the key's restriction matches this build (DESIGN.md §13.3).
-        Text("SHA-1: $sha1", style = MaterialTheme.typography.bodySmall)
+        Help("SHA-1: $sha1")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { copy("Package name", activity.packageName) }) { Text("Copy package") }
             OutlinedButton(onClick = { copy("SHA-1", sha1) }) { Text("Copy SHA-1") }
@@ -595,7 +537,7 @@ private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> U
                 }
             }) { Text("Paste key from clipboard") }
         }
-        pasteMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        pasteMessage?.let { Err(it) }
     }
 }
 
@@ -612,36 +554,49 @@ fun PoiSetsScreen(deps: PhoneDeps) {
     val sets by deps.pois.activeSets.collectAsState(initial = emptyList())
     val fileSets = sets.filter { it.source == PoiSourceType.FILE }
     var importUri by remember { mutableStateOf<Uri?>(null) }
-    var editing by remember { mutableStateOf<PoiSetEntity?>(null) }
-    var message by remember { mutableStateOf<String?>(null) }
-    var confirmDelete by remember { mutableStateOf<PoiSetEntity?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> importUri = uri }
 
-    // The editor replaces the list rather than navigating: one Activity, no NavHost.
-    editing?.let { set -> SetEditor(deps, set, onDone = { editing = null }); return }
-
-    Column {
-        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("POI sets", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
-            Button(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Import file") }
-        }
-        Text("POI files you've imported yourself. Camera sets are on the Cameras tab.",
-            Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
-        message?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.primary) }
-        if (fileSets.isEmpty()) Text("No POI files imported yet. Use Import file to add one.", Modifier.padding(16.dp))
-        LazyColumn {
-            items(fileSets, key = { it.id }) { set ->
-                SetCard(deps, set, onEdit = { editing = set }, onDelete = { confirmDelete = set })
+    SetListHost(deps) { list ->
+        Column {
+            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("POI sets", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+                Button(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Import file") }
             }
+            Help("POI files you've imported yourself. Camera sets are on the Cameras tab.", Modifier.padding(horizontal = 16.dp))
+            list.message?.let { Ok(it, Modifier.padding(16.dp)) }
+            if (fileSets.isEmpty()) Text("No POI files imported yet. Use Import file to add one.", Modifier.padding(16.dp))
+            LazyColumn {
+                items(fileSets, key = { it.id }) { set ->
+                    SetCard(deps, set, onEdit = { list.editing = set }, onDelete = { list.confirmDelete = set })
+                }
+            }
+            if (fileSets.isNotEmpty()) Help("Tip: swipe a set left to delete it.", Modifier.padding(16.dp))
         }
-        if (fileSets.isNotEmpty()) Text("Tip: swipe a set left to delete it.", Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
-    }
 
-    confirmDelete?.let { set -> DeleteSetDialog(deps, set, onClose = { msg -> confirmDelete = null; msg?.let { message = it } }) }
-
-    importUri?.let { uri ->
-        ImportDialog(deps, uri, onClose = { msg -> importUri = null; message = msg })
+        importUri?.let { uri ->
+            ImportDialog(deps, uri, onClose = { msg -> importUri = null; list.message = msg })
+        }
     }
+}
+
+/** What the two set lists keep between frames (DESIGN.md §13 items 3 and 8): the set being edited, the one awaiting delete confirmation, and the result line. */
+private class SetListState {
+    var editing by mutableStateOf<PoiSetEntity?>(null)
+    var confirmDelete by mutableStateOf<PoiSetEntity?>(null)
+    var message by mutableStateOf<String?>(null)
+}
+
+/**
+ * Hosts a tab that lists sets: while one is being edited the whole tab is [SetEditor] (the editor replaces
+ * the list rather than navigating: one Activity, no NavHost); otherwise [content] draws the list, and a
+ * delete asked for there is confirmed by [DeleteSetDialog], whose result becomes [SetListState.message].
+ */
+@Composable
+private fun SetListHost(deps: PhoneDeps, content: @Composable (SetListState) -> Unit) {
+    val list = remember { SetListState() }
+    list.editing?.let { set -> SetEditor(deps, set, onDone = { list.editing = null }); return }
+    content(list)
+    list.confirmDelete?.let { set -> DeleteSetDialog(deps, set, onClose = { msg -> list.confirmDelete = null; msg?.let { list.message = it } }) }
 }
 
 /** A set's card: tap to edit, switch to turn it on or off, swipe left to delete (springs back until confirmed). */
@@ -670,39 +625,30 @@ private fun SetCard(deps: PhoneDeps, set: PoiSetEntity, onEdit: () -> Unit, onDe
             }
         },
     ) {
-        Card(Modifier.fillMaxWidth().clickable(onClick = onEdit)) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Image(deps.icons.bitmap(set.defaultIconId, 96).asImageBitmap(), null, Modifier.size(40.dp))
-                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    Text(set.name, style = MaterialTheme.typography.titleMedium)
-                    Text("${set.poiCount} POIs · ${set.source.name.lowercase().replace('_', ' ')}" +
-                        (set.version?.let { " · v$it" } ?: ""), style = MaterialTheme.typography.bodySmall)
-                }
-                Switch(checked = set.enabled, onCheckedChange = { on -> scope.launch { deps.pois.updateSet(set.copy(enabled = on)) } })
-            }
+        IconRowCard(
+            deps.icons.bitmap(set.defaultIconId, 96).asImageBitmap(), set.name,
+            "${set.poiCount} POIs · ${set.source.name.lowercase().replace('_', ' ')}" + (set.version?.let { " · v$it" } ?: ""),
+            Modifier.fillMaxWidth(), onClick = onEdit,
+        ) {
+            Switch(checked = set.enabled, onCheckedChange = { on -> scope.launch { deps.pois.updateSet(set.copy(enabled = on)) } })
         }
     }
 }
 
-/** Confirms deleting a set; [onClose] gets a message when it was deleted, or null when cancelled. */
+/**
+ * Confirms deleting a set; [onClose] gets a message when it was deleted, or null when cancelled. With
+ * [pgwNote] a PGW set's text says the next sync brings it back (the lists); the editor leaves it out.
+ */
 @Composable
-private fun DeleteSetDialog(deps: PhoneDeps, set: PoiSetEntity, onClose: (String?) -> Unit) {
+private fun DeleteSetDialog(deps: PhoneDeps, set: PoiSetEntity, pgwNote: Boolean = true, onClose: (String?) -> Unit) {
     val scope = rememberCoroutineScope()
-    val pgw = set.source == PoiSourceType.PGW || set.source == PoiSourceType.PGW_PENDING
-    AlertDialog(
-        onDismissRequest = { onClose(null) },
-        title = { Text("Delete ${set.name}?") },
-        text = {
-            Text("Its ${set.poiCount} POIs will be removed from this phone." +
-                if (pgw) " The next PocketGPSWorld sync will download them again. To stop that, turn off automatic updates on the Cameras tab." else "")
-        },
-        confirmButton = {
-            Button(onClick = {
-                scope.launch { deps.pois.deleteSet(set.id); onClose("Deleted ${set.name}") }
-            }) { Text("Delete") }
-        },
-        dismissButton = { TextButton(onClick = { onClose(null) }) { Text("Cancel") } },
-    )
+    val pgw = pgwNote && (set.source == PoiSourceType.PGW || set.source == PoiSourceType.PGW_PENDING)
+    ConfirmDialog("Delete ${set.name}?", "Delete", onDismiss = { onClose(null) }, onConfirm = {
+        scope.launch { deps.pois.deleteSet(set.id); onClose("Deleted ${set.name}") }
+    }) {
+        Text("Its ${set.poiCount} POIs will be removed from this phone." +
+            if (pgw) " The next PocketGPSWorld sync will download them again. To stop that, turn off automatic updates on the Cameras tab." else "")
+    }
 }
 
 /**
@@ -726,12 +672,9 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
     val preview = remember {
         if (isCsv) ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.use { r -> r.lineSequence().take(4).toList() } ?: emptyList() else emptyList()
     }
-    var latCol by remember { mutableStateOf("0") }
-    var lonCol by remember { mutableStateOf("1") }
-    var nameCol by remember { mutableStateOf("2") }
-    var speedCol by remember { mutableStateOf("") }
-    var bearingCol by remember { mutableStateOf("") }
-    var dirCol by remember { mutableStateOf("") }
+    // The six column boxes of the CSV wizard, label and typed column number; lat, lon and name have defaults (docs/SETTINGS.md §3.2).
+    val cols = remember { listOf("Lat" to "0", "Lon" to "1", "Name" to "2", "Speed" to "", "Heading" to "", "Dir" to "").map { (l, d) -> l to mutableStateOf(d) } }
+    fun col(label: String) = cols.first { it.first == label }.second.value.toIntOrNull()
 
     AlertDialog(
         onDismissRequest = { if (!busy) onClose(null) },
@@ -743,19 +686,16 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
                 Text(if (names.size > 1) "${names.size} sets will be created, one per file:" else "Will be imported as:",
                     style = MaterialTheme.typography.bodyMedium)
                 // A zip can hold dozens of files; 12 names are enough to see what will happen.
-                names.take(12).forEach { Text("• " + deps.pois.setNameFor(it), style = MaterialTheme.typography.bodySmall) }
-                if (names.size > 12) Text("…and ${names.size - 12} more", style = MaterialTheme.typography.bodySmall)
+                names.take(12).forEach { Help("• " + deps.pois.setNameFor(it)) }
+                if (names.size > 12) Help("…and ${names.size - 12} more")
                 if (isCsv) {
-                    Text("CSV columns (0 = first column). Leave blank if not present.", style = MaterialTheme.typography.bodySmall)
-                    preview.forEach { Text(it.take(80), style = MaterialTheme.typography.bodySmall) }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        ColField("Lat", latCol) { latCol = it }; ColField("Lon", lonCol) { lonCol = it }; ColField("Name", nameCol) { nameCol = it }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        ColField("Speed", speedCol) { speedCol = it }; ColField("Heading", bearingCol) { bearingCol = it }; ColField("Dir", dirCol) { dirCol = it }
+                    Help("CSV columns (0 = first column). Leave blank if not present.")
+                    preview.forEach { Help(it.take(80)) }
+                    cols.chunked(3).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { row.forEach { (l, st) -> ColField(l, st.value) { st.value = it } } }
                     }
                 }
-                result?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+                result?.let { Ok(it) }
             }
         },
         confirmButton = {
@@ -766,9 +706,9 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
                     val profile = if (isCsv) CsvProfile(
                         delimiter = CsvImporter.detectDelimiter(preview.joinToString("\n")),
                         hasHeader = preview.firstOrNull()?.any { it.isLetter() } == true,
-                        latCol = latCol.toIntOrNull() ?: 0, lonCol = lonCol.toIntOrNull() ?: 1,
-                        nameCol = nameCol.toIntOrNull(), speedCol = speedCol.toIntOrNull(),
-                        bearingCol = bearingCol.toIntOrNull(), dirTypeCol = dirCol.toIntOrNull(),
+                        latCol = col("Lat") ?: 0, lonCol = col("Lon") ?: 1,
+                        nameCol = col("Name"), speedCol = col("Speed"),
+                        bearingCol = col("Heading"), dirTypeCol = col("Dir"),
                     ) else null
                     val out = runCatching { deps.pois.importFile(uri, csvProfile = profile) }
                     result = out.fold({ it.message + (it.errorSamples.firstOrNull()?.let { s -> "\nFirst problem: $s" } ?: "") }, { "Import failed: ${it.message}" })
@@ -819,7 +759,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         }
         Section("Name") {
             OutlinedTextField(set.name, { set = set.copy(name = it) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Text("Taken from the file when imported. Change it here if you like.", style = MaterialTheme.typography.bodySmall)
+            Help("Taken from the file when imported. Change it here if you like.")
         }
         Section("Show and alert") {
             SwitchRow("Show on map", set.showOnMap) { set = set.copy(showOnMap = it) }
@@ -834,7 +774,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
             }
             // PGW icons carry the credit their licence asks for (docs/SETTINGS.md §3.3 Icon).
             if (IconRepository.isPgwIcon(set.defaultIconId)) {
-                Text(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_CREDIT, style = MaterialTheme.typography.bodySmall)
+                Help(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_CREDIT)
             }
             if (pickIcon) {
                 (deps.icons.builtinIds() + deps.icons.userIds()).chunked(6).forEach { row ->
@@ -854,17 +794,17 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(secondAlert = it) }
         // Compulsory and fixed (DESIGN.md §11.1; AGENTS.md §3.2): shown so the user knows it exists, with nothing to change.
         Section("Passing alert (1 s ahead, at least 20 yd)") {
-            Text("Always on while sound is enabled for this set.", style = MaterialTheme.typography.bodySmall)
+            Help("Always on while sound is enabled for this set.")
         }
         // Only these five placeholders exist (DESIGN.md §7.2; AGENTS.md §3.2).
         Section("Spoken text") {
-            Text("Placeholders: {category} {speed} {units} {distance} {direction}", style = MaterialTheme.typography.bodySmall)
+            Help("Placeholders: {category} {speed} {units} {distance} {direction}")
             TemplateField(deps, "1st alert", set.firstTemplate, units) { set = set.copy(firstTemplate = it) }
             TemplateField(deps, "2nd alert", set.secondTemplate, units) { set = set.copy(secondTemplate = it) }
             TemplateField(deps, "Passing", set.passingTemplate, units) { set = set.copy(passingTemplate = it) }
         }
         val error = validate(set)
-        error?.let { Text(it, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error) }
+        error?.let { Err(it, Modifier.padding(16.dp)) }
         Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(enabled = error == null && set.name.isNotBlank(), onClick = {
                 scope.launch { deps.pois.updateSet(withSliderSeconds(set, leadSeconds)); onDone() }
@@ -873,13 +813,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         }
         Spacer(Modifier.height(32.dp))
     }
-    if (confirmDelete) AlertDialog(
-        onDismissRequest = { confirmDelete = false },
-        title = { Text("Delete ${set.name}?") },
-        text = { Text("Its ${set.poiCount} POIs will be removed from this phone.") },
-        confirmButton = { Button(onClick = { scope.launch { deps.pois.deleteSet(set.id); onDone() } }) { Text("Delete") } },
-        dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
-    )
+    if (confirmDelete) DeleteSetDialog(deps, set, pgwNote = false, onClose = { msg -> confirmDelete = false; if (msg != null) onDone() })
 }
 
 /** DESIGN.md §11.1 validation: 2nd ≥ 142 m; 1st ≥ 2nd + 100 m (FIXED distances). */
@@ -904,14 +838,11 @@ private fun StageEditor(
     Section(title) {
         if (canDisable) SwitchRow("On", stage.enabled) { onChange(stage.copy(enabled = it)) }
         if (stage.enabled) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(stage.mode == DistanceMode.FIXED, { onChange(stage.copy(mode = DistanceMode.FIXED)) }, label = { Text("Distance") })
-                FilterChip(stage.mode == DistanceMode.TIME, { onChange(stage.copy(mode = DistanceMode.TIME)) }, label = { Text("Seconds ahead") })
-            }
+            ChoiceChips(listOf(DistanceMode.FIXED to "Distance", DistanceMode.TIME to "Seconds ahead"), stage.mode) { onChange(stage.copy(mode = it)) }
             OutlinedTextField(toUser(stage.metres).toString(), { v -> v.toIntOrNull()?.let { onChange(stage.copy(metres = fromUser(it))) } },
                 label = { Text(if (stage.mode == DistanceMode.TIME) "Minimum ($unit)" else "Distance ($unit)") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-            if (stage.mode == DistanceMode.TIME) Text(sliderNote, style = MaterialTheme.typography.bodySmall)
+            if (stage.mode == DistanceMode.TIME) Help(sliderNote)
         }
     }
 }
@@ -927,7 +858,7 @@ private fun TemplateField(deps: PhoneDeps, label: String, value: String, units: 
     val rendered = AlertTemplateRenderer(units).render(value, sample)
     OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth())
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("“${rendered.display}”", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+        Help("“${rendered.display}”", Modifier.weight(1f))
         TextButton(onClick = { deps.tts.speak(rendered.spoken, 10, -1, chime = false) }) { Text("Test speak") }
     }
 }
@@ -955,81 +886,68 @@ fun CameraDbScreen(deps: PhoneDeps) {
     LaunchedEffect(refresh) { hasLogin = deps.settings.pgwCredentials() != null }
     val df = remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
     val sets by deps.pois.activeSets.collectAsState(initial = emptyList())
-    var editing by remember { mutableStateOf<PoiSetEntity?>(null) }
-    var confirmDelete by remember { mutableStateOf<PoiSetEntity?>(null) }
-    var setMessage by remember { mutableStateOf<String?>(null) }
 
-    editing?.let { set -> SetEditor(deps, set, onDone = { editing = null }); return }
-
-    Column(Modifier.verticalScroll(rememberScrollState())) {
-        Text("PocketGPSWorld", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
-        Section("Your subscription") {
-            Text("Uses your own PocketGPSWorld login. Your copy stays on this phone and is never shared or backed up.",
-                style = MaterialTheme.typography.bodySmall)
-            if (hasLogin) Text("Login saved.") else {
-                OutlinedTextField(user, { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(pass, { pass = it }, label = { Text("Password") }, singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+    SetListHost(deps) { list ->
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text("PocketGPSWorld", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
+            Section("Your subscription") {
+                Help("Uses your own PocketGPSWorld login. Your copy stays on this phone and is never shared or backed up.")
+                if (hasLogin) Text("Login saved.") else {
+                    OutlinedTextField(user, { user = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(pass, { pass = it }, label = { Text("Password") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!hasLogin) Button(enabled = user.isNotBlank() && pass.isNotBlank(), onClick = {
+                        scope.launch {
+                            deps.settings.setPgwCredentials(user.trim(), pass)
+                            // A new login must not reuse the old session cookies (DESIGN.md §6.1).
+                            deps.pgw.forgetSession()
+                            status = runCatching { deps.pgw.ensureLoggedIn(); "Logged in." }.getOrElse { "Login failed: ${it.message}" }
+                            pass = ""; refresh++
+                            deps.scheduler.schedule()
+                        }
+                    }) { Text("Save and test") } else OutlinedButton(onClick = {
+                        scope.launch { deps.settings.setPgwCredentials(null, null); deps.pgw.forgetSession(); deps.scheduler.schedule(); refresh++ }
+                    }) { Text("Forget login") }
+                }
+                status?.let { Ok(it) }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (!hasLogin) Button(enabled = user.isNotBlank() && pass.isNotBlank(), onClick = {
-                    scope.launch {
-                        deps.settings.setPgwCredentials(user.trim(), pass)
-                        // A new login must not reuse the old session cookies (DESIGN.md §6.1).
-                        deps.pgw.forgetSession()
-                        status = runCatching { deps.pgw.ensureLoggedIn(); "Logged in." }.getOrElse { "Login failed: ${it.message}" }
-                        pass = ""; refresh++
-                        deps.scheduler.schedule()
-                    }
-                }) { Text("Save and test") } else OutlinedButton(onClick = {
-                    scope.launch { deps.settings.setPgwCredentials(null, null); deps.pgw.forgetSession(); deps.scheduler.schedule(); refresh++ }
-                }) { Text("Forget login") }
-            }
-            status?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
-        }
-        // DESIGN.md §5.2a: switching formats replaces the sets on the next sync, so the per-set icon and alert choices are lost.
-        Section("Download format") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PgwDownload.entries.forEach { d ->
-                    FilterChip(settings.pgwDownload == d, {
-                        scope.launch { deps.settings.update { it.copy(pgwDownload = d) } }
-                    }, label = { Text(d.label + if (d == PgwDownload.DEFAULT) " (recommended)" else "") })
+            // DESIGN.md §5.2a: switching formats replaces the sets on the next sync, so the per-set icon and alert choices are lost.
+            Section("Download format") {
+                ChoiceChips(PgwDownload.entries.map { it to (it.label + if (it == PgwDownload.DEFAULT) " (recommended)" else "") }, settings.pgwDownload) { d ->
+                    scope.launch { deps.settings.update { it.copy(pgwDownload = d) } }
+                }
+                Help(settings.pgwDownload.detail)
+                if (state.installedPackage != null && state.installedPackage != settings.pgwDownload.idPackage) {
+                    Help("Press Sync now to switch to ${settings.pgwDownload.label}. Your camera sets will be replaced; " +
+                        "icon and alert choices made for the old format's sets are reset.", color = MaterialTheme.colorScheme.primary)
                 }
             }
-            Text(settings.pgwDownload.detail, style = MaterialTheme.typography.bodySmall)
-            if (state.installedPackage != null && state.installedPackage != settings.pgwDownload.idPackage) {
-                Text("Press Sync now to switch to ${settings.pgwDownload.label}. Your camera sets will be replaced; " +
-                    "icon and alert choices made for the old format's sets are reset.", color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.bodySmall)
+            Section("Database") {
+                Text("Installed: ${state.installedVersion ?: "none"}")
+                Text("Latest in feed: ${state.latestVersion ?: "not checked yet"}")
+                state.latestSummary?.let { Help(it) }
+                if (state.lastFeedCheckMs > 0) Help("Feed checked: ${df.format(Date(state.lastFeedCheckMs))}")
+                if (state.lastSyncMs > 0) Help("Last sync: ${df.format(Date(state.lastSyncMs))}")
+                state.lastResult?.let { Help(it) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Sync now only downloads when the feed shows a newer version; Force re-download always does (docs/SETTINGS.md §4).
+                    Button(enabled = hasLogin, onClick = { deps.scheduler.syncNow(force = false) }) { Text("Sync now") }
+                    OutlinedButton(enabled = hasLogin, onClick = { deps.scheduler.syncNow(force = true) }) { Text("Force re-download") }
+                }
+                SwitchRow("Update automatically when a new release is announced", settings.pgwAutoSync) { on ->
+                    scope.launch { deps.settings.update { it.copy(pgwAutoSync = on) }; deps.scheduler.schedule() }
+                }
+                SwitchRow("Wi-Fi only", settings.pgwWifiOnly) { on -> scope.launch { deps.settings.update { it.copy(pgwWifiOnly = on) } } }
             }
-        }
-        Section("Database") {
-            Text("Installed: ${state.installedVersion ?: "none"}")
-            Text("Latest in feed: ${state.latestVersion ?: "not checked yet"}")
-            state.latestSummary?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            if (state.lastFeedCheckMs > 0) Text("Feed checked: ${df.format(Date(state.lastFeedCheckMs))}", style = MaterialTheme.typography.bodySmall)
-            if (state.lastSyncMs > 0) Text("Last sync: ${df.format(Date(state.lastSyncMs))}", style = MaterialTheme.typography.bodySmall)
-            state.lastResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Sync now only downloads when the feed shows a newer version; Force re-download always does (docs/SETTINGS.md §4).
-                Button(enabled = hasLogin, onClick = { deps.scheduler.syncNow(force = false) }) { Text("Sync now") }
-                OutlinedButton(enabled = hasLogin, onClick = { deps.scheduler.syncNow(force = true) }) { Text("Force re-download") }
-            }
-            SwitchRow("Update automatically when a new release is announced", settings.pgwAutoSync) { on ->
-                scope.launch { deps.settings.update { it.copy(pgwAutoSync = on) }; deps.scheduler.schedule() }
-            }
-            SwitchRow("Wi-Fi only", settings.pgwWifiOnly) { on -> scope.launch { deps.settings.update { it.copy(pgwWifiOnly = on) } } }
-        }
-        CameraSets(deps, cameraGroups(sets), setMessage, onEdit = { editing = it }, onDelete = { confirmDelete = it })
-        Section("Manual import") {
-            Text("You can also download the iGO file yourself and import it on the POIs tab.", style = MaterialTheme.typography.bodySmall)
-            OutlinedButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PgwConfig.BASE + PgwConfig.CAMERAS_PATH))) }) {
-                Text("Open download page")
+            CameraSets(deps, cameraGroups(sets), list.message, onEdit = { list.editing = it }, onDelete = { list.confirmDelete = it })
+            Section("Manual import") {
+                Help("You can also download the iGO file yourself and import it on the POIs tab.")
+                OutlinedButton(onClick = { ctx.openUrl(PgwConfig.BASE + PgwConfig.CAMERAS_PATH) }) { Text("Open download page") }
             }
         }
     }
-
-    confirmDelete?.let { set -> DeleteSetDialog(deps, set, onClose = { msg -> confirmDelete = null; msg?.let { setMessage = it } }) }
 }
 
 /** One camera type's sets, batched together on the Cameras tab (DESIGN.md §13). */
@@ -1069,35 +987,30 @@ private fun CameraSets(
     val total = groups.sumOf { it.cameras }
     val setCount = groups.sumOf { it.sets.size }
     Text("Camera sets", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp))
-    Text(
+    Help(
         if (groups.isEmpty()) "None yet. Log in and press Sync now to download your cameras."
         else "%,d cameras in %d %s. Tap a type to see its sets.".format(total, setCount, if (setCount == 1) "set" else "sets"),
-        Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall,
+        Modifier.padding(horizontal = 16.dp),
     )
-    message?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.primary) }
+    message?.let { Ok(it, Modifier.padding(horizontal = 16.dp)) }
     groups.forEach { g ->
         val open = g.name in expanded
-        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
-            .clickable { expanded = if (open) expanded - g.name else expanded + g.name }) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Image(deps.icons.bitmap(g.sets.first().defaultIconId, 96).asImageBitmap(), null, Modifier.size(40.dp))
-                Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                    Text(g.name, style = MaterialTheme.typography.titleMedium)
-                    Text("%,d cameras · %d %s".format(g.cameras, g.sets.size, if (g.sets.size == 1) "set" else "sets"),
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                Text(if (open) "▲" else "▼", Modifier.padding(end = 8.dp))
-                Switch(checked = g.anyOn, onCheckedChange = { on ->
-                    scope.launch { deps.pois.updateSets(g.sets.map { it.copy(enabled = on) }) }
-                })
-            }
+        IconRowCard(
+            deps.icons.bitmap(g.sets.first().defaultIconId, 96).asImageBitmap(), g.name,
+            "%,d cameras · %d %s".format(g.cameras, g.sets.size, if (g.sets.size == 1) "set" else "sets"),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            onClick = { expanded = if (open) expanded - g.name else expanded + g.name },
+        ) {
+            Text(if (open) "▲" else "▼", Modifier.padding(end = 8.dp))
+            Switch(checked = g.anyOn, onCheckedChange = { on ->
+                scope.launch { deps.pois.updateSets(g.sets.map { it.copy(enabled = on) }) }
+            })
         }
         if (open) Column(Modifier.padding(start = 16.dp)) {
             g.sets.forEach { set -> key(set.id) { SetCard(deps, set, onEdit = { onEdit(set) }, onDelete = { onDelete(set) }) } }
         }
     }
-    if (groups.isNotEmpty()) Text("Tip: swipe a set left to delete it.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-        style = MaterialTheme.typography.bodySmall)
+    if (groups.isNotEmpty()) Help("Tip: swipe a set left to delete it.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
 }
 
 // --- Reports (final review and submission happen only here, never on the car screen) ----------
@@ -1123,10 +1036,9 @@ fun ReportsScreen(activity: Activity, deps: PhoneDeps) {
     Column {
         Text("Camera reports", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
         Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Reports made with the Report button in the car wait here. Check each one, then press Send. " +
-                "Don't report warning signs or Traffic Master cameras; only report mobiles when a unit is actually there.",
-                style = MaterialTheme.typography.bodySmall)
-            blocked?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Help("Reports made with the Report button in the car wait here. Check each one, then press Send. " +
+                "Don't report warning signs or Traffic Master cameras; only report mobiles when a unit is actually there.")
+            blocked?.let { Err(it) }
             // Send all: queues every draft and failed report; the worker sends them once the drive is over (DESIGN.md §8.5).
             if (drafts.size > 1) Button(enabled = blocked == null, onClick = {
                 scope.launch { drafts.forEach { deps.reports.queueForSending(it) }; ReportSubmitWorker.enqueue(activity) }
@@ -1161,8 +1073,8 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
     Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(CameraReportRepository.label(r.kind).removeSuffix(" (reported)"), style = MaterialTheme.typography.titleMedium)
-            Text(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(r.createdAt)) +
-                " · " + r.status.name.lowercase() + (r.lastError?.let { " · $it" } ?: ""), style = MaterialTheme.typography.bodySmall)
+            Help(DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(r.createdAt)) +
+                " · " + r.status.name.lowercase() + (r.lastError?.let { " · $it" } ?: ""))
             if (!editable) return@Column
 
             // Type (guessed from the spoken comment; confirm here)
@@ -1187,9 +1099,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
                     OutlinedButton(onClick = { save(r.copy(lat = r.lat + d.first, lon = r.lon + d.second)) }) { Text("$l 10 m") }
                 }
             }
-            TextButton(onClick = {
-                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:${r.lat},${r.lon}?q=${r.lat},${r.lon}(Reported camera)")))
-            }) { Text("Show on map") }
+            TextButton(onClick = { activity.openUrl("geo:${r.lat},${r.lon}?q=${r.lat},${r.lon}(Reported camera)") }) { Text("Show on map") }
 
             // Speed limit (with where it came from)
             val src = when (r.limitSource) {
@@ -1199,11 +1109,9 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
                 LimitSource.NONE -> "unknown"
             }
             Text("Speed limit: ${r.speedLimit?.let { "$it mph" } ?: "not set"} ($src)", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                // UK limits in mph; PgwReportSubmitter maps them to the form's own speed codes (DESIGN.md §8.5 table).
-                listOf(20, 30, 40, 50, 60, 70).forEach { v ->
-                    FilterChip(r.speedLimit == v, { save(r.copy(speedLimit = v, limitSource = LimitSource.USER)) }, label = { Text("$v") })
-                }
+            // UK limits in mph; PgwReportSubmitter maps them to the form's own speed codes (DESIGN.md §8.5 table).
+            ChoiceChips(listOf(20, 30, 40, 50, 60, 70).map { it to "$it" }, r.speedLimit, spacing = 6.dp) { v ->
+                save(r.copy(speedLimit = v, limitSource = LimitSource.USER))
             }
 
             // Direction
@@ -1212,17 +1120,12 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
                 // Turning the heading makes an "any direction" report one-way in that direction (DESIGN.md §8.5 "direction of travel").
                 fun turn(by: Int) = save(r.copy(heading = (((r.heading ?: 0f) + by) % 360 + 360) % 360, directionType =
                     if (r.directionType == DirectionType.ANY) DirectionType.ONE_WAY else r.directionType))
-                OutlinedButton(onClick = { turn(-45) }) { Text("−45°") }
-                OutlinedButton(onClick = { turn(-5) }) { Text("−5°") }
-                OutlinedButton(onClick = { turn(5) }) { Text("+5°") }
-                OutlinedButton(onClick = { turn(45) }) { Text("+45°") }
-                OutlinedButton(onClick = { turn(180) }) { Text("Reverse") }
+                listOf(-45 to "−45°", -5 to "−5°", 5 to "+5°", 45 to "+45°", 180 to "Reverse").forEach { (by, label) ->
+                    OutlinedButton(onClick = { turn(by) }) { Text(label) }
+                }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(r.directionType == DirectionType.ONE_WAY,
-                    { save(r.copy(directionType = DirectionType.ONE_WAY)) }, label = { Text("One way") })
-                FilterChip(r.directionType == DirectionType.BOTH,
-                    { save(r.copy(directionType = DirectionType.BOTH)) }, label = { Text("Both ways") })
+            ChoiceChips(listOf(DirectionType.ONE_WAY to "One way", DirectionType.BOTH to "Both ways"), r.directionType, spacing = 6.dp) {
+                save(r.copy(directionType = it))
             }
 
             // Comment (speech-to-text from the car, editable)
@@ -1255,7 +1158,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
                     val s = deps.reports.toSubmission(r)
                     val text = s.formFields().filter { it.first != "SendEntry" }.joinToString("\n") { "${it.first}: ${it.second}" }
                     activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Camera report", text))
-                    activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(PgwConfig.BASE + PgwConfig.SUBMIT_PATH)))
+                    activity.openUrl(PgwConfig.BASE + PgwConfig.SUBMIT_PATH)
                 }) { Text("Browser") }
             }
         }
@@ -1286,10 +1189,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
         SetupSections(activity, deps)
         // docs/SETTINGS.md §1.1 Units and §1.4 Speed panel share one card (DESIGN.md §13 item 9). Satellite is the same setting as the car's Satellite button.
         Section("Car screen") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(s.units == Units.IMPERIAL, { set { it.copy(units = Units.IMPERIAL) } }, label = { Text("mph, miles, yards") })
-                FilterChip(s.units == Units.METRIC, { set { it.copy(units = Units.METRIC) } }, label = { Text("km/h, km, m") })
-            }
+            ChoiceChips(listOf(Units.IMPERIAL to "mph, miles, yards", Units.METRIC to "km/h, km, m"), s.units) { u -> set { it.copy(units = u) } }
             SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
             SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
         }
@@ -1300,47 +1200,33 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             OverLimitSlider(s.overspeedPct) { p -> set { it.copy(overspeedPct = p) } }
             AlertLeadSlider(s.alertLeadSeconds, s.units) { n -> set { it.copy(alertLeadSeconds = n) } }
             SwitchRow("Announce speed limit changes ahead", s.announceLimitChanges) { v -> set { it.copy(announceLimitChanges = v) } }
-            Text("Spoken once per change, from the OpenStreetMap limits on the phone.", style = MaterialTheme.typography.bodySmall)
+            Help("Spoken once per change, from the OpenStreetMap limits on the phone.")
         }
         // docs/SETTINGS.md §1.3; DESIGN.md §10.6, §10.7.
         Section("Speed and location source") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(s.speedSource == SpeedSource.CAR_WHEN_AVAILABLE,
-                    { set { it.copy(speedSource = SpeedSource.CAR_WHEN_AVAILABLE) } }, label = { Text("Car when available") })
-                FilterChip(s.speedSource == SpeedSource.PHONE_GPS,
-                    { set { it.copy(speedSource = SpeedSource.PHONE_GPS) } }, label = { Text("Phone only") })
+            ChoiceChips(listOf(SpeedSource.CAR_WHEN_AVAILABLE to "Car when available", SpeedSource.PHONE_GPS to "Phone only"), s.speedSource) { v ->
+                set { it.copy(speedSource = v) }
             }
-            Text("The car's own speed and GPS through Android Auto when it shares them, else the phone.", style = MaterialTheme.typography.bodySmall)
+            Help("The car's own speed and GPS through Android Auto when it shares them, else the phone.")
         }
         // docs/SETTINGS.md §1.4b; DESIGN.md §8.3a.
         Section("Routing") {
             SwitchRow("Avoid tolls", s.avoidTolls) { v -> set { it.copy(avoidTolls = v) } }
             SwitchRow("Energy-efficient routes (EV)", s.evEfficientRoutes) { v -> set { it.copy(evEfficientRoutes = v) } }
-            Text("With EV routes on, the preview offers Fastest and Energy-efficient (Routes API on your key) and you pick before Go.",
-                style = MaterialTheme.typography.bodySmall)
+            Help("With EV routes on, the preview offers Fastest and Energy-efficient (Routes API on your key) and you pick before Go.")
         }
         // docs/SETTINGS.md §1.4a; DESIGN.md §8.4a.
         Section("Speed limits (OpenStreetMap)") { OsmLimitsSection(activity, deps, s) { b -> set(b) } }
         // docs/SETTINGS.md §1.6: the Simulate drive exists only in debug builds (TESTING.md §5).
         if (io.autonav.alerts.BuildConfig.DEBUG) Section("Bench testing (debug builds)") {
-            Text("Speed of the Simulate drive on the car screen; 1× is real time.", style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1f, 2f, 4f).forEach { v -> FilterChip(s.simulationSpeed == v, { set { it.copy(simulationSpeed = v) } }, label = { Text("${v.roundToInt()}×") }) }
-            }
+            Help("Speed of the Simulate drive on the car screen; 1× is real time.")
+            ChoiceChips(listOf(1f, 2f, 4f).map { it to "${it.roundToInt()}×" }, s.simulationSpeed) { v -> set { it.copy(simulationSpeed = v) } }
         }
         // docs/SETTINGS.md §1.7; DESIGN.md §13.4. The file holds the key and PGW password in plain text, so the card warns before the button.
         Section("Backup") {
-            val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-                if (uri != null) scope.launch {
-                    val msg = runCatching { deps.backup.writeTo(activity, uri) }
-                        .fold({ "Settings backup saved" }, { "Couldn't save the backup: ${it.message}" })
-                    Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
-                }
-            }
-            Text("Settings, your Maps key, your PocketGPSWorld login and each camera set's alert settings, as a JSON file. Not camera data, reports or places.",
-                style = MaterialTheme.typography.bodySmall)
-            Text("The file holds your key and password in plain text: keep it private.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            val saver = rememberSaveTo("application/json", "Settings backup saved", "Couldn't save the backup") { uri -> deps.backup.writeTo(activity, uri) }
+            Help("Settings, your Maps key, your PocketGPSWorld login and each camera set's alert settings, as a JSON file. Not camera data, reports or places.")
+            Help("The file holds your key and password in plain text: keep it private.", color = MaterialTheme.colorScheme.error)
             Button(onClick = { saver.launch(SettingsBackup.fileName()) }) { Text("Save settings backup…") }
 
             // Restore: read and check the file, show what's in it, then apply on confirm (DESIGN.md §13.4).
@@ -1356,82 +1242,55 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             OutlinedButton(onClick = { opener.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }) {
                 Text("Restore from backup…")
             }
-            restoreMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            restoreMessage?.let { Help(it) }
             preview?.let { p ->
-                AlertDialog(
-                    onDismissRequest = { preview = null },
-                    title = { Text("Restore settings?") },
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Backup made ${p.createdAt?.take(16)?.replace('T', ' ') ?: "(no date)"}" + (p.appVersion?.let { " by version $it" } ?: ""))
-                            Text("Maps API key: " + if (p.hasMapsKey) "included" else "not included")
-                            Text("PocketGPSWorld login: " + (p.pgwUser?.let { "included ($it)" } ?: "not included"))
-                            Text("Camera set settings: ${p.sets} sets, ${p.matchingSets} of them match sets on this phone")
-                            // Terms are never restored: Google's terms are accepted per install (DESIGN.md §13.4 step 4).
-                            Text("This replaces your current settings. Navigation terms still need accepting on this phone.",
-                                style = MaterialTheme.typography.bodySmall)
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            val text = p.text
-                            preview = null
-                            scope.launch {
-                                restoreMessage = runCatching { deps.backup.restore(text) }.fold({ r ->
-                                    // A restored key is applied the same way as a pasted one (DESIGN.md §1.4, §13.4 step 4).
-                                    if (r.mapsKey) deps.navigator.keyChanged()
-                                    val parts = buildList {
-                                        if (r.settings) add("settings")
-                                        if (r.mapsKey) add("Maps key")
-                                        if (r.pgwLogin) add("PGW login")
-                                        add("${r.sets} camera sets")
-                                    }
-                                    "Restored " + parts.joinToString(", ").replace(Regex(", ([^,]+)$"), " and $1") + "." +
-                                        (if (r.setsNotFound > 0) " ${r.setsNotFound} sets weren't found: download the cameras first, then restore again." else "")
-                                }, { "Couldn't restore: ${it.message}" })
+                ConfirmDialog("Restore settings?", "Restore", textConfirm = true, onDismiss = { preview = null }, onConfirm = {
+                    val text = p.text
+                    preview = null
+                    scope.launch {
+                        restoreMessage = runCatching { deps.backup.restore(text) }.fold({ r ->
+                            // A restored key is applied the same way as a pasted one (DESIGN.md §1.4, §13.4 step 4).
+                            if (r.mapsKey) deps.navigator.keyChanged()
+                            val parts = buildList {
+                                if (r.settings) add("settings")
+                                if (r.mapsKey) add("Maps key")
+                                if (r.pgwLogin) add("PGW login")
+                                add("${r.sets} camera sets")
                             }
-                        }) { Text("Restore") }
-                    },
-                    dismissButton = { TextButton(onClick = { preview = null }) { Text("Cancel") } },
-                )
+                            "Restored " + parts.joinToString(", ").replace(Regex(", ([^,]+)$"), " and $1") + "." +
+                                (if (r.setsNotFound > 0) " ${r.setsNotFound} sets weren't found: download the cameras first, then restore again." else "")
+                        }, { "Couldn't restore: ${it.message}" })
+                    }
+                }) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Backup made ${p.createdAt?.take(16)?.replace('T', ' ') ?: "(no date)"}" + (p.appVersion?.let { " by version $it" } ?: ""))
+                        Text("Maps API key: " + if (p.hasMapsKey) "included" else "not included")
+                        Text("PocketGPSWorld login: " + (p.pgwUser?.let { "included ($it)" } ?: "not included"))
+                        Text("Camera set settings: ${p.sets} sets, ${p.matchingSets} of them match sets on this phone")
+                        // Terms are never restored: Google's terms are accepted per install (DESIGN.md §13.4 step 4).
+                        Help("This replaces your current settings. Navigation terms still need accepting on this phone.")
+                    }
+                }
             }
         }
         // Folded: one line when closed, the developer panel when open (DESIGN.md §13 item 11).
-        var showDiag by remember { mutableStateOf(false) }
-        Section("Diagnostics") {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Two debug logs always on · drive recording ${if (s.driveRecordingOn) "on" else "off"}", Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium)
-                TextButton(onClick = { showDiag = !showDiag }) { Text(if (showDiag) "Hide" else "Show") }
-            }
-            if (showDiag) DiagnosticsSection(activity, deps, s) { b -> set(b) }
+        Fold("Diagnostics", "Two debug logs always on · drive recording ${if (s.driveRecordingOn) "on" else "off"}") {
+            DiagnosticsSection(activity, deps, s) { b -> set(b) }
         }
         // Folded like Diagnostics: the car set-up manual (DESIGN.md §13 item 12).
-        var showCar by remember { mutableStateOf(false) }
-        Section("Connecting to a car") {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Getting AutoNavAlerts on the car screen, and debugging on a head unit", Modifier.weight(1f),
-                    style = MaterialTheme.typography.bodyMedium)
-                TextButton(onClick = { showCar = !showCar }) { Text(if (showCar) "Hide" else "Show") }
-            }
-            if (showCar) CarConnectionSection(activity)
-        }
+        Fold("Connecting to a car", "Getting AutoNavAlerts on the car screen, and debugging on a head unit") { CarConnectionSection() }
         // docs/SETTINGS.md §1.9: the build stamp (DESIGN.md §1.3) and the licences; nothing to set.
         Section("About") {
             Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
-            Text("Build ${io.autonav.alerts.BuildConfig.GIT_COMMIT}" + if (io.autonav.alerts.BuildConfig.DEBUG) " (debug)" else "",
-                style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = {
-                activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/damo2929/AutoNavAlerts")))
-            }) { Text("github.com/damo2929/AutoNavAlerts") }
-            Text("Apache License 2.0. AI-assisted code, written with Claude Fable and Claude Opus.", style = MaterialTheme.typography.bodySmall)
+            Help("Build ${io.autonav.alerts.BuildConfig.GIT_COMMIT}" + if (io.autonav.alerts.BuildConfig.DEBUG) " (debug)" else "")
+            TextButton(onClick = { activity.openUrl("https://github.com/damo2929/AutoNavAlerts") }) { Text("github.com/damo2929/AutoNavAlerts") }
+            Help("Apache License 2.0. AI-assisted code, written with Claude Fable and Claude Opus.")
             var showLicence by remember { mutableStateOf(false) }
             val licence = remember { deps.icons.pgwIconLicence() }
             if (licence != null) {
-                Text("Camera set icons from your PocketGPSWorld download are © GerryC, 2007, used non-commercially with credit.",
-                    style = MaterialTheme.typography.bodySmall)
+                Help("Camera set icons from your PocketGPSWorld download are © GerryC, 2007, used non-commercially with credit.")
                 TextButton(onClick = { showLicence = !showLicence }) { Text(if (showLicence) "Hide icon licence" else "Show icon licence") }
-                if (showLicence) Text(licence.replace("\r", ""), style = MaterialTheme.typography.bodySmall)
+                if (showLicence) Help(licence.replace("\r", ""))
             }
         }
     }
@@ -1450,8 +1309,7 @@ private fun OsmLimitsSection(
     var stats by remember { mutableStateOf<io.autonav.alerts.osm.SpeedLimitRepository.Stats?>(null) }
     LaunchedEffect(progress?.finished) { stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { deps.speedLimits.stats() } }
 
-    Text("Fills the speed panel's limit (grey dot) when Google hasn't given one. Downloaded once; nothing is looked up while driving.",
-        style = MaterialTheme.typography.bodySmall)
+    Help("Fills the speed panel's limit (grey dot) when Google hasn't given one. Downloaded once; nothing is looked up while driving.")
     SwitchRow("Show OpenStreetMap limits", s.osmLimitsOn) { v -> set { it.copy(osmLimitsOn = v) } }
     val p = progress
     if (p != null && !p.finished) {
@@ -1459,23 +1317,21 @@ private fun OsmLimitsSection(
         if (p.total > 0) androidx.compose.material3.LinearProgressIndicator(progress = { p.done.toFloat() / p.total }, modifier = Modifier.fillMaxWidth())
         OutlinedButton(onClick = { deps.speedLimits.cancel() }) { Text("Cancel") }
     } else {
-        p?.error?.let { Text("The last download failed: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        p?.error?.let { Help("The last download failed: $it", color = MaterialTheme.colorScheme.error) }
         SwitchRow("Download on Wi-Fi only", s.osmWifiOnly) { v -> set { it.copy(osmWifiOnly = v) } }
         Button(onClick = { deps.speedLimits.download(s.osmWifiOnly) }) {
             Text(if (stats == null) "Download speed limits for the UK" else "Update speed limits")
         }
         // The Geofabrik extract is about 1.1 GB to download and about 30 MB once reduced to limits (DESIGN.md §8.4a).
-        Text((if (s.osmWifiOnly) "About 1.1 GB on Wi-Fi only" else "About 1.1 GB, over mobile data too") + ", in the background; about 30 MB kept on the phone.",
-            style = MaterialTheme.typography.bodySmall)
+        Help((if (s.osmWifiOnly) "About 1.1 GB on Wi-Fi only" else "About 1.1 GB, over mobile data too") + ", in the background; about 30 MB kept on the phone.")
     }
     stats?.let { st ->
-        Text("Data from ${st.dataDate} · ${"%,d".format(st.roads)} roads · ${st.bytes / 1_000_000} MB. Update every few months.",
-            style = MaterialTheme.typography.bodySmall)
+        Help("Data from ${st.dataDate} · ${"%,d".format(st.roads)} roads · ${st.bytes / 1_000_000} MB. Update every few months.")
         TextButton(onClick = { deps.speedLimits.delete(); stats = null }) { Text("Delete downloaded limits") }
     }
-    TextButton(onClick = {
-        activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.openstreetmap.org/copyright")))
-    }) { Text("Speed limits © OpenStreetMap contributors (ODbL), extract by Geofabrik") }
+    TextButton(onClick = { activity.openUrl("https://www.openstreetmap.org/copyright") }) {
+        Text("Speed limits © OpenStreetMap contributors (ODbL), extract by Geofabrik")
+    }
 }
 
 /** Over-limit warning threshold: −5% to +20% in 0.1% steps (DESIGN.md §11 step 9). */
@@ -1485,13 +1341,12 @@ private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
     var v by remember(current) { mutableStateOf((current * 1000).roundToInt().toFloat()) } // tenths of a percent
     val pct = v / 10.0
     Text("Over-limit warning: ${pctLabel(pct / 100)}", style = MaterialTheme.typography.bodyLarge)
-    Text(
+    Help(
         when {
             pct < 0 -> "Warns ${pctLabel(-pct / 100)} before you reach the limit"
             pct == 0.0 -> "Warns as soon as you go over the limit"
             else -> "Warns when you're more than ${pctLabel(pct / 100)} over the limit"
         },
-        style = MaterialTheme.typography.bodySmall,
     )
     androidx.compose.material3.Slider(
         value = v, onValueChange = { v = Math.round(it).toFloat() },
@@ -1499,11 +1354,9 @@ private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
         // 249 steps between -50 and +200 make each step one tenth of a percent (DESIGN.md §11 step 9).
         valueRange = -50f..200f, steps = 249,
     )
-    Row(Modifier.fillMaxWidth()) {
-        Text("−5%", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+    RangeLabels("−5%", "+20%") {
         // The default (DESIGN.md §11 step 9; docs/SETTINGS.md §1.2).
         TextButton(onClick = { v = -1f; onChange(-0.001) }) { Text("Reset to −0.1%") }
-        Text("+20%", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -1516,19 +1369,15 @@ private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
 private fun AlertLeadSlider(current: Int, units: Units, onChange: (Int) -> Unit) {
     var v by remember(current) { mutableIntStateOf(current) }
     Text("Alert lead time", style = MaterialTheme.typography.bodyLarge)
-    Text("First alert: $v s ahead · second alert at ${halfSecondsLabel(v)}", style = MaterialTheme.typography.bodySmall)
+    Help("First alert: $v s ahead · second alert at ${halfSecondsLabel(v)}")
     androidx.compose.material3.Slider(
         value = v.toFloat(), onValueChange = { v = Math.round(it) },
         onValueChangeFinished = { onChange(v) },
         valueRange = MIN_ALERT_LEAD_SECONDS.toFloat()..MAX_ALERT_LEAD_SECONDS.toFloat(),
         steps = MAX_ALERT_LEAD_SECONDS - MIN_ALERT_LEAD_SECONDS - 1,
     )
-    Row(Modifier.fillMaxWidth()) {
-        Text("$MIN_ALERT_LEAD_SECONDS s", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-        Text("$MAX_ALERT_LEAD_SECONDS s", style = MaterialTheme.typography.bodySmall)
-    }
-    Text("First alert at " + listOf(30, 50, 70).joinToString(" · ") { mph -> "$mph mph: ${leadDistanceText(mph, v, units)}" },
-        style = MaterialTheme.typography.bodySmall)
+    RangeLabels("$MIN_ALERT_LEAD_SECONDS s", "$MAX_ALERT_LEAD_SECONDS s")
+    Help("First alert at " + listOf(30, 50, 70).joinToString(" · ") { mph -> "$mph mph: ${leadDistanceText(mph, v, units)}" })
 }
 
 /** "7.5 s" for 15, "8 s" for 16: half the lead time, as the 2nd alert uses it. */
@@ -1576,8 +1425,7 @@ private fun DiagnosticsSection(
 ) {
     val scope = rememberCoroutineScope()
     var refresh by remember { mutableIntStateOf(0) }
-    Text("debug-nav: routes, the map and the location feed. alert-debug: every camera and alert. 15-second blocks, 1 MB each.",
-        style = MaterialTheme.typography.bodySmall)
+    Help("debug-nav: routes, the map and the location feed. alert-debug: every camera and alert. 15-second blocks, 1 MB each.")
     for (ch in EventLog.Channel.entries) key(ch) { DiagLogCard(activity, deps, ch, refresh) }
 
     var snapshot by remember { mutableStateOf<String?>(null) }
@@ -1611,29 +1459,20 @@ private fun DiagnosticsSection(
 
     HorizontalDivider()
     SwitchRow("Drive recording", s.driveRecordingOn) { v -> set { it.copy(driveRecordingOn = v) } }
-    Text("Every GPS fix to a CSV, for replaying a drive on the bench. About 1–8 MB an hour; the newest 3 are kept.",
-        style = MaterialTheme.typography.bodySmall)
+    Help("Every GPS fix to a CSV, for replaying a drive on the bench. About 1–8 MB an hour; the newest 3 are kept.")
     var latest by remember { mutableStateOf<File?>(null) }
     var recording by remember { mutableStateOf(false) }
     LaunchedEffect(refresh, s.driveRecordingOn) {
         withContext(Dispatchers.IO) { latest = deps.driveRecorder.latest(); recording = deps.driveRecorder.isRecording }
     }
-    Text(latest?.let { "Latest: ${it.name} · ${sizeText(it.length())}" + (if (recording) " · recording now" else "") } ?: "No recordings yet",
-        style = MaterialTheme.typography.bodySmall)
-    val csvSaver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
-        val f = latest
-        if (uri != null && f != null) scope.launch {
-            val msg = withContext(Dispatchers.IO) {
-                runCatching { deps.driveRecorder.flush(); DiagFiles.writeTo(activity, uri, listOf(f)) }
-            }.fold({ "Drive recording saved" }, { "Couldn't save the recording: ${it.message}" })
-            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
-        }
+    Help(latest?.let { "Latest: ${it.name} · ${sizeText(it.length())}" + (if (recording) " · recording now" else "") } ?: "No recordings yet")
+    val csvSaver = rememberSaveTo("text/csv", "Drive recording saved", "Couldn't save the recording") { uri ->
+        withContext(Dispatchers.IO) { deps.driveRecorder.flush(); DiagFiles.writeTo(activity, uri, listOf(checkNotNull(latest))) }
     }
     OutlinedButton(enabled = latest != null, onClick = { latest?.let { csvSaver.launch(it.name) } }) { Text("Save drive recording…") }
 
     HorizontalDivider()
-    Text("Logs and recordings stay on the phone (private storage, no cloud backup) and contain where you drove. Nothing leaves unless you Save or Share.",
-        style = MaterialTheme.typography.bodySmall)
+    Help("Logs and recordings stay on the phone (private storage, no cloud backup) and contain where you drove. Nothing leaves unless you Save or Share.")
 }
 
 /** One debug log: status, Show last 200 lines, Save…, Share. */
@@ -1655,15 +1494,10 @@ private fun DiagLogCard(activity: Activity, deps: PhoneDeps, ch: EventLog.Channe
             lines = if (show) deps.eventLog.tail(ch, 200) else emptyList()
         }
     }
-    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
-        if (uri != null) scope.launch {
-            val msg = withContext(Dispatchers.IO) {
-                runCatching {
-                    deps.eventLog.flush("export")
-                    DiagFiles.writeTo(activity, uri, deps.eventLog.files(ch))
-                }
-            }.fold({ "${ch.shortName} saved" }, { "Couldn't save ${ch.shortName}: ${it.message}" })
-            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+    val saver = rememberSaveTo("text/plain", "${ch.shortName} saved", "Couldn't save ${ch.shortName}") { uri ->
+        withContext(Dispatchers.IO) {
+            deps.eventLog.flush("export")
+            DiagFiles.writeTo(activity, uri, deps.eventLog.files(ch))
         }
     }
     Text("${ch.fileName} · ${sizeText(size)}" + (oldest?.let { " · oldest $it" } ?: " · empty"), style = MaterialTheme.typography.bodyMedium)
@@ -1680,7 +1514,7 @@ private fun DiagLogCard(activity: Activity, deps: PhoneDeps, ch: EventLog.Channe
         }) { Text("Share") }
     }
     if (show) {
-        if (lines.isEmpty()) Text("(empty)", style = MaterialTheme.typography.bodySmall) else MonoLines(lines, 320.dp)
+        if (lines.isEmpty()) Help("(empty)") else MonoLines(lines, 320.dp)
         TextButton(onClick = { reload++ }) { Text("Refresh") }
     }
 }

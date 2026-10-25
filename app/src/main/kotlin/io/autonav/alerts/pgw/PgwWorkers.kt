@@ -3,7 +3,6 @@
 
 package io.autonav.alerts.pgw
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -12,11 +11,9 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.BackoffPolicy
-import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -31,6 +28,8 @@ import io.autonav.alerts.core.pgw.PgwUpdateFeed
 import io.autonav.alerts.data.PoiRepository
 import io.autonav.alerts.nav.GuidanceController
 import io.autonav.alerts.settings.SettingsStore
+import io.autonav.alerts.util.ensureChannel
+import io.autonav.alerts.util.network
 import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipFile
@@ -60,7 +59,7 @@ class PgwScheduler @Inject constructor(
         }
         // §6.2: every 24 h with a 4 h flex window, any network (the feed is tiny), exponential backoff from 1 h on failure.
         val req = PeriodicWorkRequestBuilder<PgwFeedCheckWorker>(24, TimeUnit.HOURS, 4, TimeUnit.HOURS)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(network().build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.HOURS)
             .build()
         // KEEP: a job already scheduled keeps its timing; rescheduling never resets the clock.
@@ -74,7 +73,7 @@ class PgwScheduler @Inject constructor(
     fun syncNow(force: Boolean) {
         val req = OneTimeWorkRequestBuilder<PgwSyncWorker>()
             .setInputData(workDataOf(PgwSyncWorker.KEY_FORCE to force, PgwSyncWorker.KEY_CHECK_FEED to !force))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(network().build())
             .build()
         wm.enqueueUniqueWork(SYNC_WORK, ExistingWorkPolicy.REPLACE, req)
     }
@@ -87,11 +86,7 @@ class PgwScheduler @Inject constructor(
     suspend fun queueSync() {
         val wifiOnly = settings.current().pgwWifiOnly
         val req = OneTimeWorkRequestBuilder<PgwSyncWorker>()
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
-                    .setRequiresBatteryNotLow(true).build(),
-            )
+            .setConstraints(network(wifiOnly).setRequiresBatteryNotLow(true).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 1, TimeUnit.HOURS)
             .build()
         wm.enqueueUniqueWork(SYNC_WORK, ExistingWorkPolicy.KEEP, req)
@@ -246,10 +241,7 @@ class PgwSyncWorker @AssistedInject constructor(
     private fun notify(title: String, text: String) {
         val ctx = applicationContext
         if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val nm = ctx.getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(CHANNEL) == null) {
-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "Camera database", NotificationManager.IMPORTANCE_LOW))
-        }
+        val nm = ensureChannel(ctx, CHANNEL, "Camera database", NotificationManager.IMPORTANCE_LOW)
         nm.notify(30_001, NotificationCompat.Builder(ctx, CHANNEL).setSmallIcon(R.drawable.ic_action_report)
             .setContentTitle(title).setContentText(text).setStyle(NotificationCompat.BigTextStyle().bigText(text)).build())
     }
@@ -313,7 +305,7 @@ class ReportSubmitWorker @AssistedInject constructor(
             WorkManager.getInstance(context).enqueueUniqueWork(
                 "pgw-report-submit", ExistingWorkPolicy.APPEND_OR_REPLACE,
                 OneTimeWorkRequestBuilder<ReportSubmitWorker>()
-                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                    .setConstraints(network().build())
                     .setBackoffCriteria(BackoffPolicy.LINEAR, 2, TimeUnit.MINUTES)
                     .build(),
             )

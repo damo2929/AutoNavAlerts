@@ -12,6 +12,7 @@ import com.google.android.libraries.navigation.CustomRoutesOptions
 import com.google.android.libraries.navigation.NavigationUpdatesOptions
 import com.google.android.libraries.navigation.Navigator
 import com.google.android.libraries.navigation.RoadSnappedLocationProvider
+import com.google.android.libraries.navigation.RouteDescriptionLoadCallback
 import com.google.android.libraries.navigation.RoutingOptions
 import com.google.android.libraries.navigation.SimulationOptions
 import com.google.android.libraries.navigation.Waypoint
@@ -55,7 +56,7 @@ data class RouteChoice(val label: String, val route: EcoRoutes.Route, val effici
  * The SDK's single route as the preview shows it (DESIGN.md §8): [seconds] and [meters] from
  * `currentTimeAndDistance`, [delaySeverity] the SDK's own traffic level for the row.
  */
-data class RouteOption(val index: Int, val seconds: Int, val meters: Int, val delaySeverity: Int)
+data class RouteOption(val seconds: Int, val meters: Int, val delaySeverity: Int)
 
 /**
  * Who ended guidance (DESIGN.md §9.3): every stop is logged with its caller so a route that
@@ -257,10 +258,7 @@ class GuidanceController @Inject constructor(
         return if (status == Navigator.RouteStatus.OK) {
             _destination.value = dest
             refreshRoutePoints(nav)
-            state = state.previewing(
-                choices = maxOf(1, _choices.value.size), selectedIndex = _selected.value,
-                selectedEfficient = _choices.value.getOrNull(_selected.value)?.efficient == true, routeNote = _routeNote.value,
-            )
+            state = state.previewing().withChoices(_choices.value, _selected.value, _routeNote.value)
             null
         } else {
             "No route: ${status.name.lowercase().replace('_', ' ')}"
@@ -322,15 +320,30 @@ class GuidanceController @Inject constructor(
 
     /** The SDK's own route with the tolls option; every status is logged (DESIGN.md §15.5). */
     private suspend fun plainRoute(nav: Navigator, waypoint: Waypoint, why: String): Navigator.RouteStatus {
+        val options = RoutingOptions().avoidTolls(settings.current().avoidTolls)
+        return setDest(nav, waypoint, why) { wps, done -> nav.setDestinations(wps, options, done) }
+    }
+
+    /**
+     * One `setDestinations` request to [waypoint], made by [request] (the SDK's own routing or a Routes
+     * API token), awaited and logged with its status, time and point count ([logRouteStatus], §15.5).
+     * Cancelled while it runs (Back on the preview), it clears the route the SDK may still set ([clearIfNotGuiding]).
+     */
+    private suspend fun setDest(nav: Navigator, waypoint: Waypoint, why: String, request: (List<Waypoint>, RouteDescriptionLoadCallback) -> Unit): Navigator.RouteStatus {
         val t0 = SystemClock.elapsedRealtime()
-        val tolls = settings.current().avoidTolls
         val status = suspendCancellableCoroutine { cont ->
             cont.invokeOnCancellation { clearIfNotGuiding(nav) }
-            nav.setDestinations(listOf(waypoint), RoutingOptions().avoidTolls(tolls)) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
+            request(listOf(waypoint)) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
         }
         logRouteStatus(nav, status, t0, why)
         return status
     }
+
+    /** [state] with the preview's routes (§8.3a): how many, which is set, whether that is the energy-efficient one, and the note. */
+    private fun GuidanceState.withChoices(choices: List<RouteChoice>, selected: Int, note: String?) = copy(
+        choices = maxOf(1, choices.size), selectedIndex = selected,
+        selectedEfficient = choices.getOrNull(selected)?.efficient == true, routeNote = note,
+    )
 
     /**
      * The preview was left (Back) while its route was still being worked out: the SDK may still set
@@ -365,13 +378,8 @@ class GuidanceController @Inject constructor(
      * token is remembered in [state] so the re-ask applies only a token that differs from it.
      */
     private suspend fun setToken(nav: Navigator, waypoint: Waypoint, token: String, why: String): Navigator.RouteStatus {
-        val t0 = SystemClock.elapsedRealtime()
         val options = CustomRoutesOptions.Builder().setRouteToken(token).setTravelMode(CustomRoutesOptions.TravelMode.DRIVING).build()
-        val status = suspendCancellableCoroutine { cont ->
-            cont.invokeOnCancellation { clearIfNotGuiding(nav) }
-            nav.setDestinations(listOf(waypoint), options) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
-        }
-        logRouteStatus(nav, status, t0, "token $why")
+        val status = setDest(nav, waypoint, "token $why") { wps, done -> nav.setDestinations(wps, options, done) }
         if (status == Navigator.RouteStatus.OK) state = state.tokenApplied(token)
         return status
     }
@@ -397,7 +405,7 @@ class GuidanceController @Inject constructor(
     fun currentRoute(): RouteOption? {
         val nav = holder.navigator.value ?: return null
         val td = nav.currentTimeAndDistance ?: return null
-        return RouteOption(0, td.seconds, td.meters, td.delaySeverity)
+        return RouteOption(td.seconds, td.meters, td.delaySeverity)
     }
 
     /**
@@ -509,10 +517,7 @@ class GuidanceController @Inject constructor(
         _choices.value = g.choices
         _selected.value = g.selected
         _routeNote.value = g.routeNote
-        state = state.copy(
-            selectedIndex = g.selected, choices = maxOf(1, g.choices.size),
-            selectedEfficient = g.choices.getOrNull(g.selected)?.efficient == true, routeNote = g.routeNote,
-        )
+        state = state.withChoices(g.choices, g.selected, g.routeNote)
         log("preview abandoned (restored guided route) dest=${g.destination?.title ?: "-"} token=${g.token != null}")
         val nav = holder.navigator.value ?: return
         App.appScope.launch(Dispatchers.Main) {

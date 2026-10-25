@@ -115,7 +115,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
     private fun findProject(api: Api): JSONObject? {
         val r = api.get("$CRM/projects:search?query=" + java.net.URLEncoder.encode("labels.$LABEL_KEY:$LABEL_VALUE", "UTF-8"))
         val list = r.optJSONArray("projects") ?: return null
-        return (0 until list.length()).map { list.getJSONObject(it) }.firstOrNull { it.optString("state") == "ACTIVE" }
+        return list.objects().firstOrNull { it.optString("state") == "ACTIVE" }
     }
 
     /** Creates `autonavalerts-<6 random chars>` named "AutoNavAlerts" with the label, waits for the operation, then reads it back (§13.1 "Create project"). */
@@ -142,7 +142,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         if (info.optBoolean("billingEnabled")) return
         val account = chosen ?: run {
             val list = api.get("$BILLING/billingAccounts").optJSONArray("billingAccounts") ?: JSONArray()
-            val open = (0 until list.length()).map { list.getJSONObject(it) }.filter { it.optBoolean("open") }
+            val open = list.objects().filter { it.optBoolean("open") }
                 .map { BillingAccount(it.getString("name"), it.optString("displayName", it.getString("name"))) }
             when (open.size) {
                 0 -> throw Stop.NoBilling()
@@ -162,9 +162,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         var page: String? = null
         do {
             val r = api.get("$SERVICE_USAGE/projects/$projectNumber/services?pageSize=200" + (page?.let { "&pageToken=$it" } ?: ""))
-            val list = r.optJSONArray("services") ?: JSONArray()
-            for (i in 0 until list.length()) {
-                val s = list.getJSONObject(i)
+            for (s in (r.optJSONArray("services") ?: JSONArray()).objects()) {
                 if (s.optJSONObject("config")?.optString("title").equals("Navigation SDK", ignoreCase = true)) {
                     return s.getJSONObject("config").getString("name")
                 }
@@ -180,7 +178,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         try {
             val op = api.post("$SERVICE_USAGE/projects/$projectNumber/services:batchEnable",
                 JSONObject().put("serviceIds", JSONArray(services)))
-            if (!op.optBoolean("done")) api.waitFor("$SERVICE_USAGE/${op.getString("name")}")
+            api.finish(op, SERVICE_USAGE)
         } catch (e: Stop.Refused) {
             // Usually terms to accept or access to request: send the user to the project's API library.
             throw Stop.Refused(e.message.orEmpty(), "https://console.cloud.google.com/apis/library?project=$projectId")
@@ -195,8 +193,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
     /** An existing key with our display name, skipping deleted ones (they linger with a `deleteTime`), or null. */
     private fun findKey(api: Api, projectNumber: String): String? {
         val list = api.get("$API_KEYS/projects/$projectNumber/locations/global/keys").optJSONArray("keys") ?: return null
-        return (0 until list.length()).map { list.getJSONObject(it) }
-            .firstOrNull { it.optString("displayName") == keyDisplayName && !it.has("deleteTime") }?.getString("name")
+        return list.objects().firstOrNull { it.optString("displayName") == keyDisplayName && !it.has("deleteTime") }?.getString("name")
     }
 
     /**
@@ -210,8 +207,7 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
             .put("apiTargets", JSONArray(services.map { JSONObject().put("service", it) }))
         val body = JSONObject().put("displayName", keyDisplayName).put("restrictions", restrictions)
         val op = api.post("$API_KEYS/projects/$projectNumber/locations/global/keys", body)
-        val done = if (op.optBoolean("done")) op else api.waitFor("$API_KEYS/${op.getString("name")}")
-        return done.getJSONObject("response").getString("name")
+        return api.finish(op, API_KEYS).getJSONObject("response").getString("name")
     }
 
     /** An existing key gets any API it lacks (e.g. the Routes API added in 2026-10). */
@@ -219,23 +215,29 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         val key = api.get("$API_KEYS/$keyName")
         val restrictions = key.optJSONObject("restrictions") ?: JSONObject()
         val targets = restrictions.optJSONArray("apiTargets") ?: JSONArray()
-        val have = (0 until targets.length()).map { targets.getJSONObject(it).optString("service") }.toSet()
+        val have = targets.objects().map { it.optString("service") }.toSet()
         val missing = services.filter { it !in have }
         if (missing.isEmpty()) return
         missing.forEach { targets.put(JSONObject().put("service", it)) }
         restrictions.put("apiTargets", targets)
         val op = api.patch("$API_KEYS/$keyName?updateMask=restrictions", JSONObject().put("restrictions", restrictions))
-        if (!op.optBoolean("done")) api.waitFor("$API_KEYS/${op.getString("name")}")
+        api.finish(op, API_KEYS)
     }
 
     // --- HTTP ------------------------------------------------------------------------------------
 
+    /** The objects of a JSON array, in order. */
+    private fun JSONArray.objects(): List<JSONObject> = (0 until length()).map { getJSONObject(it) }
+
     /** The REST calls with `Authorization: Bearer <token>`; every reply is parsed as JSON and every error becomes a [Stop.Refused]. */
     private inner class Api(private val token: String) {
-        fun get(url: String) = call(Request.Builder().url(url).get())
-        fun post(url: String, body: JSONObject) = call(Request.Builder().url(url).post(body.toString().toRequestBody(json)))
-        fun put(url: String, body: JSONObject) = call(Request.Builder().url(url).put(body.toString().toRequestBody(json)))
-        fun patch(url: String, body: JSONObject) = call(Request.Builder().url(url).patch(body.toString().toRequestBody(json)))
+        fun get(url: String) = send("GET", url)
+        fun post(url: String, body: JSONObject) = send("POST", url, body)
+        fun put(url: String, body: JSONObject) = send("PUT", url, body)
+        fun patch(url: String, body: JSONObject) = send("PATCH", url, body)
+
+        /** The finished operation: [op] itself when it came back done, else polled at `<base>/<op name>` with [waitFor]. */
+        suspend fun finish(op: JSONObject, base: String): JSONObject = if (op.optBoolean("done")) op else waitFor("$base/${op.getString("name")}")
 
         /** Polls a long-running operation every 2 s, up to 60 times (about 2 minutes, §13.1); an operation that finishes with an error stops the run with its message. */
         suspend fun waitFor(opUrl: String): JSONObject {
@@ -250,9 +252,10 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
             throw Stop.Refused("Google Cloud is taking too long. Press Try again in a minute.", null)
         }
 
-        /** Runs the request; a non-2xx reply becomes [Stop.Refused] with Google's own message and, when its details carry one, a help link (§13.1 "Error messages"). */
-        private fun call(b: Request.Builder): JSONObject {
-            http.newCall(b.header("Authorization", "Bearer $token").build()).execute().use { r ->
+        /** Runs one request ([body] as JSON for POST, PUT and PATCH); a non-2xx reply becomes [Stop.Refused] with Google's own message and, when its details carry one, a help link (§13.1 "Error messages"). */
+        private fun send(method: String, url: String, body: JSONObject? = null): JSONObject {
+            val request = Request.Builder().url(url).method(method, body?.toString()?.toRequestBody(json)).header("Authorization", "Bearer $token").build()
+            http.newCall(request).execute().use { r ->
                 val text = r.body.string()
                 if (r.isSuccessful) return if (text.isBlank()) JSONObject() else JSONObject(text)
                 val err = runCatching { JSONObject(text).getJSONObject("error") }.getOrNull()
@@ -264,8 +267,8 @@ class MapsKeyCreator @Inject constructor(@ApplicationContext private val context
         /** Google's error details often carry a link to the page that fixes the problem. */
         private fun helpUrl(err: JSONObject?): String? {
             val details = err?.optJSONArray("details") ?: return null
-            for (i in 0 until details.length()) {
-                val links = details.getJSONObject(i).optJSONArray("links") ?: continue
+            for (d in details.objects()) {
+                val links = d.optJSONArray("links") ?: continue
                 if (links.length() > 0) return links.getJSONObject(0).optString("url").ifBlank { null }
             }
             return null

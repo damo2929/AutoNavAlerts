@@ -29,17 +29,18 @@ import kotlinx.coroutines.launch
  * 50 MB cap (an event is recorded and recording stops), buffered and flushed every second on the
  * diag thread.
  *
- * Callers: `start(sessionTag)` when a car session begins, `stop()` when it ends, `record(row)` for
- * each `Location` reaching the location source (phone and car, `used=false` for the ones dropped
- * while the other feed is fresh) and each car speed report. Any thread.
+ * Callers: `start(sessionTag)` when a car session begins, `stop()` when it ends, `record(row)` with
+ * a [DriveLog.RecordedFix] for each `Location` reaching the location source (phone and car,
+ * `used=false` for the ones dropped while the other feed is fresh) and each car speed report. Any
+ * thread.
  *
  * Lifecycle: a Hilt singleton. `NavSession` calls [start] on create and [stop] on destroy;
  * [AdaptiveLocationSource] and [CarDataSource] call [record]; the phone's Diagnostics screen
  * calls [flush], [files] and [latest] for Save and Share. The setting is watched on
  * `App.appScope`. The file is opened, flushed and closed on the diag thread ([EventLog.handler]),
  * never the main thread; [record] writes into the buffer under the lock and is cheap when no
- * file is open. The CSV columns are [DriveLog.HEADER] in `:core`, which the replay parses, so
- * the two can't drift apart.
+ * file is open. The rows are `:core`'s [DriveLog.RecordedFix], written by [DriveLog.format] in
+ * the column order of [DriveLog.HEADER], which the replay parses, so the two can't drift apart.
  */
 @Singleton
 class DriveRecorder @Inject constructor(
@@ -47,48 +48,6 @@ class DriveRecorder @Inject constructor(
     private val eventLog: EventLog,
     settings: SettingsStore,
 ) {
-    /**
-     * One CSV row: kind [DriveLog.KIND_FIX] or [DriveLog.KIND_SPEED], src [DriveLog.SRC_PHONE] /
-     * [DriveLog.SRC_CAR] / [DriveLog.SRC_SIM]. Written by [DriveLog.format], so replay reads exactly
-     * what was recorded (G9/G10).
-     */
-    data class Row(
-        /** Epoch ms when the app saw it (the wall clock, so a recording lines up with the debug logs). */
-        val tMs: Long,
-        /** `fix` or `speed` ([DriveLog.KIND_FIX] / [DriveLog.KIND_SPEED]). */
-        val kind: String,
-        /** Which feed: phone, car or sim. */
-        val src: String,
-        /** Whether the app used it (false for a phone fix dropped while car GPS was fresh). */
-        val used: Boolean,
-        // A fix's own fields as Android gave them: degrees, metres, m/s, degrees true; null when absent.
-        val lat: Double? = null,
-        val lon: Double? = null,
-        val accM: Float? = null,
-        val spdMps: Float? = null,
-        val brgDeg: Float? = null,
-        /** Whether the fix carried a bearing at all (a 0 bearing with hasBrg=false is "none"). */
-        val hasBrg: Boolean = false,
-        val altM: Double? = null,
-        /** The fix's own timestamp (Location.time), as opposed to [tMs] when the app saw it. */
-        val fixTMs: Long? = null,
-        /** What the engine used after the speed/heading rules. */
-        val engSpdMps: Double? = null,
-        val engHdgDeg: Double? = null,
-        val hdgSrc: String? = null,
-        // The car's measured and dial speeds, m/s, when fresh for a fix or the report itself for a speed row.
-        val carRawMps: Double? = null,
-        val carDispMps: Double? = null,
-    ) {
-        /** The row as one CSV line, in the column order of [DriveLog.HEADER]. */
-        fun toCsv(): String = DriveLog.format(
-            DriveLog.RecordedFix(
-                tMs, kind, src, used, lat, lon, accM?.toDouble(), spdMps?.toDouble(), brgDeg?.toDouble(), hasBrg,
-                altM, fixTMs, engSpdMps, engHdgDeg, hdgSrc, carRawMps, carDispMps,
-            ),
-        )
-    }
-
     /** `files/diag/`, shared with the two debug logs. */
     private val dir = File(context.filesDir, "diag")
 
@@ -136,11 +95,11 @@ class DriveRecorder @Inject constructor(
         close("stop")
     }
 
-    /** Appends one row. Cheap when not recording. */
-    fun record(row: Row) {
+    /** Appends one row (a fix or a car speed report, §15.5). Cheap when not recording. */
+    fun record(row: DriveLog.RecordedFix) {
         synchronized(this) {
             val w = writer ?: return
-            val line = row.toCsv()
+            val line = DriveLog.format(row)
             try {
                 w.write(line)
                 w.newLine()

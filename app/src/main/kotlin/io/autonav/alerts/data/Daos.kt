@@ -31,10 +31,6 @@ interface PoiSetDao {
     @Query("SELECT * FROM poi_set WHERE id = :id")
     suspend fun get(id: Long): PoiSetEntity?
 
-    /** Live view of one set. No caller at present. */
-    @Query("SELECT * FROM poi_set WHERE id = :id")
-    fun observe(id: Long): Flow<PoiSetEntity?>
-
     /** Finds the one set of a source: the "My reports" set, `source = REPORT` (`PoiRepository.reportsSetId`, §8.5). */
     @Query("SELECT * FROM poi_set WHERE source = :source AND state = 'ACTIVE' LIMIT 1")
     suspend fun bySource(source: PoiSourceType): PoiSetEntity?
@@ -83,9 +79,6 @@ interface PoiCategoryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(c: PoiCategoryEntity): Long
 
-    /** The set editor's per-category icon, template, alerts and zone-role changes. */
-    @Update
-    suspend fun update(c: PoiCategoryEntity)
 }
 
 /** POIs (DESIGN.md §4.1 `Poi`). The engine never calls these per fix: it reads cells into memory (§4.3). */
@@ -127,44 +120,25 @@ interface PoiDao {
     @Query("UPDATE poi SET hiddenByReport = :hidden WHERE id = :id")
     suspend fun setHidden(id: Long, hidden: Boolean)
 
-    /** Live count for a set, where `poiCount` on the set might be stale. */
-    @Query("SELECT COUNT(*) FROM poi WHERE setId = :setId")
-    suspend fun count(setId: Long): Int
-
     /** Drops expired reported mobile sites (24 h, §8.5); run at startup by `PoiRepository.purgeExpired`. */
     @Query("DELETE FROM poi WHERE expiresAt IS NOT NULL AND expiresAt <= :now")
     suspend fun deleteExpired(now: Long)
-
-    /** A few POIs of a set for the phone's map preview (§13 item 5: 50 samples with their direction arrows). */
-    @Query("SELECT * FROM poi WHERE setId = :setId LIMIT :limit")
-    suspend fun sample(setId: Long, limit: Int): List<PoiEntity>
 }
 
 /** Recents and favourites (DESIGN.md §8.2). Called through `PlacesSearch`. */
 @Dao
 interface PlaceDao {
     /**
-     * The search's empty state and the phone's Places screen: favourites first, then recents, newest first (§8.2).
-     * The HOME/WORK cases in the ordering are left over from before DB v8 removed those kinds (§8.2a); no row has them now.
+     * The search's empty state and the phone's Places screen: favourites first, then recents, newest first (§8.2;
+     * `PlacesSearch.recents`). The HOME/WORK cases in the ordering are left over from before DB v8 removed those
+     * kinds (§8.2a); no row has them now.
      */
-    @Query("SELECT * FROM place ORDER BY CASE kind WHEN 'HOME' THEN 0 WHEN 'WORK' THEN 1 WHEN 'FAVOURITE' THEN 2 ELSE 3 END, lastUsedAt DESC LIMIT :limit")
-    fun observe(limit: Int = 50): Flow<List<PlaceEntity>>
-
-    /** One-off read in the same order as [observe] (`PlacesSearch.recents`). */
     @Query("SELECT * FROM place ORDER BY CASE kind WHEN 'HOME' THEN 0 WHEN 'WORK' THEN 1 WHEN 'FAVOURITE' THEN 2 ELSE 3 END, lastUsedAt DESC LIMIT :limit")
     suspend fun list(limit: Int = 50): List<PlaceEntity>
 
     /** The dedupe lookup when a destination is remembered: same Google Place ID, same row (§8.2). */
     @Query("SELECT * FROM place WHERE placeId = :placeId LIMIT 1")
     suspend fun byPlaceId(placeId: String): PlaceEntity?
-
-    /** Newest place of a kind. Left over from Home/Work (§8.2a); no caller at present. */
-    @Query("SELECT * FROM place WHERE kind = :kind ORDER BY lastUsedAt DESC LIMIT 1")
-    suspend fun byKind(kind: PlaceKind): PlaceEntity?
-
-    /** Deletes every place of a kind. Left over from Home/Work (§8.2a); no caller at present. */
-    @Query("DELETE FROM place WHERE kind = :kind")
-    suspend fun deleteKind(kind: PlaceKind)
 
     /** A new recent, or a deleted row put back by Undo (`PlacesSearch.restore`). */
     @Insert

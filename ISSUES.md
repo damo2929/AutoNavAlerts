@@ -22,6 +22,9 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 22
 | D2 | Our POI alerts in the host's turn card: no custom field exists; car `Alert` + heads-up is the fallback | DESIGN §16 row 3 |
 | D3 | Submitting camera reports to PocketGPSWorld automatically: the camera-ID lookup endpoint, the success text and whether automated sending is allowed are unknown; review-first with "Open in browser" meanwhile | DESIGN §16 row 19 |
 | D4 | Camera alerts in the cluster's media card: unknown whether the cluster takes a `MediaSession` from a non-media app | DESIGN §16 row 27 |
+| D5 | `StopReason.SESSION_DESTROY` is never raised (the enum keeps it, DESIGN §9.3 says "unused"): remove it, or make `NavSession.onDestroy` stop guidance with it? | DESIGN §9.3, §15.5; GuidanceController |
+| D6 | Favourites can no longer be created: `PlacesSearch.setKind`/`restore` have no callers since the car's place detail lost its Favourite action (ISSUES N9); `FAVOURITE` rows only come from older data. Bring the action back, or drop the kind? | DESIGN §8.2; PlacesSearch, ListScreens |
+| D7 | `DiagnosticsSnapshot` is a one-implementation interface over `AlertCoordinator.snapshot()`, injected only by the phone's Diagnostics card; inject the coordinator (lazily) instead? Left as is in the reuse pass | DESIGN §15.5; DiagFiles |
 
 ## 3. Not yet verified
 
@@ -33,6 +36,7 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 22
 | V2 | No-shake burst (U2) after tonight's view changes, on the road map while parked | TESTING U2 |
 | V3 | The in-car checklist rows not yet ticked: media ducking and split screen, one-tap Report with a voice comment, car speed and car GPS from the DHU sensors, recents delete, swipe-to-delete and the set editor rename | CHECKPOINT §4; TESTING §6 |
 | V4 | A fresh install with no key: the car screen asks for the key, no crash; terms accepted once survive an update | TESTING S5, S6; CHECKPOINT §4 items 1–2 |
+| V5 | **The reuse pass of 2026-10-25 on the car screen** (the three right-hand buttons now share a `MapButton` base; the car templates are built through `CarUi` helpers; `MapSurface` overlays laid out through `updateLayoutParams`): DHU screenshots in free drive and guidance, day and night (U1), taps on each button logged `tap x,y hit=…`, the More-screen burst (U2), and the `wrong-way`/`bend-camera` scenarios. Not run: the PC used had no Android Auto on its emulator (the stub only) and no Maps key; the phone tabs were compared instead | TESTING U1, U2, A17, A18 |
 
 ### In the car (real drive)
 

@@ -6,9 +6,6 @@ package io.autonav.alerts.settings
 import android.content.Context
 import android.net.Uri
 import io.autonav.alerts.BuildConfig
-import io.autonav.alerts.core.alerts.DistanceMode
-import io.autonav.alerts.core.alerts.Units
-import io.autonav.alerts.core.pgw.PgwDownload
 import io.autonav.alerts.data.IconRepository
 import io.autonav.alerts.data.PoiRepository
 import io.autonav.alerts.data.PoiSetEntity
@@ -44,23 +41,7 @@ class SettingsBackup @Inject constructor(
             .put("createdAt", Instant.now().toString())
             .put("appVersion", BuildConfig.VERSION_NAME)
             .put("package", BuildConfig.APPLICATION_ID)
-            .put("settings", JSONObject()
-                .put("units", s.units.name)
-                .put("voiceOn", s.voiceOn)
-                .put("chimeOn", s.chimeOn)
-                .put("overspeedPct", s.overspeedPct)
-                .put("alertLeadSeconds", s.alertLeadSeconds)
-                .put("announceLimitChanges", s.announceLimitChanges)
-                .put("speedSource", s.speedSource.name)
-                .put("speedPanelOn", s.speedPanelOn)
-                .put("satelliteMap", s.satelliteMap)
-                .put("evEfficientRoutes", s.evEfficientRoutes)
-                .put("avoidTolls", s.avoidTolls)
-                .put("osmLimitsOn", s.osmLimitsOn)
-                .put("osmWifiOnly", s.osmWifiOnly)
-                .put("pgwAutoSync", s.pgwAutoSync)
-                .put("pgwWifiOnly", s.pgwWifiOnly)
-                .put("pgwDownload", s.pgwDownload.name))
+            .put("settings", settingsJson(s))
         // Secrets are decrypted only here, to write this file (§13.4 "Plain text, with a warning"); unset ones are left out.
         val secrets = JSONObject()
         settings.mapsApiKey()?.let { secrets.put("mapsApiKey", it) }
@@ -78,30 +59,6 @@ class SettingsBackup @Inject constructor(
         val out = context.contentResolver.openOutputStream(uri, "wt") ?: error("Couldn't open the file")
         out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
     }
-
-    /** One active set's own settings, keyed by name because set ids change on every download (§13.4 `poiSets`). No POIs. */
-    private fun setJson(set: PoiSetEntity) = JSONObject()
-        .put("name", set.name)
-        .put("source", set.source.name)
-        .put("enabled", set.enabled)
-        .put("showOnMap", set.showOnMap)
-        .put("alertsEnabled", set.alertsEnabled)
-        .put("soundEnabled", set.soundEnabled)
-        .put("icon", set.defaultIconId)
-        .put("minZoom", set.minZoom.toDouble())
-        .put("templates", JSONObject()
-            .put("first", set.firstTemplate)
-            .put("second", set.secondTemplate)
-            .put("passing", set.passingTemplate))
-        .put("firstAlert", stageJson(set.firstAlert))
-        .put("secondAlert", stageJson(set.secondAlert))
-
-    /** One alert stage as stored (§11.1); `seconds` is written as JSON null when unset. */
-    private fun stageJson(s: StageCols) = JSONObject()
-        .put("enabled", s.enabled)
-        .put("mode", s.mode.name)
-        .put("metres", s.metres)
-        .put("seconds", s.seconds ?: JSONObject.NULL)
 
     // --- Restore (DESIGN.md §13.4) ------------------------------------------------------------
 
@@ -129,15 +86,15 @@ class SettingsBackup @Inject constructor(
     /** Checks the file and says what's in it for the confirm dialog (§13.4 step 3). Throws [BadBackup] if it isn't one of ours. Changes nothing. */
     suspend fun preview(text: String): Preview {
         val root = parse(text)
-        val secrets = root.optJSONObject("secrets")
+        val secrets = Secrets(root)
         val names = setNames(root)
         val here = pois.sets().values.map { it.name }.toSet()
         return Preview(
             text = text,
             createdAt = root.optString("createdAt").takeIf { it.isNotEmpty() },
             appVersion = root.optString("appVersion").takeIf { it.isNotEmpty() },
-            hasMapsKey = !secrets?.optString("mapsApiKey").isNullOrBlank(),
-            pgwUser = secrets?.optString("pgwUsername")?.takeIf { it.isNotBlank() && !secrets.optString("pgwPassword").isNullOrEmpty() },
+            hasMapsKey = secrets.mapsKey != null,
+            pgwUser = secrets.pgwUser?.takeIf { secrets.pgwPass != null },
             sets = names.size,
             matchingSets = names.count { it in here },
         )
@@ -154,11 +111,11 @@ class SettingsBackup @Inject constructor(
         val root = parse(text)
         val restoredSettings = root.optJSONObject("settings")?.let { j -> settings.update { applySettings(it, j) }; true } ?: false
 
-        val secrets = root.optJSONObject("secrets")
-        val key = secrets?.optString("mapsApiKey")?.takeIf { it.isNotBlank() }
+        val secrets = Secrets(root)
+        val key = secrets.mapsKey
         key?.let { settings.setMapsApiKey(it) }
-        val user = secrets?.optString("pgwUsername")?.takeIf { it.isNotBlank() }
-        val pass = secrets?.optString("pgwPassword")?.takeIf { it.isNotEmpty() }
+        val user = secrets.pgwUser
+        val pass = secrets.pgwPass
         // Saving the login also clears the PGW session cookies, so the next download logs in afresh (§13.4).
         if (user != null && pass != null) settings.setPgwCredentials(user, pass)
 
@@ -189,75 +146,89 @@ class SettingsBackup @Inject constructor(
         return root
     }
 
+    /** The file's `secrets` (§13.4): each null when absent or blank, so a missing one never removes the current value. */
+    private class Secrets(root: JSONObject) {
+        private val j = root.optJSONObject("secrets")
+        val mapsKey = j?.optString("mapsApiKey")?.takeIf { it.isNotBlank() }
+        val pgwUser = j?.optString("pgwUsername")?.takeIf { it.isNotBlank() }
+        val pgwPass = j?.optString("pgwPassword")?.takeIf { it.isNotEmpty() }
+    }
+
     /** The set names in the file, for the preview's match count. */
     private fun setNames(root: JSONObject): List<String> {
         val arr = root.optJSONArray("poiSets") ?: return emptyList()
         return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.optString("name")?.takeIf(String::isNotEmpty) }
     }
 
-    /**
-     * Each value replaces the current one; a missing or unreadable value (unknown enum name, non-number) keeps
-     * it, so a hand-edited or older file still restores what it can; numbers are clamped as `SettingsStore` does (§13.4 step 4).
-     */
-    private fun applySettings(cur: AppSettings, j: JSONObject): AppSettings {
-        fun bool(k: String, d: Boolean) = if (j.has(k) && !j.isNull(k)) j.optBoolean(k, d) else d
-        fun num(o: JSONObject, k: String) = o.optDouble(k).takeIf { !it.isNaN() }
-        return cur.copy(
-            units = j.optString("units").let { n -> Units.entries.firstOrNull { it.name == n } } ?: cur.units,
-            voiceOn = bool("voiceOn", cur.voiceOn),
-            chimeOn = bool("chimeOn", cur.chimeOn),
-            overspeedPct = (num(j, "overspeedPct") ?: cur.overspeedPct).coerceIn(-0.05, 0.20),
-            alertLeadSeconds = (num(j, "alertLeadSeconds")?.toInt() ?: cur.alertLeadSeconds).coerceIn(MIN_ALERT_LEAD_SECONDS, MAX_ALERT_LEAD_SECONDS),
-            announceLimitChanges = bool("announceLimitChanges", cur.announceLimitChanges),
-            speedSource = j.optString("speedSource").let { n -> SpeedSource.entries.firstOrNull { it.name == n } } ?: cur.speedSource,
-            speedPanelOn = bool("speedPanelOn", cur.speedPanelOn),
-            satelliteMap = bool("satelliteMap", cur.satelliteMap),
-            osmLimitsOn = bool("osmLimitsOn", cur.osmLimitsOn),
-            evEfficientRoutes = bool("evEfficientRoutes", cur.evEfficientRoutes),
-            avoidTolls = bool("avoidTolls", cur.avoidTolls),
-            osmWifiOnly = bool("osmWifiOnly", cur.osmWifiOnly),
-            pgwAutoSync = bool("pgwAutoSync", cur.pgwAutoSync),
-            pgwWifiOnly = bool("pgwWifiOnly", cur.pgwWifiOnly),
-            pgwDownload = j.optString("pgwDownload").let { n -> PgwDownload.entries.firstOrNull { it.name == n } } ?: cur.pgwDownload,
-        )
-    }
-
-    /** A matched set takes the file's switches, templates, stages, zoom and (if it exists here) icon (§13.4 step 4 "Camera set settings"). */
-    private fun applySet(set: PoiSetEntity, j: JSONObject, iconIds: Set<String>): PoiSetEntity {
-        fun bool(k: String, d: Boolean) = if (j.has(k) && !j.isNull(k)) j.optBoolean(k, d) else d
-        val t = j.optJSONObject("templates")
-        fun tpl(k: String, d: String) = t?.optString(k)?.takeIf { it.isNotEmpty() } ?: d
-        val first = j.optJSONObject("firstAlert")?.let { stage(it, set.firstAlert) } ?: set.firstAlert
-        val second = j.optJSONObject("secondAlert")?.let { stage(it, set.secondAlert) } ?: set.secondAlert
-        // The same checks as the set editor (§11.1): stages that fail them keep this phone's values.
-        val stagesOk = io.autonav.alerts.data.StageRules.problem(first, second) == null
-        return set.copy(
-            enabled = bool("enabled", set.enabled),
-            showOnMap = bool("showOnMap", set.showOnMap),
-            alertsEnabled = bool("alertsEnabled", set.alertsEnabled),
-            soundEnabled = bool("soundEnabled", set.soundEnabled),
-            defaultIconId = j.optString("icon").takeIf { it in iconIds } ?: set.defaultIconId,
-            minZoom = j.optDouble("minZoom").takeIf { !it.isNaN() && it in 0.0..21.0 }?.toFloat() ?: set.minZoom,
-            firstTemplate = tpl("first", set.firstTemplate),
-            secondTemplate = tpl("second", set.secondTemplate),
-            passingTemplate = tpl("passing", set.passingTemplate),
-            firstAlert = if (stagesOk) first else set.firstAlert,
-            secondAlert = if (stagesOk) second else set.secondAlert,
-        )
-    }
-
-    /** One stage from the file, each field falling back to the phone's; a JSON null `seconds` means none. */
-    private fun stage(j: JSONObject, cur: StageCols) = StageCols(
-        enabled = if (j.has("enabled")) j.optBoolean("enabled", cur.enabled) else cur.enabled,
-        mode = j.optString("mode").let { n -> DistanceMode.entries.firstOrNull { it.name == n } } ?: cur.mode,
-        metres = j.optInt("metres", cur.metres).takeIf { it > 0 } ?: cur.metres,
-        seconds = if (j.has("seconds")) (if (j.isNull("seconds")) null else j.optInt("seconds").takeIf { it > 0 }) else cur.seconds,
-    )
-
     companion object {
         /** The file format this version writes and the highest it reads (§13.4 "format 1"). Bump when a field changes meaning. */
         const val FORMAT = 1
         /** The name offered in the file picker: `autonavalerts-settings-YYYY-MM-DD.json` (§13.4). */
         fun fileName(): String = "autonavalerts-settings-${LocalDate.now()}.json"
+
+        /** The `settings` object of the file (§13.4): every backed-up row of [SETTINGS_FIELDS] by its JSON name, in table order. */
+        internal fun settingsJson(s: AppSettings): JSONObject = JSONObject().also { j -> SETTINGS_FIELDS.forEach { it.backup(j, s) } }
+
+        /** One active set's own settings, keyed by name because set ids change on every download (§13.4 `poiSets`). No POIs. */
+        internal fun setJson(set: PoiSetEntity) = JSONObject()
+            .put("name", set.name)
+            .put("source", set.source.name)
+            .put("enabled", set.enabled)
+            .put("showOnMap", set.showOnMap)
+            .put("alertsEnabled", set.alertsEnabled)
+            .put("soundEnabled", set.soundEnabled)
+            .put("icon", set.defaultIconId)
+            .put("minZoom", set.minZoom.toDouble())
+            .put("templates", JSONObject()
+                .put("first", set.firstTemplate)
+                .put("second", set.secondTemplate)
+                .put("passing", set.passingTemplate))
+            .put("firstAlert", stageJson(set.firstAlert))
+            .put("secondAlert", stageJson(set.secondAlert))
+
+        /** One alert stage as stored (§11.1); `seconds` is written as JSON null when unset. */
+        private fun stageJson(s: StageCols) = JSONObject()
+            .put("enabled", s.enabled)
+            .put("mode", s.mode.name)
+            .put("metres", s.metres)
+            .put("seconds", s.seconds ?: JSONObject.NULL)
+
+        /**
+         * Each value replaces the current one; a missing or unreadable value (unknown enum name, non-number) keeps
+         * it, so a hand-edited or older file still restores what it can; numbers are clamped as `SettingsStore` does
+         * (§13.4 step 4). Row by row of [SETTINGS_FIELDS]; the fields outside the backup are left alone.
+         */
+        internal fun applySettings(cur: AppSettings, j: JSONObject): AppSettings = SETTINGS_FIELDS.fold(cur) { s, f -> f.restore(j, s) }
+
+        /** A matched set takes the file's switches, templates, stages, zoom and (if it exists here) icon (§13.4 step 4 "Camera set settings"). */
+        internal fun applySet(set: PoiSetEntity, j: JSONObject, iconIds: Set<String>): PoiSetEntity {
+            val t = j.optJSONObject("templates")
+            fun tpl(k: String, d: String) = t?.optString(k)?.takeIf { it.isNotEmpty() } ?: d
+            val first = j.optJSONObject("firstAlert")?.let { stage(it, set.firstAlert) } ?: set.firstAlert
+            val second = j.optJSONObject("secondAlert")?.let { stage(it, set.secondAlert) } ?: set.secondAlert
+            // The same checks as the set editor (§11.1): stages that fail them keep this phone's values.
+            val stagesOk = io.autonav.alerts.data.StageRules.problem(first, second) == null
+            return set.copy(
+                enabled = j.optBoolean("enabled", set.enabled),
+                showOnMap = j.optBoolean("showOnMap", set.showOnMap),
+                alertsEnabled = j.optBoolean("alertsEnabled", set.alertsEnabled),
+                soundEnabled = j.optBoolean("soundEnabled", set.soundEnabled),
+                defaultIconId = j.optString("icon").takeIf { it in iconIds } ?: set.defaultIconId,
+                minZoom = j.optDouble("minZoom").takeIf { !it.isNaN() && it in 0.0..21.0 }?.toFloat() ?: set.minZoom,
+                firstTemplate = tpl("first", set.firstTemplate),
+                secondTemplate = tpl("second", set.secondTemplate),
+                passingTemplate = tpl("passing", set.passingTemplate),
+                firstAlert = if (stagesOk) first else set.firstAlert,
+                secondAlert = if (stagesOk) second else set.secondAlert,
+            )
+        }
+
+        /** One stage from the file, each field falling back to the phone's; a JSON null `seconds` means none. */
+        private fun stage(j: JSONObject, cur: StageCols) = StageCols(
+            enabled = if (j.has("enabled")) j.optBoolean("enabled", cur.enabled) else cur.enabled,
+            mode = enumOr(j.optString("mode"), cur.mode),
+            metres = j.optInt("metres", cur.metres).takeIf { it > 0 } ?: cur.metres,
+            seconds = if (j.has("seconds")) (if (j.isNull("seconds")) null else j.optInt("seconds").takeIf { it > 0 }) else cur.seconds,
+        )
     }
 }

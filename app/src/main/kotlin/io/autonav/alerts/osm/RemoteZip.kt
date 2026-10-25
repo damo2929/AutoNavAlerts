@@ -22,9 +22,9 @@ import java.util.zip.InflaterInputStream
  * `HttpURLConnection`: used only by `SpeedLimitWorker` on Dispatchers.IO. Nothing is cached in memory
  * beyond the central directory (§1.3 Memory). Plain zip and ZIP64 are both read.
  */
-class RemoteZip private constructor(val url: String, val size: Long, private val entries: Map<String, Entry>) {
-    /** One central-directory record: [method] 0 stored or 8 deflate; [compressed] and [size] in bytes; [headerOffset] of the local file header. */
-    data class Entry(val name: String, val method: Int, val compressed: Long, val size: Long, val headerOffset: Long)
+class RemoteZip private constructor(val url: String, private val entries: Map<String, Entry>) {
+    /** One central-directory record: [method] 0 stored or 8 deflate; [compressed] bytes; [headerOffset] of the local file header. */
+    data class Entry(val name: String, val method: Int, val compressed: Long, val headerOffset: Long)
 
     /** The entry by its full name inside the zip, or null. */
     fun entry(name: String): Entry? = entries[name]
@@ -131,7 +131,8 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
                 var q = p + 46 + n
                 val extraEnd = q + e
                 // Extra field id 1 is the ZIP64 record: it holds, in order, any of the uncompressed size,
-                // compressed size and offset whose 32-bit field above is the 0xffffffff placeholder.
+                // compressed size and offset whose 32-bit field above is the 0xffffffff placeholder (the
+                // uncompressed size is read only to step past it).
                 while (q + 4 <= extraEnd) { // ZIP64 sizes and offset
                     val id = b.getShort(q).toInt() and 0xffff
                     val len = b.getShort(q + 2).toInt() and 0xffff
@@ -143,10 +144,10 @@ class RemoteZip private constructor(val url: String, val size: Long, private val
                     }
                     q += 4 + len
                 }
-                entries[name] = Entry(name, method, comp, unc, off)
+                entries[name] = Entry(name, method, comp, off)
                 p += 46 + n + e + c
             }
-            return RemoteZip(url, size, entries)
+            return RemoteZip(url, entries)
         }
 
         /** The last occurrence of a little-endian signature in [bytes]: the end records sit at the very end, after any comment. */

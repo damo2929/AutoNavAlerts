@@ -8,7 +8,6 @@ import androidx.car.app.Screen
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.CarText
-import androidx.car.app.model.Header
 import android.text.SpannableString
 import android.text.Spanned
 import androidx.car.app.model.DistanceSpan
@@ -94,8 +93,8 @@ class RoutePreviewScreen(
 
     /** Leaving for good: without Go, the preview is abandoned (the route goes, or the guided one is put back). */
     override fun onDestroy(owner: LifecycleOwner) {
-        session.surface.previewShowing = false
-        if (showing === this) showing = null
+        // Hidden for good: the same stand-down as onStop.
+        onStop(owner)
         // Back, or the session ending, without Go: the preview's route goes; while guiding, the
         // guided route is put back (DESIGN.md §8, owner 2026-10-13).
         if (!started) deps.guidance().abandonPreview()
@@ -106,19 +105,10 @@ class RoutePreviewScreen(
      * one row (the SDK's route) or the fastest / energy-efficient pair (§8.3a) and Go.
      */
     override fun onGetTemplate(): Template {
-        error?.let { msg ->
-            return MessageTemplate.Builder(msg)
-                .setHeader(Header.Builder().setTitle(destination.title).setStartHeaderAction(Action.BACK).build())
-                .addAction(CarUi.textAction("Back") { screenManager.pop() })
-                .build()
-        }
-        val header = Header.Builder().setTitle(destination.title).setStartHeaderAction(Action.BACK).build()
-        val b = RoutePreviewNavigationTemplate.Builder().setHeader(header)
+        error?.let { return message(it) }
+        val b = RoutePreviewNavigationTemplate.Builder().setHeader(CarUi.header(destination.title))
         if (loading) return b.setLoading(true).build()
-        val r = route ?: return MessageTemplate.Builder("Couldn't find a route there")
-            .setHeader(header)
-            .addAction(CarUi.textAction("Back") { screenManager.pop() })
-            .build()
+        val r = route ?: return message("Couldn't find a route there")
         val items = ItemList.Builder()
         val choices = deps.guidance().choices.value
         if (choices.isEmpty()) {
@@ -164,6 +154,10 @@ class RoutePreviewScreen(
         return b.build()
     }
 
+    /** [text] under the destination's header with a Back action: the error, or no route found. */
+    private fun message(text: String): Template =
+        MessageTemplate.Builder(text).setHeader(CarUi.header(destination.title)).addAction(CarUi.textAction("Back") { screenManager.pop() }).build()
+
     /** The host requires a duration or distance span on every route row (it throws otherwise). */
     private fun routeRow(
         seconds: Int, meters: Int, extra: String, icon: androidx.car.app.model.CarIcon? = null, title: String = "", second: String? = null,
@@ -198,19 +192,18 @@ class RoutePreviewScreen(
         val bmp = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
         d.setBounds(0, 0, 96, 96)
         d.draw(android.graphics.Canvas(bmp))
-        return androidx.car.app.model.CarIcon.Builder(androidx.core.graphics.drawable.IconCompat.createWithBitmap(bmp)).build()
+        return CarUi.icon(bmp)
     }
 
     /** First line after the distance: " · heavy traffic +12 min", so the routes can be compared (DESIGN.md §8.3a). */
     private fun routeTraffic(r: io.autonav.alerts.nav.EcoRoutes.Route): String {
         val delay = if (r.delayMinutes > 0) " +${r.delayMinutes} min" else ""
-        val level = when (r.traffic) {
+        return when (r.traffic) {
             io.autonav.alerts.nav.EcoRoutes.Traffic.LIGHT -> " · light traffic$delay"
             io.autonav.alerts.nav.EcoRoutes.Traffic.SOME -> " · some traffic$delay"
             io.autonav.alerts.nav.EcoRoutes.Traffic.HEAVY -> " · heavy traffic$delay"
             io.autonav.alerts.nav.EcoRoutes.Traffic.UNKNOWN -> ""
         }
-        return level
     }
 
     /**

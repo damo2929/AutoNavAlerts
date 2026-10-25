@@ -5,9 +5,7 @@ package io.autonav.alerts.car.screens
 
 import androidx.car.app.CarContext
 import androidx.car.app.Screen
-import androidx.car.app.model.Action
 import androidx.car.app.CarToast
-import androidx.car.app.model.Header
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.MessageTemplate
@@ -22,12 +20,12 @@ import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
 import io.autonav.alerts.alerts.NavTts
 import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.screens.CarUi.toDestination
 import io.autonav.alerts.core.alerts.SpeechScheduler
 import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.data.PlaceEntity
 import io.autonav.alerts.data.PlaceKind
 import io.autonav.alerts.data.PoiSetEntity
-import io.autonav.alerts.nav.Destination
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -112,24 +110,20 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
         val muted = mutedUntil > System.currentTimeMillis()
         val live = liveTexts().also { liveKey = it }
         val list = ItemList.Builder()
-            .addItem(Row.Builder().setTitle("Recents").setImage(CarUi.icon(carContext, R.drawable.ic_action_recents))
-                .setOnClickListener { screenManager.push(RecentsScreen(carContext, session)) }.build())
-            .addItem(Row.Builder().setTitle("POI layers").setImage(CarUi.icon(carContext, R.drawable.ic_action_layers))
-                .setOnClickListener { screenManager.push(PoiLayersScreen(carContext, session)) }.build())
-            .addItem(Row.Builder().setTitle(live[0])
-                .setImage(CarUi.icon(carContext, if (muted) R.drawable.ic_action_volume_on else R.drawable.ic_action_volume_off))
-                .setOnClickListener {
-                    lifecycleScope.launch {
-                        // Mute silences speech only for 30 min; banners and cards still show (§12.3).
-                        val until = if (muted) 0L else System.currentTimeMillis() + 30 * 60_000L
-                        session.deps.settings().update { it.copy(mutedUntilMs = until) }
-                        mutedUntil = until
-                        invalidate()
-                    }
-                }.build())
-            .addItem(Row.Builder().setTitle("Route options").addText("Avoid tolls, energy-efficient EV routes")
-                .setImage(CarUi.icon(carContext, R.drawable.ic_action_navigate))
-                .setOnClickListener { screenManager.push(RouteOptionsScreen(carContext, session)) }.build())
+            .addItem(CarUi.row(carContext, "Recents", R.drawable.ic_action_recents) { screenManager.push(RecentsScreen(carContext, session)) })
+            .addItem(CarUi.row(carContext, "POI layers", R.drawable.ic_action_layers) { screenManager.push(PoiLayersScreen(carContext, session)) })
+            .addItem(CarUi.row(carContext, live[0], if (muted) R.drawable.ic_action_volume_on else R.drawable.ic_action_volume_off) {
+                lifecycleScope.launch {
+                    // Mute silences speech only for 30 min; banners and cards still show (§12.3).
+                    val until = if (muted) 0L else System.currentTimeMillis() + 30 * 60_000L
+                    session.deps.settings().update { it.copy(mutedUntilMs = until) }
+                    mutedUntil = until
+                    invalidate()
+                }
+            })
+            .addItem(CarUi.row(carContext, "Route options", R.drawable.ic_action_navigate, "Avoid tolls, energy-efficient EV routes") {
+                screenManager.push(RouteOptionsScreen(carContext, session))
+            })
             .addItem(Row.Builder().setTitle("Satellite map")
                 .setImage(CarUi.icon(carContext, R.drawable.ic_action_layers))
                 .setToggle(Toggle.Builder { on ->
@@ -141,31 +135,25 @@ class MoreScreen(carContext: CarContext, private val session: NavSession) : Scre
             .apply {
                 // Only appears if the Navigation SDK ever supports reporting on Android Auto (§16 #21).
                 if (session.surface.incidentReportingSupported) addItem(
-                    Row.Builder().setTitle("Report to Google Maps")
-                        .addText(if (session.surface.incidentReportingAvailableNow) "Crash, slowdown, hazard…" else "Available during navigation")
-                        .setImage(CarUi.icon(carContext, R.drawable.ic_action_report))
-                        .setOnClickListener {
-                            screenManager.pop()
-                            if (!session.surface.showIncidentPanel()) {
-                                androidx.car.app.CarToast.makeText(carContext, "Reporting isn't available here right now", androidx.car.app.CarToast.LENGTH_SHORT).show()
-                            }
-                        }.build(),
+                    CarUi.row(
+                        carContext, "Report to Google Maps", R.drawable.ic_action_report,
+                        if (session.surface.incidentReportingAvailableNow) "Crash, slowdown, hazard…" else "Available during navigation",
+                    ) {
+                        screenManager.pop()
+                        if (!session.surface.showIncidentPanel()) {
+                            CarToast.makeText(carContext, "Reporting isn't available here right now", CarToast.LENGTH_SHORT).show()
+                        }
+                    },
                 )
             }
-            .addItem(Row.Builder().setTitle("Alerts")
-                .addText(live[1])
-                .addText(live[2])
-                .setImage(CarUi.icon(carContext, R.drawable.ic_action_volume_on))
-                .setOnClickListener { screenManager.push(AlertsRecordsScreen(carContext, session.deps.tts())) }
-                .build())
+            .addItem(CarUi.row(carContext, "Alerts", R.drawable.ic_action_volume_on, live[1], live[2]) {
+                screenManager.push(AlertsRecordsScreen(carContext, session.deps.tts()))
+            })
             .addItem(Row.Builder().setTitle("GPS")
                 .addText(live[3])
                 .addText(live[4])
                 .build())
-        return ListTemplate.Builder()
-            .setHeader(Header.Builder().setTitle("More").setStartHeaderAction(Action.BACK).build())
-            .setSingleList(list.build())
-            .build()
+        return CarUi.list(CarUi.header("More"), list.build())
     }
 }
 
@@ -184,14 +172,14 @@ class RouteOptionsScreen(carContext: CarContext, private val session: NavSession
 
     /** The two toggles, or a loading template before the settings have been read. */
     override fun onGetTemplate(): Template {
-        val header = Header.Builder().setTitle("Route options").setStartHeaderAction(Action.BACK).build()
-        val s = settings ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
+        val header = CarUi.header("Route options")
+        val s = settings ?: return CarUi.loading(header)
         val list = ItemList.Builder()
             .addItem(Row.Builder().setTitle("Avoid tolls").addText("Where there's a way round")
                 .setToggle(Toggle.Builder { on -> update { it.copy(avoidTolls = on) } }.setChecked(s.avoidTolls).build()).build())
             .addItem(Row.Builder().setTitle("Energy-efficient routes (EV)").addText("Least energy for an electric car")
                 .setToggle(Toggle.Builder { on -> update { it.copy(evEfficientRoutes = on) } }.setChecked(s.evEfficientRoutes).build()).build())
-        return ListTemplate.Builder().setHeader(header).setSingleList(list.build()).build()
+        return CarUi.list(header, list.build())
     }
 
     // Written to the store first, then read back, so the toggle shows what was actually saved.
@@ -235,8 +223,8 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
 
     /** One row per set up to the host's list limit, with its icon, counts and the on/off toggle. */
     override fun onGetTemplate(): Template {
-        val header = Header.Builder().setTitle("POI layers").setStartHeaderAction(Action.BACK).build()
-        val s = sets ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
+        val header = CarUi.header("POI layers")
+        val s = sets ?: return CarUi.loading(header)
         val list = ItemList.Builder()
         if (s.isEmpty()) list.setNoItemsMessage("No POI sets yet. Import or sync on your phone.")
         val limit = CarUi.listLimit(carContext)
@@ -249,7 +237,7 @@ class PoiLayersScreen(carContext: CarContext, private val session: NavSession) :
                     .build(),
             )
         }
-        return ListTemplate.Builder().setHeader(header).setSingleList(list.build()).build()
+        return CarUi.list(header, list.build())
     }
 
     // The local copy is patched rather than re-read, so the toggle doesn't snap back before Room has caught up.
@@ -279,7 +267,6 @@ class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Scr
 
     /** The newest records up to the host's list limit: kind, POI, outcome, time, wait and detail. */
     override fun onGetTemplate(): Template {
-        val header = Header.Builder().setTitle("Alerts").setStartHeaderAction(Action.BACK).build()
         val limit = CarUi.listLimit(carContext)
         val list = ItemList.Builder()
         if (records.isEmpty()) list.setNoItemsMessage("No alerts spoken yet")
@@ -300,9 +287,7 @@ class AlertsRecordsScreen(carContext: CarContext, private val tts: NavTts) : Scr
                     .build(),
             )
         }
-        return ListTemplate.Builder().setHeader(header).setSingleList(list.build())
-            .addAction(CarUi.textAction("Refresh") { records = tts.records.value; invalidate() })
-            .build()
+        return CarUi.list(CarUi.header("Alerts"), list.build(), CarUi.textAction("Refresh") { records = tts.records.value; invalidate() })
     }
 }
 
@@ -331,8 +316,8 @@ class RecentsScreen(carContext: CarContext, private val session: NavSession) : S
 
     /** The rows, a Clear all action when any recent exists, or a loading template before the first load. */
     override fun onGetTemplate(): Template {
-        val header = Header.Builder().setTitle("Recents").setStartHeaderAction(Action.BACK).build()
-        val p = places ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
+        val header = CarUi.header("Recents")
+        val p = places ?: return CarUi.loading(header)
         // Row.addAction needs car API 6 (§8.2 "Deleting from the car screen").
         val rowActions = carContext.carAppApiLevel >= CarAppApiLevels.LEVEL_6
         val list = ItemList.Builder()
@@ -360,7 +345,7 @@ class RecentsScreen(carContext: CarContext, private val session: NavSession) : S
     }
 
     private fun navigate(p: PlaceEntity) {
-        screenManager.push(RoutePreviewScreen(carContext, session, Destination(p.name, p.lat, p.lon, p.placeId)))
+        screenManager.push(RoutePreviewScreen(carContext, session, p.toDestination()))
     }
 
     private fun delete(p: PlaceEntity) {
@@ -388,9 +373,9 @@ class PlaceDetailScreen(
     /** Navigate always; Remove only for a recent (favourites are removed on the phone, §8.2). */
     override fun onGetTemplate(): Template {
         val b = MessageTemplate.Builder(place.address ?: place.name)
-            .setHeader(Header.Builder().setTitle(place.name).setStartHeaderAction(Action.BACK).build())
+            .setHeader(CarUi.header(place.name))
             .addAction(CarUi.textAction("Navigate") {
-                screenManager.push(RoutePreviewScreen(carContext, session, Destination(place.name, place.lat, place.lon, place.placeId)))
+                screenManager.push(RoutePreviewScreen(carContext, session, place.toDestination()))
             })
         if (place.kind == PlaceKind.RECENT) {
             b.addAction(CarUi.textAction("Remove") {
@@ -409,7 +394,7 @@ class PlaceDetailScreen(
 class ConfirmScreen(carContext: CarContext, private val question: String, private val onYes: () -> Unit) : Screen(carContext) {
     /** The question with Yes and No; the header's Back is a No as well. */
     override fun onGetTemplate(): Template = MessageTemplate.Builder(question)
-        .setHeader(Header.Builder().setTitle("Confirm").setStartHeaderAction(Action.BACK).build())
+        .setHeader(CarUi.header("Confirm"))
         .addAction(CarUi.textAction("Yes") { onYes(); screenManager.pop() })
         .addAction(CarUi.textAction("No") { screenManager.pop() })
         .build()

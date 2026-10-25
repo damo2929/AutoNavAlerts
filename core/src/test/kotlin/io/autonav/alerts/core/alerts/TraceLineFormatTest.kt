@@ -1,13 +1,8 @@
 // Copyright 2026 Damien Dye
 // SPDX-License-Identifier: Apache-2.0
 
-package io.autonav.alerts.alerts
+package io.autonav.alerts.core.alerts
 
-import io.autonav.alerts.core.alerts.AlertEvent
-import io.autonav.alerts.core.alerts.AlertKind
-import io.autonav.alerts.core.alerts.ClearReason
-import io.autonav.alerts.core.alerts.Fix
-import io.autonav.alerts.core.alerts.Verdict
 import io.autonav.alerts.core.poi.DirectionType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

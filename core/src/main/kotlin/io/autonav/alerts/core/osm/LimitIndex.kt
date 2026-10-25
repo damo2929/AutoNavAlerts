@@ -5,11 +5,9 @@ package io.autonav.alerts.core.osm
 
 import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.geo.LatLngPoint
-import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sqrt
 
 /**
  * The road pieces of a few tiles around the car, in plain arrays (DESIGN.md §8.4a): ends in
@@ -36,8 +34,8 @@ class LimitIndex private constructor(
     val pieces: Int get() = mph.size
 
     /**
-     * As [OsmSpeedLimits.limitAt]: the nearest piece within 20 m running within 30° of the heading.
-     * With no heading (standing still) the nearest piece within 20 m either way (DESIGN.md §8.4).
+     * The nearest piece within 20 m running within 30° of the heading, either way (DESIGN.md §8.4,
+     * §8.4a "Finding the limit"). With no heading (standing still) the nearest piece within 20 m.
      */
     fun limitAt(lat: Double, lon: Double, headingDeg: Double?): Double? {
         val best = pieceAt(lat, lon, headingDeg) ?: return null
@@ -48,11 +46,12 @@ class LimitIndex private constructor(
     fun pieceAt(lat: Double, lon: Double, headingDeg: Double?): Int? {
         // A flat projection around the fix (metres per degree east, by latitude) is plenty at 20 m scale.
         val h = headingDeg
-        val kx = 111_320.0 * cos(Math.toRadians(lat))
+        val kx = Geo.metresPerDegLon(lat)
         var best = -1
         var bestD = OsmSpeedLimits.MATCH_M
         forEachNear(lat, lon) { p ->
-            val d = distanceM(p, lat, lon, kx)
+            val o = 4 * p
+            val d = Geo.flatDistanceToSegmentM(lat, lon, ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6, kx)
             if (d <= bestD && (h == null || headingFits(p, h))) { best = p; bestD = d }
         }
         return if (best < 0) null else best
@@ -96,7 +95,7 @@ class LimitIndex private constructor(
      * chosen one (a slip easing off, a split, a roundabout exit): either could be the road on. [exclude] is the piece we came along.
      */
     fun joinFrom(lat: Double, lon: Double, headingDeg: Double, exclude: Int = -1): Join? {
-        val kx = 111_320.0 * cos(Math.toRadians(lat))
+        val kx = Geo.metresPerDegLon(lat)
         var best = -1
         var bestDiff = JOIN_DEG
         var bestOut = 0.0
@@ -106,8 +105,8 @@ class LimitIndex private constructor(
         forEachNear(lat, lon) { p ->
             if (p == exclude) return@forEachNear
             val o = 4 * p
-            val dA = pointDistanceM(ends[o], ends[o + 1], lat, lon, kx)
-            val dB = pointDistanceM(ends[o + 2], ends[o + 3], lat, lon, kx)
+            val dA = Geo.flatDistanceM(lat, lon, ends[o] / 1e6, ends[o + 1] / 1e6, kx)
+            val dB = Geo.flatDistanceM(lat, lon, ends[o + 2] / 1e6, ends[o + 3] / 1e6, kx)
             // Which end of the candidate touches the join point says which way we would walk it.
             val forward = when {
                 dA <= JOIN_M && dA <= dB -> true
@@ -143,31 +142,14 @@ class LimitIndex private constructor(
         for (p in wide) fn(p)
     }
 
-    private fun pointDistanceM(latE6: Int, lonE6: Int, lat: Double, lon: Double, kx: Double): Double {
-        val x = (lonE6 / 1e6 - lon) * kx; val y = (latE6 / 1e6 - lat) * KY
-        return sqrt(x * x + y * y)
-    }
-
     private fun lowerBound(key: Long): Int {
         var lo = 0; var hi = cells.size
         while (lo < hi) { val m = (lo + hi) ushr 1; if (cells[m] < key) lo = m + 1 else hi = m }
         return lo
     }
 
-    private fun distanceM(p: Int, lat: Double, lon: Double, kx: Double): Double {
-        val o = 4 * p
-        val ax = (ends[o + 1] / 1e6 - lon) * kx; val ay = (ends[o] / 1e6 - lat) * KY
-        val bx = (ends[o + 3] / 1e6 - lon) * kx; val by = (ends[o + 2] / 1e6 - lat) * KY
-        val dx = bx - ax; val dy = by - ay
-        val len2 = dx * dx + dy * dy
-        val t = if (len2 == 0.0) 0.0 else ((-ax * dx - ay * dy) / len2).coerceIn(0.0, 1.0)
-        val px = ax + t * dx; val py = ay + t * dy
-        return sqrt(px * px + py * py)
-    }
-
     private fun headingFits(p: Int, h: Double): Boolean {
-        val o = 4 * p
-        val b = Geo.bearingDeg(ends[o] / 1e6, ends[o + 1] / 1e6, ends[o + 2] / 1e6, ends[o + 3] / 1e6)
+        val b = bearingOf(p)
         return Geo.absAngleDiffDeg(b, h) <= OsmSpeedLimits.MATCH_DEG || Geo.absAngleDiffDeg(b + 180.0, h) <= OsmSpeedLimits.MATCH_DEG
     }
 
@@ -187,8 +169,6 @@ class LimitIndex private constructor(
 
         // 0.002° cells (about 220 m by 130 m in the UK): a lookup scans the 3×3 block around the fix.
         private const val CELL_DEG = 0.002
-        /** Metres per degree of latitude. */
-        private const val KY = 110_540.0
         private const val IDX_BITS = 26 // up to 67 million pieces
         private const val IDX_MASK = (1L shl IDX_BITS) - 1
         /** A piece spanning more cells than this isn't indexed per cell; it goes in [wide] and is always checked. */

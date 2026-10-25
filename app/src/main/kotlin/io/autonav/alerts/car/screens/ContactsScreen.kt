@@ -4,12 +4,8 @@
 package io.autonav.alerts.car.screens
 
 import androidx.car.app.CarContext
-import androidx.car.app.CarToast
 import androidx.car.app.Screen
-import androidx.car.app.model.Action
-import androidx.car.app.model.Header
 import androidx.car.app.model.ItemList
-import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -18,7 +14,6 @@ import androidx.lifecycle.lifecycleScope
 import io.autonav.alerts.R
 import io.autonav.alerts.car.NavSession
 import io.autonav.alerts.contacts.ContactAddress
-import io.autonav.alerts.contacts.Located
 import kotlinx.coroutines.launch
 
 /**
@@ -58,8 +53,8 @@ class ContactsScreen(carContext: CarContext, private val session: NavSession) : 
 
     /** The list, or a loading template before the first load; the host shows its own spinner for that. */
     override fun onGetTemplate(): Template {
-        val header = Header.Builder().setTitle(carContext.getString(R.string.car_contacts)).setStartHeaderAction(Action.BACK).build()
-        val r = rows ?: return ListTemplate.Builder().setHeader(header).setLoading(true).build()
+        val header = CarUi.header(carContext.getString(R.string.car_contacts))
+        val r = rows ?: return CarUi.loading(header)
         val list = ItemList.Builder()
         if (r.isEmpty()) list.setNoItemsMessage(carContext.getString(R.string.car_no_contacts))
         r.forEach { (c, distance) ->
@@ -71,24 +66,15 @@ class ContactsScreen(carContext: CarContext, private val session: NavSession) : 
                     .build(),
             )
         }
-        list.addItem(
-            Row.Builder().setTitle(carContext.getString(R.string.car_search_contacts))
-                .setImage(CarUi.icon(carContext, R.drawable.ic_action_search))
-                .setOnClickListener { screenManager.push(SearchScreen(carContext, session, contactsOnly = true)) }
-                .build(),
-        )
-        return ListTemplate.Builder().setHeader(header).setSingleList(list.build()).build()
+        list.addItem(CarUi.row(carContext, carContext.getString(R.string.car_search_contacts), R.drawable.ic_action_search) {
+            screenManager.push(SearchScreen(carContext, session, contactsOnly = true))
+        })
+        return CarUi.list(header, list.build())
     }
 
     // Geocoding happens only now, for the one address picked (never the whole address book, §8.3):
     // from the 90-day cache, else one Places Text Search billed to the user's own key.
-    private fun pick(c: ContactAddress) {
-        lifecycleScope.launch {
-            when (val r = deps.contacts().locate(c, deps.location().lastLocation.value)) {
-                is Located.Found -> screenManager.push(RoutePreviewScreen(carContext, session, r.destination.copy(address = r.address)))
-                is Located.Choose -> screenManager.push(SearchScreen(carContext, session, initialQuery = c.name, contactsOnly = true, initialChoice = c to r.options))
-                Located.NotFound -> CarToast.makeText(carContext, carContext.getString(R.string.car_contact_not_found, c.name), CarToast.LENGTH_SHORT).show()
-            }
-        }
+    private fun pick(c: ContactAddress) = CarUi.pickContact(this, session, c) { options ->
+        screenManager.push(SearchScreen(carContext, session, initialQuery = c.name, contactsOnly = true, initialChoice = c to options))
     }
 }
