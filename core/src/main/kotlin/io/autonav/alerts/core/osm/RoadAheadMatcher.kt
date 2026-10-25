@@ -20,7 +20,7 @@ import io.autonav.alerts.core.geo.LatLngLike
  * direction rule (§11 step 3) is untouched by this. Degrees in, metres out.
  */
 class RoadAheadMatcher(private val road: List<LatLngLike>) : RouteMatcher {
-    private val lengthM: Double = (0 until road.size - 1).sumOf { Geo.distanceM(road[it].lat, road[it].lon, road[it + 1].lat, road[it + 1].lon) }
+    private val lengthM: Double = Geo.cumulativeM(road).lastOrNull() ?: 0.0
 
     override fun distanceToRouteM(lat: Double, lon: Double): Double? {
         if (road.size < 2) return null
@@ -28,11 +28,6 @@ class RoadAheadMatcher(private val road: List<LatLngLike>) : RouteMatcher {
         if (Geo.distanceM(road[0].lat, road[0].lon, lat, lon) > lengthM) return null
         // Flat projection around the POI: point-to-segment distance in metres.
         val kx = Geo.metresPerDegLon(lat)
-        var best = Double.MAX_VALUE
-        for (i in 0 until road.size - 1) {
-            val a = road[i]; val b = road[i + 1]
-            best = minOf(best, Geo.flatDistanceToSegmentM(lat, lon, a.lat, a.lon, b.lat, b.lon, kx))
-        }
-        return best
+        return (0 until road.size - 1).minOf { Geo.flatDistanceToSegmentM(lat, lon, road[it].lat, road[it].lon, road[it + 1].lat, road[it + 1].lon, kx) }
     }
 }

@@ -6,6 +6,7 @@ package io.autonav.alerts.data
 import androidx.room.Dao
 import androidx.room.Delete
 import androidx.room.Insert
+import androidx.room.MapColumn
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
@@ -140,11 +141,11 @@ interface PlaceDao {
     @Query("SELECT * FROM place WHERE placeId = :placeId LIMIT 1")
     suspend fun byPlaceId(placeId: String): PlaceEntity?
 
-    /** A new recent, or a deleted row put back by Undo (`PlacesSearch.restore`). */
+    /** A new recent (`PlacesSearch.remember`). */
     @Insert
     suspend fun insert(p: PlaceEntity): Long
 
-    /** Bumps `lastUsedAt`/`useCount` on a repeat visit, or flips RECENT and FAVOURITE (§8.2). */
+    /** Bumps `lastUsedAt`/`useCount` on a repeat visit (§8.2). */
     @Update
     suspend fun update(p: PlaceEntity)
 
@@ -195,6 +196,10 @@ interface ContactGeocodeDao {
     /** Lookup by the address hash; the caller applies the 90-day age limit. `key` is quoted because it is an SQL keyword. */
     @Query("SELECT * FROM contact_geocode WHERE `key` = :key")
     suspend fun get(key: String): ContactGeocodeEntity?
+
+    /** When each address was last located, by its key: orders `ContactsScreen`, most recently located first (`ContactsSource.all`, §8.3). */
+    @Query("SELECT `key`, updatedAt FROM contact_geocode")
+    suspend fun usedAt(): Map<@MapColumn("key") String, @MapColumn("updatedAt") Long>
 
     /** REPLACE: a fresh lookup for the same address overwrites the old entry. */
     @Insert(onConflict = OnConflictStrategy.REPLACE)

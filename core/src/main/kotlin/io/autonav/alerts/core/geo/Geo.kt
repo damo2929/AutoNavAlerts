@@ -60,10 +60,7 @@ object Geo {
     }
 
     /** Normalises any angle to [0, 360). */
-    fun normalizeDeg(deg: Double): Double {
-        val r = deg % 360.0
-        return if (r < 0) r + 360.0 else r
-    }
+    fun normalizeDeg(deg: Double): Double = (deg % 360.0).let { if (it < 0) it + 360.0 else it }
 
     /** Smallest signed difference a − b, in (−180, 180]. */
     fun angleDiffDeg(a: Double, b: Double): Double {
@@ -75,6 +72,15 @@ object Geo {
 
     /** Unsigned difference between two bearings, in [0, 180]: the "within 45°" tests of §11 steps 2 and 3 use this. */
     fun absAngleDiffDeg(a: Double, b: Double): Double = abs(angleDiffDeg(a, b))
+
+    /**
+     * The distance along [points] to each of them, metres (`[0, d₀₁, d₀₁ + d₁₂, …]`), summed point
+     * by point: the route's and the road walk's own measure (§11 step 4, §8.4a). The one allocation
+     * here, made once per route or road, never per fix.
+     */
+    fun cumulativeM(points: List<LatLngLike>): DoubleArray = DoubleArray(points.size).also { cum ->
+        for (i in 1 until points.size) cum[i] = cum[i - 1] + distanceM(points[i - 1].lat, points[i - 1].lon, points[i].lat, points[i].lon)
+    }
 
     /**
      * Cross-track distance (metres, unsigned) from point P to the great circle through A→B,

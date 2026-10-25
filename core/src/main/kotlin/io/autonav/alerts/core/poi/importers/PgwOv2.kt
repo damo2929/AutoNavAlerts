@@ -51,14 +51,9 @@ object PgwOv2 {
         val compass = m.groupValues[1].takeIf { it.isNotEmpty() }
         val reversible = m.groupValues[2].isNotEmpty()
         val bearing = compass?.let { COMPASS[it] }
-        val dirType = when {
-            bearing == null -> DirectionType.ANY
-            reversible -> DirectionType.BOTH
-            else -> DirectionType.ONE_WAY
-        }
         val speedRaw = m.groupValues[6].takeIf { it.isNotEmpty() }?.toInt()
         return Parsed(
-            bearing = bearing, directionType = dirType, type = m.groupValues[4],
+            bearing = bearing, directionType = dirTypeOf(bearing, both = reversible), type = m.groupValues[4],
             temporary = m.groupValues[3].isNotEmpty(), pgwId = m.groupValues[5],
             speed = speedRaw?.takeIf { it > 0 }, variable = speedRaw == 0,
         )
@@ -109,15 +104,13 @@ object PgwOv2 {
     // The map stays lazy (see [LazyBytes]): nothing is inflated until a set is imported, and never all at once.
     fun files(entries: Map<String, ByteArray>): Map<String, ByteArray> {
         val rx = Regex("""^pocketgps_([a-z]+)_([a-z]+(?:_[a-z0-9]+)?)\.ov2$""", RegexOption.IGNORE_CASE)
-        val out = LinkedHashMap<String, () -> ByteArray>()
-        for (name in entries.keys) {
-            val m = rx.matchEntire(name.substringAfterLast('/')) ?: continue
+        val taken = HashSet<String>()
+        return LazyBytes.select(entries) { name ->
+            val m = rx.matchEntire(name.substringAfterLast('/')) ?: return@select null
             val stem = m.groupValues[2].lowercase()
             // Another region's file of the same type keeps its region, so the two never merge.
-            val key = if (stem in out) "${m.groupValues[1].lowercase()}_$stem" else stem
-            out[key] = { entries.getValue(name) }
+            (if (stem in taken) "${m.groupValues[1].lowercase()}_$stem" else stem).also { taken += it }
         }
-        return LazyBytes(out)
     }
 
     /**

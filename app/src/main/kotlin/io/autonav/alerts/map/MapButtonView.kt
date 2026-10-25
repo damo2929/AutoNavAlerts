@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.drawable.Drawable
 import android.view.View
 import androidx.annotation.DrawableRes
 import androidx.core.content.ContextCompat
@@ -49,6 +50,13 @@ abstract class MapButton(context: Context, private val widthDp: Int, val heightD
         canvas.shape(bg)
         if (!dark) canvas.shape(edge)
     }
+
+    /** Draws [icon] in the day or night colour, in the [size] px square whose top-left corner is ([left], [top]). */
+    protected fun drawIcon(canvas: Canvas, icon: Drawable, left: Int, top: Int, size: Int) {
+        icon.setTint(iconColor)
+        icon.setBounds(left, top, left + size, top + size)
+        icon.draw(canvas)
+    }
 }
 
 /**
@@ -72,9 +80,7 @@ class MapButtonView(context: Context, @DrawableRes iconRes: Int, val onTap: () -
         drawShape(canvas) { drawCircle(r, r, r - edge.strokeWidth / 2, it) }
         // The icon fills the middle half of the disc.
         val inset = (width * 0.25f).toInt()
-        icon.setTint(iconColor)
-        icon.setBounds(inset, inset, width - inset, width - inset)
-        icon.draw(canvas)
+        drawIcon(canvas, icon, inset, inset, width - 2 * inset)
     }
 
     companion object {

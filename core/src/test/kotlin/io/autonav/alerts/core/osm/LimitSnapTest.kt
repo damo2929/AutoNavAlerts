@@ -22,4 +22,12 @@ class LimitSnapTest {
         assertEquals(110, LimitSnap.snap(113.0, imperial = false))
         assertEquals(130, LimitSnap.snap(150.0, imperial = false))
     }
+
+    @Test
+    fun tiesGoToTheLowerLimit() {
+        assertEquals(20, LimitSnap.snap(25.0, imperial = true))
+        assertEquals(60, LimitSnap.snap(65.0, imperial = true))
+        assertEquals(40, LimitSnap.snap(45.0, imperial = false))
+        assertEquals(120, LimitSnap.snap(125.0, imperial = false))
+    }
 }

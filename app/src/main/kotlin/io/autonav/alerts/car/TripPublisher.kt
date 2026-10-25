@@ -67,15 +67,11 @@ class TripPublisher(
     // The host must hear navigationStarted() before any trip and navigationEnded() once after it, so
     // the edges are tracked here with `active`, not taken from the SDK's state (which has none for ended).
     private fun publish(info: NavInfo?, guiding: Boolean) {
-        if (guiding && !active) {
-            tryManager("navigationStarted") { navigationStarted() }
-            active = true
-            log("navigationStarted")
-        }
-        if (!guiding && active) {
-            tryManager("navigationEnded") { navigationEnded() }
-            active = false
-            log("navigationEnded")
+        if (guiding != active) {
+            val edge = if (guiding) "navigationStarted" else "navigationEnded"
+            tryManager(edge) { if (guiding) navigationStarted() else navigationEnded() }
+            active = guiding
+            log(edge)
         }
         if (!guiding || info == null) return
         // A loading trip while rerouting shows a spinner on the cluster instead of a stale turn (§12.4);

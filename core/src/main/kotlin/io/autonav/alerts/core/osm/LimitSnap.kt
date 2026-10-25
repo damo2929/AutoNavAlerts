@@ -17,11 +17,6 @@ object LimitSnap {
     private val MPH = intArrayOf(20, 30, 40, 50, 60, 70)
     private val KMH = (20..130 step 10).toList().toIntArray()
 
-    /** The real limit nearest [estimate] (in mph when [imperial], else km/h); ties go to the lower one. */
-    fun snap(estimate: Double, imperial: Boolean): Int {
-        val set = if (imperial) MPH else KMH
-        var best = set[0]
-        for (v in set) if (abs(v - estimate) < abs(best - estimate)) best = v
-        return best
-    }
+    /** The real limit nearest [estimate] (in mph when [imperial], else km/h); ties go to the lower one (the first found). */
+    fun snap(estimate: Double, imperial: Boolean): Int = (if (imperial) MPH else KMH).minBy { abs(it - estimate) }
 }

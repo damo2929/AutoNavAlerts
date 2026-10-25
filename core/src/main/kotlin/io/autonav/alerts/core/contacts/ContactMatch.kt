@@ -48,12 +48,6 @@ object ContactMatch {
      * Which geocode result to use for a contact's address: the one with the same postcode if
      * there's exactly one, else the only result, else null (ask the user).
      */
-    fun <T> choose(address: String, results: List<T>, resultAddress: (T) -> String?): T? {
-        val pc = postcode(address)
-        if (pc != null) {
-            val same = results.filter { r -> resultAddress(r)?.let(::postcode) == pc }
-            if (same.size == 1) return same[0]
-        }
-        return results.singleOrNull()
-    }
+    fun <T> choose(address: String, results: List<T>, resultAddress: (T) -> String?): T? =
+        postcode(address)?.let { pc -> results.singleOrNull { r -> resultAddress(r)?.let(::postcode) == pc } } ?: results.singleOrNull()
 }

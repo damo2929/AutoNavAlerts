@@ -212,24 +212,15 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
             visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             // Save stores the key Keystore-encrypted; keyChanged() makes the SDK and Places re-apply it on next use (DESIGN.md §1.4).
-            Button(enabled = keyText.isNotBlank(), onClick = {
-                scope.launch { deps.settings.setMapsApiKey(keyText); deps.navigator.keyChanged(); keyText = ""; refresh++ }
-            }) { Text("Save key") }
+            Btn("Save key", scope, enabled = keyText.isNotBlank()) { deps.saveKey(keyText); keyText = ""; refresh++ }
             // Remove leaves the app with no key at all: map, search and navigation stop until one is added again (rule 5).
-            if (hasKey) OutlinedButton(onClick = {
-                scope.launch { deps.settings.setMapsApiKey(null); deps.navigator.keyChanged(); refresh++ }
-            }) { Text("Remove") }
+            if (hasKey) Btn("Remove", scope, outlined = true) { deps.saveKey(null); refresh++ }
         }
     }
 
     // Steps 1 to 3 (DESIGN.md §13 item 1; docs/SETTINGS.md §2 "Permissions"): foreground grants in one request, background location after.
     Section("Permissions") {
-        PermLine("Location (needed)", st.fine)
-        PermLine("Location all the time (recommended)", st.background)
-        PermLine("Notifications (needed for alerts behind other apps)", st.notifications)
-        PermLine("Microphone (spoken report comments)", st.mic)
-        PermLine("Car speed (speed panel uses the car's own speed)", st.carSpeed)
-        PermLine("Contacts (optional: drive to a contact's address)", st.contacts)
+        PERMS.forEach { PermLine(it.label, st.granted(it)) }
         val missing = st.missingForeground()
         if (missing.isNotEmpty() || !st.background) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             // Background location is asked for on its own, after the foreground grant: Android 10+ refuses it in the same request.
@@ -241,13 +232,10 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
             if (askedOnce) OutlinedButton(onClick = { openAppSettings(ctx) }) { Text("Open app settings") }
         } else Ok("✓ All permissions allowed.")
         // Contacts are optional, so they have their own button rather than being part of Allow (DESIGN.md §8.3).
-        if (!st.contacts) {
-            OutlinedButton(onClick = { permLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS)) }) { Text("Allow contacts") }
-        } else {
-            TextButton(onClick = {
-                scope.launch { deps.contacts.clearCache(); Toast.makeText(ctx, "Contact locations cleared", Toast.LENGTH_SHORT).show() }
-            }) { Text("Clear contact locations") }
-        }
+        if (!st.contacts) OutlinedButton(onClick = { permLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS)) }) { Text("Allow contacts") }
+        else TextButton(onClick = {
+            scope.launch { deps.contacts.clearCache(); Toast.makeText(ctx, "Contact locations cleared", Toast.LENGTH_SHORT).show() }
+        }) { Text("Clear contact locations") }
         if (askedOnce && (missing.isNotEmpty() || !st.background)) {
             Help("If no prompt appears, Android has stopped asking. Use \"Open app settings\" → Permissions to allow them there.")
         }
@@ -271,9 +259,7 @@ private fun SetupSections(activity: Activity, deps: PhoneDeps) {
                             // Record it ourselves too, so it's a one-time step.
                             scope.launch { deps.navigator.recordTermsAccepted(); refresh++ }
                             termsOk = true
-                        } else {
-                            termsMessage = "You declined the terms. Navigation can't start until they're accepted."
-                        }
+                        } else termsMessage = "You declined the terms. Navigation can't start until they're accepted."
                     }
                 }.onFailure { termsMessage = "Couldn't open the terms: ${it.message}" }
             }) { Text("Review and accept") }
@@ -343,8 +329,7 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
         scope.launch {
             try {
                 val c = deps.keyCreator.create(accessToken, billing) { progress = it }
-                deps.settings.setMapsApiKey(c.key)
-                deps.navigator.keyChanged()
+                deps.saveKey(c.key)
                 done = "✓ Key created in your Google Cloud project ${c.projectId} and saved."
                 onCreated()
             } catch (e: MapsKeyCreator.Stop) {
@@ -442,28 +427,37 @@ private fun CreateKeyWithGoogle(activity: Activity, deps: PhoneDeps, onCreated: 
     }
 }
 
-/** Current runtime-permission state for the setup sections. */
-private data class PermState(
-    val fine: Boolean, val background: Boolean, val notifications: Boolean, val mic: Boolean, val contacts: Boolean, val carSpeed: Boolean,
-) {
+/**
+ * One line of the Permissions card (docs/SETTINGS.md §2): its [label], the [permission] whose grant it shows, the first
+ * Android that has it ([minSdk]; older ones count it as granted) and what Allow [asks] for (fine location brings coarse).
+ */
+internal class Perm(val label: String, val permission: String, val minSdk: Int = 1, val asks: Array<String> = arrayOf(permission))
+
+private val BACKGROUND = Perm("Location all the time (recommended)", Manifest.permission.ACCESS_BACKGROUND_LOCATION, minSdk = 29)
+private val CONTACTS = Perm("Contacts (optional: drive to a contact's address)", Manifest.permission.READ_CONTACTS)
+
+/** The card's lines in order. Allow asks for all but background location (asked on its own after) and contacts (its own button, DESIGN.md §8.3). Internal, like the pure helpers below, for `PhoneHelpersTest`. */
+internal val PERMS = listOf(
+    Perm("Location (needed)", Manifest.permission.ACCESS_FINE_LOCATION, asks = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)),
+    BACKGROUND,
+    Perm("Notifications (needed for alerts behind other apps)", Manifest.permission.POST_NOTIFICATIONS, minSdk = 33),
+    Perm("Microphone (spoken report comments)", Manifest.permission.RECORD_AUDIO),
+    Perm("Car speed (speed panel uses the car's own speed)", PermState.CAR_SPEED),
+    CONTACTS,
+)
+
+/** Current runtime-permission state for the setup sections: whether each [Perm] is granted. */
+internal class PermState(private val ok: Map<Perm, Boolean>) {
+    val background get() = ok.getValue(BACKGROUND)
+    val contacts get() = ok.getValue(CONTACTS)
+    fun granted(p: Perm) = ok.getValue(p)
+
     /** The permissions "Allow" still has to ask for, in one request; background location is asked for separately. */
-    fun missingForeground(): List<String> = buildList {
-        if (!fine) { add(Manifest.permission.ACCESS_FINE_LOCATION); add(Manifest.permission.ACCESS_COARSE_LOCATION) }
-        if (!notifications && Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-        if (!mic) add(Manifest.permission.RECORD_AUDIO)
-        if (!carSpeed) add(CAR_SPEED)
-    }
+    fun missingForeground(): List<String> = PERMS.filter { it != BACKGROUND && it != CONTACTS && !ok.getValue(it) }.flatMap { it.asks.asList() }
 
     companion object {
         /** Reads the current grants; a permission that doesn't exist on this Android version counts as granted. */
-        fun read(ctx: Context) = PermState(
-            fine = granted(ctx, Manifest.permission.ACCESS_FINE_LOCATION),
-            background = Build.VERSION.SDK_INT < 29 || granted(ctx, Manifest.permission.ACCESS_BACKGROUND_LOCATION),
-            notifications = Build.VERSION.SDK_INT < 33 || granted(ctx, Manifest.permission.POST_NOTIFICATIONS),
-            mic = granted(ctx, Manifest.permission.RECORD_AUDIO),
-            contacts = granted(ctx, Manifest.permission.READ_CONTACTS),
-            carSpeed = granted(ctx, CAR_SPEED),
-        )
+        fun read(ctx: Context) = PermState(PERMS.associateWith { Build.VERSION.SDK_INT < it.minSdk || granted(ctx, it.permission) })
 
         /** Android Auto's runtime permission for the car's speed (CarInfo speed listener). */
         const val CAR_SPEED = "com.google.android.gms.permission.CAR_SPEED"
@@ -474,6 +468,12 @@ private data class PermState(
 @Composable
 private fun PermLine(label: String, ok: Boolean) {
     Text((if (ok) "✓ " else "✗ ") + label, color = if (ok) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error)
+}
+
+/** Saves (or with null removes) the Maps key and tells the Navigation SDK, the one way a key changes from the phone (DESIGN.md §1.4 "Changing the key"). */
+private suspend fun PhoneDeps.saveKey(key: String?) {
+    settings.setMapsApiKey(key)
+    navigator.keyChanged()
 }
 
 /** Opens this app's page in Android settings, for when Android has stopped showing the permission prompt. */
@@ -530,11 +530,8 @@ private fun GuidedKeySetup(activity: Activity, deps: PhoneDeps, onSaved: () -> U
             Button(onClick = {
                 val clip = activity.getSystemService(ClipboardManager::class.java).primaryClip
                 val text = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(activity)?.toString()?.trim().orEmpty()
-                if (MapsKeyCreator.looksLikeKey(text)) {
-                    scope.launch { deps.settings.setMapsApiKey(text); deps.navigator.keyChanged(); pasteMessage = null; onSaved() }
-                } else {
-                    pasteMessage = "The clipboard doesn't hold a Google API key (they start with \"AIza\"). Copy the key in Google Cloud first."
-                }
+                if (MapsKeyCreator.looksLikeKey(text)) scope.launch { deps.saveKey(text); pasteMessage = null; onSaved() }
+                else pasteMessage = "The clipboard doesn't hold a Google API key (they start with \"AIza\"). Copy the key in Google Cloud first."
             }) { Text("Paste key from clipboard") }
         }
         pasteMessage?.let { Err(it) }
@@ -605,10 +602,9 @@ private fun SetCard(deps: PhoneDeps, set: PoiSetEntity, onEdit: () -> Unit, onDe
     val scope = rememberCoroutineScope()
     val swipe = androidx.compose.material3.rememberSwipeToDismissBoxState()
     LaunchedEffect(swipe.currentValue) {
-        if (swipe.currentValue == androidx.compose.material3.SwipeToDismissBoxValue.EndToStart) {
-            onDelete()
-            swipe.reset()
-        }
+        if (swipe.currentValue != androidx.compose.material3.SwipeToDismissBoxValue.EndToStart) return@LaunchedEffect
+        onDelete()
+        swipe.reset()
     }
     androidx.compose.material3.SwipeToDismissBox(
         state = swipe,
@@ -706,8 +702,7 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
                     val profile = if (isCsv) CsvProfile(
                         delimiter = CsvImporter.detectDelimiter(preview.joinToString("\n")),
                         hasHeader = preview.firstOrNull()?.any { it.isLetter() } == true,
-                        latCol = col("Lat") ?: 0, lonCol = col("Lon") ?: 1,
-                        nameCol = col("Name"), speedCol = col("Speed"),
+                        latCol = col("Lat") ?: 0, lonCol = col("Lon") ?: 1, nameCol = col("Name"), speedCol = col("Speed"),
                         bearingCol = col("Heading"), dirTypeCol = col("Dir"),
                     ) else null
                     val out = runCatching { deps.pois.importFile(uri, csvProfile = profile) }
@@ -824,7 +819,7 @@ private fun validate(set: PoiSetEntity): String? = io.autonav.alerts.data.StageR
  * value and its half (rounded down, as the 7 s default was), so anything still reading them agrees
  * with what the slider says. Distance-mode stages keep whatever they had.
  */
-private fun withSliderSeconds(set: PoiSetEntity, leadSeconds: Int): PoiSetEntity {
+internal fun withSliderSeconds(set: PoiSetEntity, leadSeconds: Int): PoiSetEntity {
     fun StageCols.fromSlider(seconds: Int) = if (mode == DistanceMode.TIME) copy(seconds = seconds) else this
     return set.copy(firstAlert = set.firstAlert.fromSlider(leadSeconds), secondAlert = set.secondAlert.fromSlider(leadSeconds / 2))
 }
@@ -898,18 +893,16 @@ fun CameraDbScreen(deps: PhoneDeps) {
                         visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (!hasLogin) Button(enabled = user.isNotBlank() && pass.isNotBlank(), onClick = {
-                        scope.launch {
-                            deps.settings.setPgwCredentials(user.trim(), pass)
-                            // A new login must not reuse the old session cookies (DESIGN.md §6.1).
-                            deps.pgw.forgetSession()
-                            status = runCatching { deps.pgw.ensureLoggedIn(); "Logged in." }.getOrElse { "Login failed: ${it.message}" }
-                            pass = ""; refresh++
-                            deps.scheduler.schedule()
-                        }
-                    }) { Text("Save and test") } else OutlinedButton(onClick = {
-                        scope.launch { deps.settings.setPgwCredentials(null, null); deps.pgw.forgetSession(); deps.scheduler.schedule(); refresh++ }
-                    }) { Text("Forget login") }
+                    if (!hasLogin) Btn("Save and test", scope, enabled = user.isNotBlank() && pass.isNotBlank()) {
+                        deps.settings.setPgwCredentials(user.trim(), pass)
+                        // A new login must not reuse the old session cookies (DESIGN.md §6.1).
+                        deps.pgw.forgetSession()
+                        status = runCatching { deps.pgw.ensureLoggedIn(); "Logged in." }.getOrElse { "Login failed: ${it.message}" }
+                        pass = ""; refresh++
+                        deps.scheduler.schedule()
+                    } else Btn("Forget login", scope, outlined = true) {
+                        deps.settings.setPgwCredentials(null, null); deps.pgw.forgetSession(); deps.scheduler.schedule(); refresh++
+                    }
                 }
                 status?.let { Ok(it) }
             }
@@ -951,16 +944,16 @@ fun CameraDbScreen(deps: PhoneDeps) {
 }
 
 /** One camera type's sets, batched together on the Cameras tab (DESIGN.md §13). */
-private data class CameraGroup(val name: String, val sets: List<PoiSetEntity>) {
+internal data class CameraGroup(val name: String, val sets: List<PoiSetEntity>) {
     val cameras get() = sets.sumOf { it.poiCount }
     val anyOn get() = sets.any { it.enabled }
 }
 
 /**
  * Camera sets (PGW, pending and My reports) grouped by type: the part of the name before " · ",
- * so the OV2 download's per-speed sets share one group. Pending sites come last, then My reports.
+ * so the OV2 download's per-speed sets share one group. Pending sites come last, then My reports. Internal for `PhoneHelpersTest`.
  */
-private fun cameraGroups(sets: List<PoiSetEntity>): List<CameraGroup> {
+internal fun cameraGroups(sets: List<PoiSetEntity>): List<CameraGroup> {
     val order = listOf(PoiSourceType.PGW, PoiSourceType.PGW_PENDING, PoiSourceType.REPORT)
     return sets.filter { it.source in order }
         .groupBy { it.name.substringBefore(" · ") }
@@ -969,7 +962,7 @@ private fun cameraGroups(sets: List<PoiSetEntity>): List<CameraGroup> {
 }
 
 /** Sorts "· 20 mph" before "· 100 mph"; sets without a number keep name order after them. */
-private fun speedOrder(name: String): Int =
+internal fun speedOrder(name: String): Int =
     Regex("""· (\d+)""").find(name)?.groupValues?.get(1)?.toIntOrNull() ?: Int.MAX_VALUE
 
 /**
@@ -1040,9 +1033,9 @@ fun ReportsScreen(activity: Activity, deps: PhoneDeps) {
                 "Don't report warning signs or Traffic Master cameras; only report mobiles when a unit is actually there.")
             blocked?.let { Err(it) }
             // Send all: queues every draft and failed report; the worker sends them once the drive is over (DESIGN.md §8.5).
-            if (drafts.size > 1) Button(enabled = blocked == null, onClick = {
-                scope.launch { drafts.forEach { deps.reports.queueForSending(it) }; ReportSubmitWorker.enqueue(activity) }
-            }) { Text("Send all ${drafts.size}") }
+            if (drafts.size > 1) Btn("Send all ${drafts.size}", scope, enabled = blocked == null) {
+                drafts.forEach { deps.reports.queueForSending(it) }; ReportSubmitWorker.enqueue(activity)
+            }
         }
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         if (reports.isEmpty()) Text("No reports yet. Tap Report on the car screen when you see a camera.", Modifier.padding(16.dp))
@@ -1102,13 +1095,7 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
             TextButton(onClick = { activity.openUrl("geo:${r.lat},${r.lon}?q=${r.lat},${r.lon}(Reported camera)") }) { Text("Show on map") }
 
             // Speed limit (with where it came from)
-            val src = when (r.limitSource) {
-                LimitSource.GOOGLE -> "from Google"
-                LimitSource.CAMERA -> "from camera data"
-                LimitSource.USER -> "set by you"
-                LimitSource.NONE -> "unknown"
-            }
-            Text("Speed limit: ${r.speedLimit?.let { "$it mph" } ?: "not set"} ($src)", style = MaterialTheme.typography.labelLarge)
+            Text("Speed limit: ${r.speedLimit?.let { "$it mph" } ?: "not set"} (${LIMIT_SOURCE_TEXT.getValue(r.limitSource)})", style = MaterialTheme.typography.labelLarge)
             // UK limits in mph; PgwReportSubmitter maps them to the form's own speed codes (DESIGN.md §8.5 table).
             ChoiceChips(listOf(20, 30, 40, 50, 60, 70).map { it to "$it" }, r.speedLimit, spacing = 6.dp) { v ->
                 save(r.copy(speedLimit = v, limitSource = LimitSource.USER))
@@ -1130,29 +1117,18 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
 
             // Comment (speech-to-text from the car, editable)
             OutlinedTextField(r.comment.orEmpty(), { r = r.copy(comment = it) }, label = { Text("Comment") },
-                modifier = Modifier.fillMaxWidth(), supportingText = {
-                    Text(when (r.transcription) {
-                        "PENDING" -> "Turning your recording into text…"
-                        "FAILED" -> "Couldn't transcribe the recording. Play it and type the comment."
-                        "DONE" -> "From your spoken comment; edit if needed."
-                        else -> "Optional"
-                    })
-                })
+                modifier = Modifier.fillMaxWidth(), supportingText = { Text(TRANSCRIPTION_TEXT[r.transcription] ?: "Optional") })
             r.audioPath?.let { path ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { Transcriber.play(java.io.File(path)) }) { Text("Play recording") }
-                    if (r.transcription == "FAILED") OutlinedButton(onClick = {
-                        scope.launch { deps.reports.transcribe(r.id) }
-                    }) { Text("Try transcribing again") }
+                    if (r.transcription == "FAILED") Btn("Try transcribing again", scope, outlined = true) { deps.reports.transcribe(r.id) }
                 }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = blocked == null, onClick = {
-                    scope.launch { deps.reports.queueForSending(r); ReportSubmitWorker.enqueue(activity) }
-                }) { Text("Send") }
-                OutlinedButton(onClick = { scope.launch { deps.reports.saveReview(r) } }) { Text("Save") }
-                OutlinedButton(onClick = { scope.launch { deps.reports.discard(r) } }) { Text("Discard") }
+                Btn("Send", scope, enabled = blocked == null) { deps.reports.queueForSending(r); ReportSubmitWorker.enqueue(activity) }
+                Btn("Save", scope, outlined = true) { deps.reports.saveReview(r) }
+                Btn("Discard", scope, outlined = true) { deps.reports.discard(r) }
                 TextButton(onClick = {
                     // The fallback when the form can't be automated (DESIGN.md §8.5): the fields on the clipboard, the Submit page in the browser. SendEntry is the button, not a field.
                     val s = deps.reports.toSubmission(r)
@@ -1166,7 +1142,16 @@ private fun ReportCard(activity: Activity, deps: PhoneDeps, initial: CameraRepor
 }
 
 /** Eight-point compass name for a heading in degrees (338° to 22° is N). */
-private fun compass(deg: Int): String = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")[((deg + 22) % 360) / 45]
+internal fun compass(deg: Int): String = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")[((deg + 22) % 360) / 45]
+
+/** Where a report's speed limit came from, as the review card says it (DESIGN.md §8.5 "with its source shown"). */
+private val LIMIT_SOURCE_TEXT = mapOf(LimitSource.GOOGLE to "from Google", LimitSource.CAMERA to "from camera data", LimitSource.USER to "set by you", LimitSource.NONE to "unknown")
+
+/** The comment field's help by the transcription state (§8.5 "Speech to text"); any other state (no recording) reads "Optional". */
+private val TRANSCRIPTION_TEXT = mapOf(
+    "PENDING" to "Turning your recording into text…", "FAILED" to "Couldn't transcribe the recording. Play it and type the comment.",
+    "DONE" to "From your spoken comment; edit if needed.",
+)
 
 // --- Settings ----------------------------------------------------------------------------------
 
@@ -1251,12 +1236,7 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
                         restoreMessage = runCatching { deps.backup.restore(text) }.fold({ r ->
                             // A restored key is applied the same way as a pasted one (DESIGN.md §1.4, §13.4 step 4).
                             if (r.mapsKey) deps.navigator.keyChanged()
-                            val parts = buildList {
-                                if (r.settings) add("settings")
-                                if (r.mapsKey) add("Maps key")
-                                if (r.pgwLogin) add("PGW login")
-                                add("${r.sets} camera sets")
-                            }
+                            val parts = listOfNotNull("settings".takeIf { r.settings }, "Maps key".takeIf { r.mapsKey }, "PGW login".takeIf { r.pgwLogin }, "${r.sets} camera sets")
                             "Restored " + parts.joinToString(", ").replace(Regex(", ([^,]+)$"), " and $1") + "." +
                                 (if (r.setsNotFound > 0) " ${r.setsNotFound} sets weren't found: download the cameras first, then restore again." else "")
                         }, { "Couldn't restore: ${it.message}" })
@@ -1307,7 +1287,7 @@ private fun OsmLimitsSection(
 ) {
     val progress by deps.speedLimits.progress.collectAsState()
     var stats by remember { mutableStateOf<io.autonav.alerts.osm.SpeedLimitRepository.Stats?>(null) }
-    LaunchedEffect(progress?.finished) { stats = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { deps.speedLimits.stats() } }
+    LaunchedEffect(progress?.finished) { stats = io { deps.speedLimits.stats() } }
 
     Help("Fills the speed panel's limit (grey dot) when Google hasn't given one. Downloaded once; nothing is looked up while driving.")
     SwitchRow("Show OpenStreetMap limits", s.osmLimitsOn) { v -> set { it.copy(osmLimitsOn = v) } }
@@ -1341,13 +1321,11 @@ private fun OverLimitSlider(current: Double, onChange: (Double) -> Unit) {
     var v by remember(current) { mutableStateOf((current * 1000).roundToInt().toFloat()) } // tenths of a percent
     val pct = v / 10.0
     Text("Over-limit warning: ${pctLabel(pct / 100)}", style = MaterialTheme.typography.bodyLarge)
-    Help(
-        when {
-            pct < 0 -> "Warns ${pctLabel(-pct / 100)} before you reach the limit"
-            pct == 0.0 -> "Warns as soon as you go over the limit"
-            else -> "Warns when you're more than ${pctLabel(pct / 100)} over the limit"
-        },
-    )
+    Help(when {
+        pct < 0 -> "Warns ${pctLabel(-pct / 100)} before you reach the limit"
+        pct == 0.0 -> "Warns as soon as you go over the limit"
+        else -> "Warns when you're more than ${pctLabel(pct / 100)} over the limit"
+    })
     androidx.compose.material3.Slider(
         value = v, onValueChange = { v = Math.round(it).toFloat() },
         onValueChangeFinished = { onChange(v / 1000.0) },
@@ -1381,31 +1359,27 @@ private fun AlertLeadSlider(current: Int, units: Units, onChange: (Int) -> Unit)
 }
 
 /** "7.5 s" for 15, "8 s" for 16: half the lead time, as the 2nd alert uses it. */
-private fun halfSecondsLabel(seconds: Int): String = if (seconds % 2 == 0) "${seconds / 2} s" else "${seconds / 2}.5 s"
+internal fun halfSecondsLabel(seconds: Int): String = if (seconds % 2 == 0) "${seconds / 2} s" else "${seconds / 2}.5 s"
 
 /**
  * The 1st alert's distance at [mph] with [seconds] of lead: max(242 m floor, speed × seconds),
  * in the user's units, marked "(minimum)" when the floor applies.
  */
-private fun leadDistanceText(mph: Int, seconds: Int, units: Units): String {
+internal fun leadDistanceText(mph: Int, seconds: Int, units: Units): String {
     val bySpeed = (mph * Geo.MPS_PER_MPH * seconds).roundToInt()
-    val floored = bySpeed < FIRST_ALERT_FLOOR_M
-    val metres = if (floored) FIRST_ALERT_FLOOR_M else bySpeed
-    val text = if (units == Units.IMPERIAL) {
-        val yards = metres / Geo.METRES_PER_YARD
-        if (yards < 1000) "${yards.roundToInt()} yd" else "%.2f mi".format(yards / 1760)
-    } else "$metres m"
-    return if (floored) "$text (minimum)" else text
+    val metres = bySpeed.coerceAtLeast(FIRST_ALERT_FLOOR_M)
+    val yards = metres / Geo.METRES_PER_YARD
+    val text = if (units != Units.IMPERIAL) "$metres m" else if (yards < 1000) "${yards.roundToInt()} yd" else "%.2f mi".format(yards / 1760)
+    return if (bySpeed < FIRST_ALERT_FLOOR_M) "$text (minimum)" else text
 }
 
 /** The 1st alert never fires closer than this in seconds-ahead mode (DESIGN.md §11.1). */
 private const val FIRST_ALERT_FLOOR_M = 242
 
 /** "−0.1%", "0%", "5%"… for the over-limit setting. */
-private fun pctLabel(p: Double): String {
+internal fun pctLabel(p: Double): String {
     val v = p * 100
-    val text = if (kotlin.math.abs(v - Math.rint(v)) < 1e-9) "${Math.rint(v).roundToInt()}%" else "%.1f%%".format(v)
-    return text.replace("-", "−")
+    return (if (kotlin.math.abs(v - Math.rint(v)) < 1e-9) "${Math.rint(v).roundToInt()}%" else "%.1f%%".format(v)).replace("-", "−")
 }
 
 // --- Diagnostics (DESIGN.md §15.5, §13 item 11; docs/SETTINGS.md §1.8) ------------------------
@@ -1430,13 +1404,11 @@ private fun DiagnosticsSection(
 
     var snapshot by remember { mutableStateOf<String?>(null) }
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = {
-            scope.launch {
-                withContext(Dispatchers.IO) { deps.eventLog.clear() }
-                refresh++
-                Toast.makeText(activity, "Debug logs cleared", Toast.LENGTH_SHORT).show()
-            }
-        }) { Text("Clear both logs") }
+        Btn("Clear both logs", scope, outlined = true) {
+            io { deps.eventLog.clear() }
+            refresh++
+            Toast.makeText(activity, "Debug logs cleared", Toast.LENGTH_SHORT).show()
+        }
         Button(onClick = {
             scope.launch {
                 // The snapshot is also written to alert-debug, so the file shows what the engine saw at that moment (DESIGN.md §15.5).
@@ -1449,12 +1421,7 @@ private fun DiagnosticsSection(
         }) { Text("Engine now") }
     }
     snapshot?.let { text ->
-        AlertDialog(
-            onDismissRequest = { snapshot = null },
-            title = { Text("Engine now") },
-            text = { MonoLines(text.lines(), 420.dp) },
-            confirmButton = { TextButton(onClick = { snapshot = null }) { Text("Close") } },
-        )
+        ConfirmDialog("Engine now", "Close", textConfirm = true, cancel = false, onConfirm = { snapshot = null }, onDismiss = { snapshot = null }) { MonoLines(text.lines(), 420.dp) }
     }
 
     HorizontalDivider()
@@ -1462,12 +1429,10 @@ private fun DiagnosticsSection(
     Help("Every GPS fix to a CSV, for replaying a drive on the bench. About 1–8 MB an hour; the newest 3 are kept.")
     var latest by remember { mutableStateOf<File?>(null) }
     var recording by remember { mutableStateOf(false) }
-    LaunchedEffect(refresh, s.driveRecordingOn) {
-        withContext(Dispatchers.IO) { latest = deps.driveRecorder.latest(); recording = deps.driveRecorder.isRecording }
-    }
+    LaunchedEffect(refresh, s.driveRecordingOn) { io { latest = deps.driveRecorder.latest(); recording = deps.driveRecorder.isRecording } }
     Help(latest?.let { "Latest: ${it.name} · ${sizeText(it.length())}" + (if (recording) " · recording now" else "") } ?: "No recordings yet")
     val csvSaver = rememberSaveTo("text/csv", "Drive recording saved", "Couldn't save the recording") { uri ->
-        withContext(Dispatchers.IO) { deps.driveRecorder.flush(); DiagFiles.writeTo(activity, uri, listOf(checkNotNull(latest))) }
+        io { deps.driveRecorder.flush(); DiagFiles.writeTo(activity, uri, listOf(checkNotNull(latest))) }
     }
     OutlinedButton(enabled = latest != null, onClick = { latest?.let { csvSaver.launch(it.name) } }) { Text("Save drive recording…") }
 
@@ -1486,7 +1451,7 @@ private fun DiagLogCard(activity: Activity, deps: PhoneDeps, ch: EventLog.Channe
     var lines by remember { mutableStateOf<List<String>>(emptyList()) }
     var reload by remember { mutableIntStateOf(0) }
     LaunchedEffect(refresh, show, reload) {
-        withContext(Dispatchers.IO) {
+        io {
             // A forced write first, else the last 15 s batch wouldn't be in the file yet (DESIGN.md §15.5).
             if (show) deps.eventLog.flush("view")
             size = deps.eventLog.sizeBytes(ch)
@@ -1495,7 +1460,7 @@ private fun DiagLogCard(activity: Activity, deps: PhoneDeps, ch: EventLog.Channe
         }
     }
     val saver = rememberSaveTo("text/plain", "${ch.shortName} saved", "Couldn't save ${ch.shortName}") { uri ->
-        withContext(Dispatchers.IO) {
+        io {
             deps.eventLog.flush("export")
             DiagFiles.writeTo(activity, uri, deps.eventLog.files(ch))
         }
@@ -1506,7 +1471,7 @@ private fun DiagLogCard(activity: Activity, deps: PhoneDeps, ch: EventLog.Channe
         TextButton(onClick = { saver.launch(DiagFiles.exportName(ch)) }) { Text("Save ${ch.shortName}…") }
         TextButton(onClick = {
             scope.launch {
-                withContext(Dispatchers.IO) { deps.eventLog.flush("share") }
+                io { deps.eventLog.flush("share") }
                 val files = deps.eventLog.files(ch)
                 if (files.isEmpty()) Toast.makeText(activity, "Nothing to share yet", Toast.LENGTH_SHORT).show()
                 else activity.startActivity(DiagFiles.shareIntent(activity, files, title = "AutoNavAlerts ${ch.shortName}"))
@@ -1535,7 +1500,7 @@ private fun MonoLines(lines: List<String>, maxHeight: Dp) {
 }
 
 /** "512 B", "37 KB", "1.2 MB" for a file size. */
-private fun sizeText(bytes: Long): String = when {
+internal fun sizeText(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> "%.1f MB".format(bytes / 1048576.0)

@@ -17,6 +17,7 @@ import io.autonav.alerts.data.ContactGeocodeEntity
 import io.autonav.alerts.nav.Destination
 import io.autonav.alerts.places.PlacesSearch
 import io.autonav.alerts.places.SearchHit
+import io.autonav.alerts.places.metresTo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -104,13 +105,8 @@ class ContactsSource @Inject constructor(
         if (!available || limit <= 0) return@withContext emptyList()
         val out = ArrayList<ContactAddress>()
         queryPostal(null, null) { out += it }
-        // When each address was last located: a plain query on the cache table, keyed like `locate`.
-        val usedAt = HashMap<String, Long>()
-        runCatching {
-            db.query("SELECT `key`, updatedAt FROM contact_geocode", null).use { c ->
-                while (c.moveToNext()) usedAt[c.getString(0)] = c.getLong(1)
-            }
-        }.onFailure { Log.w(TAG, "contact_geocode query", it) }
+        // When each address was last located, from the cache table, keyed like `locate`.
+        val usedAt = runCatching { db.contactGeocodes().usedAt() }.onFailure { Log.w(TAG, "contact_geocode query", it) }.getOrDefault(emptyMap())
         out.sortedWith(
             compareByDescending<ContactAddress> { usedAt[ContactMatch.key(it.address)] ?: Long.MIN_VALUE }
                 .thenBy { it.name.lowercase() }.thenBy { it.label },
@@ -147,7 +143,7 @@ class ContactsSource @Inject constructor(
     suspend fun knownDistanceM(a: ContactAddress, near: Location?): Int? {
         near ?: return null
         val e = db.contactGeocodes().get(ContactMatch.key(a.address)) ?: return null
-        return FloatArray(1).also { Location.distanceBetween(near.latitude, near.longitude, e.lat, e.lon, it) }[0].toInt()
+        return near.metresTo(e.lat, e.lon)
     }
 
     /** Settings → Permissions → Clear contact locations (§8.3). */

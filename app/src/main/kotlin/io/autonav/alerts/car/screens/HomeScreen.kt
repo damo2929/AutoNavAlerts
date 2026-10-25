@@ -19,7 +19,7 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.libraries.mapsplatform.turnbyturn.model.NavInfo
 import com.google.android.libraries.mapsplatform.turnbyturn.model.NavState
 import io.autonav.alerts.R
-import io.autonav.alerts.car.NavSession
+import io.autonav.alerts.car.CarScreenHost
 import io.autonav.alerts.car.TripMapper
 import io.autonav.alerts.nav.NavUnavailable
 import io.autonav.alerts.nav.NavUpdatesService
@@ -27,6 +27,7 @@ import io.autonav.alerts.reports.toSnapshot
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.launch
 
 /** Google Maps' turn-card teal, sampled from it on the DHU (DESIGN.md §8); the same by day and night. */
@@ -51,7 +52,7 @@ private val TURN_CARD = CarColor.createCustom(0xFF07786D.toInt(), 0xFF07786D.toI
  * re-sent only when what the host's cards display has changed ([TripMapper.displayKey]), never
  * on every `NavInfo`.
  */
-class HomeScreen(carContext: CarContext, private val session: NavSession) : Screen(carContext), DefaultLifecycleObserver {
+class HomeScreen(carContext: CarContext, private val session: CarScreenHost) : Screen(carContext), DefaultLifecycleObserver {
     private val deps get() = session.deps
     /** The SDK's latest turn-by-turn update, or null with no route. */
     private var navInfo: NavInfo? = null
@@ -71,24 +72,20 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
 
     /** Collects the turn-by-turn feed, the guiding flag and the SDK's availability for the life of the screen. */
     override fun onCreate(owner: LifecycleOwner) {
-        lifecycleScope.launch {
-            combine(
-                NavUpdatesService.navInfo, deps.guidance().guiding, deps.navigator().unavailable,
-            ) { info, g, u -> Triple(info, g, u) }.collect { (info, g, u) ->
-                navInfo = info
-                guiding = g
-                unavailable = u
-                // A stopped route must not leave its last estimate for the next one (§9.3 stopGuidance resets).
-                if (!g) lastEstimate = null
-                // Only when what the cards show changes (DESIGN.md §8, no shake): re-sending the same
-                // template every second rebuilt the host's travel-estimate card and lost presses on its X.
-                val key = "$g|$u|" + (info?.let { TripMapper(carContext, session.imperial).displayKey(it) } ?: "-")
-                if (key != shownKey) {
-                    shownKey = key
-                    invalidateThrottled()
-                }
+        combine(NavUpdatesService.navInfo, deps.guidance().guiding, deps.navigator().unavailable) { info, g, u ->
+            navInfo = info
+            guiding = g
+            unavailable = u
+            // A stopped route must not leave its last estimate for the next one (§9.3 stopGuidance resets).
+            if (!g) lastEstimate = null
+            // Only when what the cards show changes (DESIGN.md §8, no shake): re-sending the same
+            // template every second rebuilt the host's travel-estimate card and lost presses on its X.
+            val key = "$g|$u|" + (info?.let { TripMapper(carContext, session.imperial).displayKey(it) } ?: "-")
+            if (key != shownKey) {
+                shownKey = key
+                invalidateThrottled()
             }
-        }
+        }.launchIn(lifecycleScope)
         lifecycleScope.launch { deps.navigator().ensureNavigator(); invalidateThrottled() }
     }
 
@@ -182,20 +179,13 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
      * under More and in Search's empty state.
      */
     private fun actionStrip(): ActionStrip {
-        val strip = ActionStrip.Builder()
-        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_search, persistent = true) {
-            screenManager.push(SearchScreen(carContext, session))
-        })
-        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_report, persistent = true) { openReport() })
-        if (!guiding) {
-            strip.addAction(CarUi.action(carContext, R.drawable.ic_action_recents, persistent = true) {
-                screenManager.push(RecentsScreen(carContext, session))
-            })
-        }
-        strip.addAction(CarUi.action(carContext, R.drawable.ic_action_more, persistent = true) {
-            screenManager.push(MoreScreen(carContext, session))
-        })
-        return strip.build()
+        val buttons = listOfNotNull(
+            R.drawable.ic_action_search to { screenManager.push(SearchScreen(carContext, session)) },
+            R.drawable.ic_action_report to ::openReport,
+            (R.drawable.ic_action_recents to { screenManager.push(RecentsScreen(carContext, session)) }).takeUnless { guiding },
+            R.drawable.ic_action_more to { screenManager.push(MoreScreen(carContext, session)) },
+        )
+        return ActionStrip.Builder().apply { buttons.forEach { (res, onClick) -> addAction(CarUi.action(carContext, res, persistent = true, onClick = onClick)) } }.build()
     }
 
     /**
@@ -203,11 +193,7 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
      * the moment of the tap, then asks for an optional spoken comment. Review and Send are phone-only.
      */
     private fun openReport() {
-        val fix = deps.alerts().lastFix.value
-        if (fix == null) {
-            CarToast.makeText(carContext, "Waiting for a GPS fix", CarToast.LENGTH_SHORT).show()
-            return
-        }
+        val fix = deps.alerts().lastFix.value ?: return CarToast.makeText(carContext, "Waiting for a GPS fix", CarToast.LENGTH_SHORT).show()
         // Everything is captured at the moment of the tap (§8.5 step 1), before any screen or coroutine.
         val snap = fix.toSnapshot()
         val (limit, source) = session.currentLimit()
@@ -221,11 +207,8 @@ class HomeScreen(carContext: CarContext, private val session: NavSession) : Scre
             // The new "My reports" marker stays quiet until the car is 300 m away (§8.5), or it would alert at once.
             deps.reports().localPoiOf(id)?.let { deps.alerts().quietHere(it) }
             // No car microphone (car API < 5 or no permission): the report is saved without a comment (§8.5).
-            if (io.autonav.alerts.reports.CarVoiceRecorder.available(carContext)) {
-                screenManager.push(VoiceCommentScreen(carContext, session, id))
-            } else {
-                CarToast.makeText(carContext, "Camera reported. Check it on your phone after the drive.", CarToast.LENGTH_LONG).show()
-            }
+            if (io.autonav.alerts.reports.CarVoiceRecorder.available(carContext)) screenManager.push(VoiceCommentScreen(carContext, session, id))
+            else CarToast.makeText(carContext, "Camera reported. Check it on your phone after the drive.", CarToast.LENGTH_LONG).show()
         }
     }
 }

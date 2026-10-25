@@ -11,15 +11,9 @@ import androidx.car.app.CarContext
 import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.Session
-import androidx.car.app.model.Action
-import androidx.car.app.model.Alert
-import androidx.car.app.model.AlertCallback
-import androidx.car.app.model.CarIcon
-import androidx.car.app.model.CarText
 import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.NavigationManagerCallback
 import androidx.car.app.versioning.CarAppApiLevels
-import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
@@ -32,6 +26,7 @@ import io.autonav.alerts.R
 import io.autonav.alerts.alerts.ActiveAlert
 import io.autonav.alerts.alerts.AlertCoordinator
 import io.autonav.alerts.alerts.CarAlertSink
+import io.autonav.alerts.car.screens.CarUi
 import io.autonav.alerts.car.screens.HomeScreen
 import io.autonav.alerts.car.screens.RoutePreviewScreen
 import io.autonav.alerts.car.screens.SearchScreen
@@ -47,7 +42,8 @@ import io.autonav.alerts.nav.LimitAnnouncer
 import io.autonav.alerts.nav.StopReason
 import io.autonav.alerts.settings.AppSettings
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -66,9 +62,10 @@ import kotlin.math.roundToInt
  * service outlive it (§9.3): a session ending does not stop a route.
  *
  * Threads (§2): the Car App Library calls (`onCreateScreen`, `onNewIntent`, the callbacks) and
- * everything on `lifecycleScope` run on the main thread. The alert collector's `combine` also
+ * everything on `lifecycleScope` run on the main thread. The marker-state collector also
  * runs there; it posts view updates to the views' own handlers. [showCarAlert] is the one entry
- * from the alert thread (`AlertDispatcher`) and posts to the main thread itself.
+ * from the alert thread (`AlertDispatcher`) and posts to the main thread itself. The screens see
+ * it as their [CarScreenHost] (deps, units, surface, report limit).
  *
  * Hard rules it upholds: one stop on the car screen, Google's X on the host's travel-estimate
  * card, which reaches us through `onStopNavigation` (rule 2); the speed panel and the markers
@@ -76,12 +73,12 @@ import kotlin.math.roundToInt
  * and review and send happen on the phone, with the end-of-drive reminder from `onDestroy`
  * (rule 8).
  */
-class NavSession : Session(), DefaultLifecycleObserver {
+class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
     /** The app's singletons; valid from `onCreateScreen` (screens read it as `session.deps`). */
-    lateinit var deps: CarDeps
+    override lateinit var deps: CarDeps
         private set
     /** The map on the car's surface, with the overlays the screens and alerts talk to (§8). */
-    lateinit var surface: MapSurface
+    override lateinit var surface: MapSurface
         private set
     private lateinit var markers: PoiMarkerLayer
     private lateinit var limitMarker: io.autonav.alerts.map.LimitChangeMarker
@@ -104,7 +101,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
      */
     @Volatile private var settings = AppSettings()
     /** Display units from the settings: miles, yards and mph when true (§13). Read by every screen. */
-    val imperial: Boolean get() = settings.units == Units.IMPERIAL
+    override val imperial: Boolean get() = settings.units == Units.IMPERIAL
     /** The speed and a limit in the display units (§8.4). */
     private val unit: String get() = if (imperial) "mph" else "km/h"
 
@@ -184,14 +181,20 @@ class NavSession : Session(), DefaultLifecycleObserver {
      * Best-known speed limit right now, for a report (DESIGN.md §8.5): Google's (only known while
      * speeding), else the camera being alerted, else none.
      */
-    fun currentLimit(): Pair<Int?, io.autonav.alerts.data.LimitSource> {
+    override fun currentLimit(): Pair<Int?, io.autonav.alerts.data.LimitSource> {
         val now = System.currentTimeMillis()
         // Same windows as the speed panel (§8.4): Google's limit for 60 s, a camera's for 20 s. The
         // camera's limit is in its data's own unit; the report keeps the source so review can show it.
-        derivedLimit?.takeIf { now - it.second < 60_000 }?.let { return it.first to io.autonav.alerts.data.LimitSource.GOOGLE }
-        deps.alerts().active.value?.takeIf { now - it.timeMs < 20_000 }?.speedLimit?.let { return it to io.autonav.alerts.data.LimitSource.CAMERA }
+        googleLimit(now)?.let { return it to io.autonav.alerts.data.LimitSource.GOOGLE }
+        freshAlert(deps.alerts().active.value, now)?.speedLimit?.let { return it to io.autonav.alerts.data.LimitSource.CAMERA }
         return null to io.autonav.alerts.data.LimitSource.NONE
     }
+
+    /** Google's limit from the last speeding update, while it is under 60 s old at [now] (§8.4). */
+    private fun googleLimit(now: Long): Int? = derivedLimit?.takeIf { now - it.second < 60_000 }?.first
+
+    /** [active] while it is under 20 s old at [now]: the camera whose limit the panel and a report may use (§8.4, §8.5). */
+    private fun freshAlert(active: ActiveAlert?, now: Long): ActiveAlert? = active?.takeIf { now - it.timeMs < 20_000 }
 
     /** geo: / google.navigation: / ACTION_NAVIGATE → preview or search (DESIGN.md §9.1). */
     private fun handleNavigateIntent(intent: Intent): Screen? {
@@ -209,55 +212,40 @@ class NavSession : Session(), DefaultLifecycleObserver {
     // The session's collectors, all on lifecycleScope (main thread), cancelled with the session.
     private fun startCollectors() {
         // Arrival has ended guidance (DESIGN.md §8 "Arrival"): say so, and remind about reports (§8.5).
-        lifecycleScope.launch {
-            deps.guidance().arrivals.collect { title ->
-                val text = if (title.isBlank()) carContext.getString(R.string.car_arrived) else carContext.getString(R.string.car_arrived_at, title)
-                CarToast.makeText(carContext, text, CarToast.LENGTH_LONG).show()
-                App.appScope.launch { deps.reports().remindIfDrafts() }
-            }
-        }
+        deps.guidance().arrivals.onEach { title ->
+            val text = if (title.isBlank()) carContext.getString(R.string.car_arrived) else carContext.getString(R.string.car_arrived_at, title)
+            CarToast.makeText(carContext, text, CarToast.LENGTH_LONG).show()
+            App.appScope.launch { deps.reports().remindIfDrafts() }
+        }.launchIn(lifecycleScope)
         // Settings the session reads on every fix are copied into fields here, so the hot paths never
         // touch DataStore. The map follows the one satellite setting (§8 "Satellite view"), and only
         // when it differs: setting it re-applies the view.
-        lifecycleScope.launch {
-            deps.settings().settings.collect {
-                settings = it
-                if (surface.satellite != it.satelliteMap) surface.satellite = it.satelliteMap
-            }
-        }
+        deps.settings().settings.onEach {
+            settings = it
+            if (surface.satellite != it.satelliteMap) surface.satellite = it.satelliteMap
+        }.launchIn(lifecycleScope)
         // The map's pill writes the setting, like More's toggle and the phone's, so all three agree (§8).
         surface.onSatelliteToggle = { on ->
             lifecycleScope.launch { deps.settings().update { it.copy(satelliteMap = on) } }
         }
         // The listeners follow the current navigator: a new key makes a new one (DESIGN.md §9.3).
         lifecycleScope.launch { deps.navigator().ensureNavigator() }
-        lifecycleScope.launch {
-            deps.navigator().navigator.collect { nav -> attachNavigator(nav) }
-        }
+        deps.navigator().navigator.onEach(::attachNavigator).launchIn(lifecycleScope)
         // The SDK builds its ETA card when guidance starts, so the controls-off calls are repeated then
         // (DESIGN.md §8 step 6; on the bench a call made before the card existed had no effect).
-        lifecycleScope.launch {
-            deps.guidance().guiding.collect { g ->
-                surface.refreshSdkControls("guiding=$g")
-                delay(2_000)
-                surface.refreshSdkControls("guiding=$g +2s")
-            }
-        }
+        deps.guidance().guiding.onEach { g ->
+            surface.refreshSdkControls("guiding=$g")
+            delay(2_000)
+            surface.refreshSdkControls("guiding=$g +2s")
+        }.launchIn(lifecycleScope)
         // Every fix: redraw markers (DESIGN.md §8.1) and update the speed panel (§8.4).
         // The same fix the engine used feeds the panel, so the dial and the engine can't diverge (§8.4).
-        lifecycleScope.launch {
-            combine(deps.alerts().lastFix, deps.alerts().nearby, deps.alerts().active, deps.alerts().facingAway, deps.alerts().verdicts) { f, n, a, away, verdicts ->
-                Triple(f, n, a) to (away to verdicts)
-            }
-                .collect { (t, av) ->
-                    val (fix, nearby, active) = t
-                    val (away, verdicts) = av
-                    // Speed feeds the "moved faster than 5 mph in the last 2 minutes" block on sending (§8.5).
-                    fix?.let { deps.driving().onSpeed(it.speedMps) }
-                    markers.redraw(nearby, fix, active, away, verdicts)
-                    updateSpeedPanel(fix?.speedMps, active)
-                }
-        }
+        deps.alerts().markers.onEach { m ->
+            // Speed feeds the "moved faster than 5 mph in the last 2 minutes" block on sending (§8.5).
+            m.lastFix?.let { deps.driving().onSpeed(it.speedMps) }
+            markers.redraw(m)
+            updateSpeedPanel(m.lastFix?.speedMps, m.active)
+        }.launchIn(lifecycleScope)
         // Limit changes ahead (DESIGN.md §8.4a): once a second, never per fix.
         lifecycleScope.launch {
             while (isActive) {
@@ -307,10 +295,7 @@ class NavSession : Session(), DefaultLifecycleObserver {
     }
 
     // Camera idle: the same state as the last fix, drawn for the new viewport (§8.1).
-    private fun redrawMarkers() {
-        val a = deps.alerts()
-        markers.redraw(a.nearby.value, a.lastFix.value, a.active.value, a.facingAway.value, a.verdicts.value)
-    }
+    private fun redrawMarkers() = markers.redraw(deps.alerts().markers.value)
 
     // --- Limit changes ahead (DESIGN.md §8.4a) --------------------------------------------------
 
@@ -385,8 +370,8 @@ class NavSession : Session(), DefaultLifecycleObserver {
         }
         // Source order (§8.4): Google (kept 60 s), then the camera being alerted (20 s; a zone exit has
         // no limit of its own to show), then OpenStreetMap. A camera's limit is converted to the display units.
-        val google = derivedLimit?.takeIf { now - it.second < 60_000 }?.first
-        val camera = active?.takeIf { now - it.timeMs < 20_000 && it.kind != AlertKind.ZONE_EXIT }?.limitShown(imperial)
+        val google = googleLimit(now)
+        val camera = freshAlert(active, now)?.takeIf { it.kind != AlertKind.ZONE_EXIT }?.limitShown(imperial)
         // OpenStreetMap last (DESIGN.md §8.4a): from the downloaded tiles, never a live lookup.
         val osm = if (google == null && camera == null && settings.osmLimitsOn) {
             deps.alerts().lastFix.value?.let { f -> deps.speedLimits().limitAt(f.lat, f.lon, f.heading) }
@@ -404,11 +389,10 @@ class NavSession : Session(), DefaultLifecycleObserver {
         if (source == SpeedPanelView.Source.OSM && limit != null && shownNow != null &&
             shownNow.source == SpeedPanelView.Source.OSM && limit != shownNow.limit && fixNow != null
         ) {
-            val p = pendingOsm
-            if (p == null || p.limit != limit) pendingOsm = HeldLimit(limit, source, now, fixNow.lat, fixNow.lon)
-            val q = pendingOsm!!
+            val q = pendingOsm?.takeIf { it.limit == limit } ?: HeldLimit(limit, source, now, fixNow.lat, fixNow.lon)
             val held = now - q.timeMs >= 2_000 || Geo.distanceM(q.lat, q.lon, fixNow.lat, fixNow.lon) >= 40
-            if (!held) limit = shownNow.limit else pendingOsm = null
+            pendingOsm = if (held) null else q
+            if (!held) limit = shownNow.limit
         } else pendingOsm = null
         // Hold the last limit through short gaps (junctions, road pieces meeting): up to 30 s or
         // 300 m (DESIGN.md §8.4), so the sign doesn't blink to "–".
@@ -462,26 +446,17 @@ class NavSession : Session(), DefaultLifecycleObserver {
             return true
         }
         if (carContext.carAppApiLevel < CarAppApiLevels.LEVEL_5) return false
-        val icon = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
         // Host alert ids are Int; the same id for the same POI, so a later stage updates the card in place.
         val id = (alert.poiId % 100_000).toInt()
         main.post {
             val am = carContext.getCarService(AppManager::class.java)
-            val builder = Alert.Builder(id, CarText.create(alert.display), duration)
-                .setIcon(icon)
-                .addAction(Action.Builder().setTitle("Dismiss").setOnClickListener { am.dismissAlert(id) }.build())
-                .addAction(Action.Builder().setTitle("Mute 30 min").setOnClickListener {
-                    deps.alerts().muteSet(alert.setId)
-                    am.dismissAlert(id)
-                }.build())
-                .setCallback(object : AlertCallback {
-                    override fun onCancel(reason: Int) = Unit
-                    override fun onDismiss() = Unit
-                })
-            if (subtitle.isNotEmpty()) builder.setSubtitle(CarText.create(subtitle))
+            val card = CarUi.alert(id, alert.display, duration, CarUi.icon(bitmap), subtitle, "Dismiss" to { am.dismissAlert(id) }, "Mute 30 min" to {
+                deps.alerts().muteSet(alert.setId)
+                am.dismissAlert(id)
+            })
             runCatching {
                 am.dismissAlert(id)
-                am.showAlert(builder.build())
+                am.showAlert(card)
             }.onFailure { Log.w(TAG, "showAlert failed", it) }
         }
         return true

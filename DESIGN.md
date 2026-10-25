@@ -182,22 +182,23 @@ The tree below is the source tree as it is (regenerated from the code on 2026-10
 app/src/main/kotlin/io/autonav/alerts/
   App.kt                      Hilt application; the app-wide coroutine scope
   alerts/
-    AlertCoordinator.kt       Runs AlertEngine on every fix; 5×5 cell cache; resolves each set's stages (lead-time slider); ActiveAlert for the UI; feeds the core AlertTraceLog (§10–12, §11.1, §15.5)
+    AlertCoordinator.kt       Runs AlertEngine on every fix; 5×5 cell cache; resolves each set's stages (lead-time slider); ActiveAlert for the UI; MarkerState in one `markers` StateFlow (nearby, facingAway, verdicts, active, lastFix; the per-field flows are views of it); feeds the core AlertTraceLog (§10–12, §11.1, §15.5)
     AlertDispatcher.kt        Routes an AlertEvent: the car banner via CarAlertSink, else a navigation heads-up notification; speech via NavTts (§12, §12.1, §12.2)
     NavTts.kt                 TextToSpeech on the navigation audio channel, audio focus (duck, never pause), drives the core SpeechScheduler; alerts and directions in one voice (§12.3)
   car/
     NavCarAppService.kt       The CarAppService Android Auto binds to; navigation category; host validator; geo:/NAVIGATE intents (§9.1)
-    NavSession.kt             One car session: creates MapSurface, PoiMarkerLayer, TripPublisher; starts/stops CarDataSource, AlertCoordinator and the recorder; CarAlertSink → banner (§8, §9)
+    NavSession.kt             One car session: creates MapSurface, PoiMarkerLayer, TripPublisher; starts/stops CarDataSource, AlertCoordinator and the recorder; CarAlertSink → banner; the screens' CarScreenHost (§8, §9)
+    CarScreenHost.kt          What the car screens read from their session: the app's singletons (CarDeps), the display units, the MapSurface and the best-known limit for a report; NavSession is the one implementation, and the screens are typed against it so their templates can be built in JVM tests (§8, §15.1)
     CarDeps.kt                The car side's handle on the Hilt singletons (sessions and screens are built by the host) (§2)
     TripMapper.kt             NavInfo → RoutingInfo, TravelEstimate, Trip; displayKey so a template is re-sent only on change (§8, §12.4)
     TripPublisher.kt          NavigationManager.navigationStarted / updateTrip / navigationEnded from the session, whichever screen is on top (§9.3, §12.4)
     screens/HomeScreen.kt     The map: free drive or guidance; action strip Search · Report · Recents · More; one-tap Report (§8, §8.5)
     screens/SearchScreen.kt   SearchTemplate: Places autocomplete, recents in the empty state, contacts above the results (§8, §8.2, §8.3)
     screens/RoutePreviewScreen.kt  Route alternatives, Go; Back abandons the preview (§8, §8.3a)
-    screens/ContactsScreen.kt Contacts with a postal address, recent first (§8.3)
+    screens/ContactsScreen.kt Contacts with a postal address, recent first; a LoadingListScreen (§8.3)
     screens/VoiceCommentScreen.kt  Step 2 of a report: the spoken comment from the car mic; no review or Send in the car (§8.5)
-    screens/ListScreens.kt    MoreScreen (live GPS/Alerts rows, re-sent only on change), RouteOptionsScreen, PoiLayersScreen, AlertsRecordsScreen, RecentsScreen, PlaceDetailScreen, ConfirmScreen (§8, §8.2, §8.3a, §12.3)
-    screens/CarUi.kt          Shared by the car screens: header/loading/list/row template helpers, icons, PlaceEntity.toDestination, the contact pick (§8, §8.3)
+    screens/ListScreens.kt    LoadingListScreen (a list screen loaded then re-sent once: loading, empty message, actions, optional reload on resume), MoreScreen (live GPS/Alerts rows, re-sent only on change), RouteOptionsScreen, PoiLayersScreen, AlertsRecordsScreen, RecentsScreen, PlaceDetailScreen, ConfirmScreen (§8, §8.2, §8.3a, §12.3)
+    screens/CarUi.kt          Shared by the car screens: header/loading/list template helpers, row and contactRow, host alert cards (alert), icons, PlaceEntity.toDestination, the contact pick (§8, §8.3, §12.1)
   contacts/ContactsSource.kt  Contacts' postal addresses, geocoded on pick and cached (§8.3)
   data/
     AppDatabase.kt            Room database, migrations, DatabaseModule (§4.1, §11.1 MIGRATION_6_7)
@@ -218,30 +219,30 @@ app/src/main/kotlin/io/autonav/alerts/
     ZoomPillView.kt           + over − in one pill, right column; a MapButton (§8)
     MapButtonView.kt          MapButton, the base of the three right-hand buttons (size, day/night palette, edge, dark setter); MapButtonView, the round recenter button (§8)
     LimitChangeMarker.kt      The next limit change on the map (§8.4a)
-    PoiMarkerLayer.kt         Markers redrawn per fix as a diff; dimmed facing-away cameras; verdicts from the engine (§8.1)
-    IncidentReporting.kt      Google's incident reporting: detected when a future SDK offers it on Android Auto (§16 #21)
+    PoiMarkerLayer.kt         Markers redrawn per fix as a diff from the coordinator's MarkerState; dimmed facing-away cameras; verdicts from the engine; draws through an internal MarkerMap/Drawn seam over GoogleMap/Marker (production adapter; the JVM diff test's fake map, §15.1) (§8.1)
   nav/
     NavigatorHolder.kt        The Navigator and Places client, created only after applyApiKey() (§1.4, §9)
-    GuidanceController.kt     Destination, preview, routes, start/stop guidance (StopReason), route points ahead; GuidanceState in core (§8, §8.3a, §9.3)
+    GuidanceController.kt     Destination, preview, routes, start/stop guidance (StopReason), route points ahead; RouteView in one `route` StateFlow (the per-field flows are views of it); GuidanceState in core (§8, §8.3a, §9.3)
     NavUpdatesService.kt      The service the Navigation SDK sends the turn-by-turn feed to (§9.3)
     DirectionsSpeaker.kt      Speaks the directions via NavTts while the SDK's voice is off; falls back to the SDK's voice (§12.3)
     EcoRoutes.kt              Energy-efficient route token from the Routes API, on the user's own key (§8.3a)
     LimitAnnouncer.kt         When to announce a limit change ahead (§8.4a)
-    AdaptiveLocationSource.kt The phone's fused location at its own rate, the car's GPS while fresh, the simulator on the bench → Fix via FixEstimator; EstimateMapper; LocationStats for More → GPS (§10)
-    CarDataSource.kt          Car speed and car GPS from CarHardwareManager at UPDATE_RATE_FASTEST (§10.6, §10.7)
+    AdaptiveLocationSource.kt The phone's fused location at its own rate (phoneRequest(), the one §10.2 request), the car's GPS while fresh, the simulator on the bench → Fix via FixEstimator; EstimateMapper; LocationStats for More → GPS (§10)
+    CarDataSource.kt          Car speed and car GPS from CarHardwareManager at UPDATE_RATE_FASTEST; listenTo(hw, executor) registers the listeners; the freshness rules in the companion (§10.6, §10.7)
   osm/
     SpeedLimitRepository.kt   The on-phone limit file: limitAt, roadAhead; LimitIndex and LimitLookahead from core (§8.4a)
     SpeedLimitWorker.kt       The one-off Geofabrik download, streamed, as a foreground WorkManager job (§8.4a)
     RemoteZip.kt              Reads one entry of a remote zip with HTTP range requests (§8.4a)
   pgw/
-    PgwClient.kt              PocketGPSWorld login, feed check, download, report submission over HTTPS (§6, §8.5)
+    PgwClient.kt              PocketGPSWorld login, feed check, download, report submission over HTTPS; the site's base and feed URLs are constructor values (production: PgwConfig) so tests run it against a fake site (§6, §8.5)
     PgwWorkers.kt             PgwScheduler (daily), PgwFeedCheckWorker, PgwSyncWorker (never while guiding), ReportSubmitWorker (phone Send only) (§6.2, §6.2a, §8.5)
   phone/
     MainActivity.kt           The phone UI host; PhoneDeps, built by Hilt (§13)
     PhoneScreens.kt           The Compose screens: Settings (setup, key creation, backup, diagnostics), POIs, Cameras, Reports (§13, docs/SETTINGS.md)
-    PhoneUi.kt                The phone screens' shared cards, rows, text styles, chips, folds, dialogs and save-to-file launcher (§13)
+    PhoneUi.kt                The phone screens' shared cards, rows, text styles, chips, folds, dialogs, save-to-file launcher, the background-work button (Btn) and the IO hop (io) (§13)
   places/PlacesSearch.kt      Places autocomplete with session tokens and location bias; recents (§8, §8.2)
-  util/Background.kt          WorkManager network constraints and notification channels shared by the PGW sync, the limit download and the report reminder (§6.2, §8.4a, §8.5)
+  util/Background.kt          WorkManager network constraints, notification channels (`ensureChannel` with an optional channel configurator) and the `POST_NOTIFICATIONS` gate (`notifyIfAllowed`) shared by the alert heads-up, the PGW sync, the limit download and the report reminder (§6.2, §8.4a, §8.5, §12.2)
+  util/Flows.kt               `StateFlow.view(f)`: a synchronous read-only view of one field of a state flow, for RouteView and MarkerState (§2)
   reports/
     CameraReportRepository.kt Reports captured in one tap, drafts, review and Send on the phone, "My reports" set (§8.5)
     DrivingState.kt           "Never while driving" guard for sending (§8.5)
@@ -255,19 +256,19 @@ app/src/debug/kotlin/io/autonav/alerts/bench/BenchReceiver.kt   Debug-only adb b
 
 core/src/main/kotlin/io/autonav/alerts/core/
   alerts/
-    AlertEngine.kt            The alert maths: Fix, AlertPoi, AlertStage, AlertEvent, RouteMatcher; the direction hard rule, stages, ratchet, zones (§11, §11.1)
-    AlertTrace.kt             Verdict and ClearReason enums; the engine's optional diagnostic hook (§11 step 10, §8.1)
+    AlertEngine.kt            The alert maths: Fix, AlertPoi, AlertStage, AlertEvent, RouteMatcher; the direction hard rule applied, stages, ratchet, the open average-speed zone as one Zone holder, fire() marks a stage, emits it and feeds the zone chain; AlertKind carries each kind's speech priority and isStage (§11, §11.1, §12.3)
+    AlertTrace.kt             Verdict (with its `suppressed reason=` word) and ClearReason enums; directionMismatchDeg, the one place the camera direction rule is written (§11 step 3, hard rule 1); the engine's optional diagnostic hook (§11 step 10, §8.1)
     AlertTemplateRenderer.kt  {category} {speed} {units} {distance} {direction} templates (§7.2)
     SpeechScheduler.kt        The speech queue policy: replace, stale, never drop PASSING, record ring; the watchdog extension while the engine still speaks; Record.describe()/logLine() (§12.3)
-    AlertTraceLog.kt          The engine's trace as alert-debug lines and the PASSED passage summary; TraceInfo (§11 step 10, §15.5)
+    AlertTraceLog.kt          The engine's trace as alert-debug lines and the PASSED passage summary; TraceInfo; mismatchDeg and reasonOf delegate to directionMismatchDeg and Verdict.reason (§11 step 10, §15.5)
   contacts/ContactMatch.kt    Name matching, postcodes, geocode cache key (§8.3)
   diag/
     BatchLog.kt               One log channel's 15 s batches with a fix summary per block (§15.5)
     DriveLog.kt               The drive recorder's CSV format, read for replay (§15.5)
   geo/
-    Geo.kt                    Haversine, bearings, angle differences; unit constants (mile, yard, mph⇄km/h), flat-projection metres-per-degree and point/segment distances for the road matching
+    Geo.kt                    Haversine, bearings, angle differences; unit constants (mile, yard, mph⇄km/h), flat-projection metres-per-degree and point/segment distances for the road matching; cumulativeM, the distance along a point list (the route's and the road walk's measure)
     LatLngLike.kt             A position type the app's map types can satisfy
-  io/Io.kt                    skipFully, the secure XML factory, SHA-256 hex, shared by the importers, the PGW feed and the limit file (§5, §6.2, §8.3, §8.4a)
+  io/Io.kt                    skipFully, the secure XML factory, SHA-256 hex, Element.child/childText and NodeList.elements for the KML, GPX and PGW-feed DOM reads, shared by the importers, the PGW feed and the limit file (§5, §6.2, §8.3, §8.4a)
   location/FixEstimator.kt    Speed (median of 3; displacement only without hasSpeed) and heading (adaptive chord, circular EMA, GPS-bearing blend, stale guard, none when still) (§10.2, §10.6a)
   nav/
     GuidanceState.kt          Everything a route must not pass to the next; reset by stopGuidance (§9.3)
@@ -292,8 +293,8 @@ core/src/main/kotlin/io/autonav/alerts/core/
     Grid.kt                   0.01° grid cells and neighbourhoods (§4.3)
     importers/IgoTxtImporter.kt   iGO TXT, checked against PGW v24.101 (§5.2)
     importers/PgwOv2.kt           PGW's OV2 download: direction and limit from each entry's name (§5.2a)
-    importers/OtherImporters.kt   FormatSniffer, KmlImporter, GpxImporter, Ov2Importer, CsvImporter, CsvProfile (§5.3–5.7)
-    importers/ZipEntries.kt       Zip reading via the central directory; LazyBytes (§5.8)
+    importers/OtherImporters.kt   FormatSniffer, KmlImporter, GpxImporter, Ov2Importer, CsvImporter, CsvProfile; dirTypeOf (the one bearing→DirectionType rule for every importer), ImportCollector/collectImport (§5.3–5.7)
+    importers/ZipEntries.kt       Zip reading via the central directory; LazyBytes, with LazyBytes.select for a lazily keyed subset (§5.8)
 ```
 
 Not in the code (designed only, §17–18 and README "Planned"): the Home Assistant people finder, EV chargers, Google Maps history imports, a phone "Send to car" target, phone-only background alerts.
@@ -1030,6 +1031,7 @@ Each redraw:
 - **Deleting a Google-sourced entry** writes a `HiddenPlace` tombstone, so the next Takeout, Timeline or Data Portability import doesn't bring it back.
 - **We can't delete it inside Google Maps**, because there's no write API. The phone app's Places screen has a "Manage in Google My Activity" link for that.
 - Favourites can't be removed from the recents action. Removing them needs Unfavourite or the phone app.
+- **Amendment (owner, 2026-10-25):** nothing built today creates a favourite: the car's place detail with its Favourite action was never built (§8 table, "designed, not built") and the phone has no Places screen (§13 item 10), so `PlacesSearch.setKind`/`restore` had no caller and were removed with the reduction pass. The `FAVOURITE` kind, its icon in the search list and its place in the list order **stay**, because rows from older data can carry it. Bringing the action back means building the place detail (ISSUES D6 resolved this way).
 
 ### 8.2a Home and Work from your Google account — removed
 **Decision (owner, 2026-10-12): removed completely.** The feature fetched the Home and Work set in Google Maps through Google's Data Portability API (`maps.aliased_places`, in-app Google sign-in, one-time or time-based access) and offered them as the first rows of the car's search. It was built and tested end to end, but **Google's export carries no Home or Work for the owner's account** under any plausible scope: `maps.aliased_places` gives an empty "My labeled places" file, `maps.commute_settings` only the commute mode, `maps.commute_routes` nothing — checked with direct API calls outside the app, fresh jobs, archive index complete and not truncated, while Google Maps shows both. Google's export catalogue lists a separate "Home and Work" object with no documented scope. The owner's rule stands: **Google Maps is the only acceptable source** (one Home and Work, the same in both apps), and a manual set-by-address fallback was declined, so with no working source the feature is out rather than half-working.
@@ -1214,7 +1216,7 @@ What was learned, kept for any future attempt: Data Portability scopes can't be 
 - **As built (2026-10-24): there is no foreground service of our own.** `NavCarAppService` carries `foregroundServiceType="location"` in the manifest and the host keeps it bound while the car is connected (§2 "Process model"); `NavUpdatesService` is the plain service the SDK delivers the turn-by-turn feed to (`registerServiceForNavUpdates`). The ongoing next-turn notification is the host's own. A separate foreground service for phone-only background alerts is on the planned list (README).
 - `TripPublisher` (session-level; 2026-10-12, owner: "nav updates on the driver's screen, not just the main screen") calls `NavigationManager.navigationStarted()` and then `updateTrip(Trip)` on **every** turn-by-turn update while guiding, **whichever screen is on top** (Search, More, the preview or the home map) and through reroutes. As built it is `car/TripPublisher`, created by `NavSession` and fed by `NavUpdatesService`, with `TripMapper`, so the cluster never goes stale while another of our screens is open. When another app is full screen, Android Auto shows our turn info in its rail and widget, and on the driver's screen (§12.4).
 - `NavigationManagerCallback.onStopNavigation` (the user stopped from the system UI, or another navigation app took over) → logged (`Session hostStopNavigation`, then `Guidance stop caller=HOST`, §15.5) and `stopGuidance(HOST)` runs; the service stops. **This is the normal end of a route**: the X on the host's travel-estimate card arrives through the same callback (§8), so `HOST` covers both the X and a stop the host made on its own; the host's logcat (`GhNavFocusManager`, `RouteInfoService`) tells them apart. The toast "Navigation stopped by the car" was dropped with the strip stop (2026-10-13): it would have fired on every X tap. It used to be silent, so a host stop couldn't be told from a bug (2026-10-12).
-- **`stopGuidance(reason: StopReason)`** (`HOST`, `ARRIVED` (the final destination reached, owner 2026-10-13), `KEY_CHANGED`, `SESSION_DESTROY` (unused)) is the only way guidance ends. It resets everything the next route must not inherit: arrived, the route choices and the selected one, the route note, the waypoint and the EV re-ask state (§8.3a; before, arrived/choices/selected survived a stop). The X on the host's travel-estimate card is the user's way to it (§8, via `HOST`); every call is logged with its caller.
+- **`stopGuidance(reason: StopReason)`** (`HOST`, `ARRIVED` (the final destination reached, owner 2026-10-13), `KEY_CHANGED`; `SESSION_DESTROY` was never raised and was removed on 2026-10-25, owner: a destroyed session leaves guidance to the SDK as before, ISSUES D5) is the only way guidance ends. It resets everything the next route must not inherit: arrived, the route choices and the selected one, the route note, the waypoint and the EV re-ask state (§8.3a; before, arrived/choices/selected survived a stop). The X on the host's travel-estimate card is the user's way to it (§8, via `HOST`); every call is logged with its caller.
 - `onAutoDriveEnabled` (a DHU test hook) → start the simulator, only when a route is set (`start skipped: no route` otherwise; code review, 2026-10-23).
 - **Session listeners follow the navigator** (code review, 2026-10-23): the session's speeding listener and the SDK location listener (follow watchdog) are attached to whichever `Navigator` is current, again after a key change makes a new one, and taken off when the session ends.
 - In free-drive with no route, the service still runs while the car session is connected, so POI alerts keep working. It stops when the session is destroyed and nothing is being guided.
@@ -1504,6 +1506,7 @@ flowchart TB
 ```
 
 - Optional chime before speech (setting): a short earcon played through the same attributes in the same focus window.
+- The engine lives for the process (`NavTts` is a singleton created by Hilt); it is never shut down by us, so the `shutdown()` method nobody called was removed on 2026-10-25 (owner). A broken engine is dropped and re-created by the error path, not shut down.
 - Mute: global and per-set mute **stop speech only**; the visual alerts, including the passing card, still show. The engine still emits PASSING while muted: the coordinator only clears `speak`, it no longer rebuilds the candidates with `soundOn=false` (2026-10-12). The compulsory rule means "always when sound is on", not "even when muted". A "Silent mode" setting turns off visuals as well.
 
 ### 12.4 Driver's screen (instrument cluster) and rail
@@ -1775,6 +1778,8 @@ After that, users never set anything up: they press **Create a key with my Googl
 - **CameraReportRepository**: one-tap capture saves the position, heading and limit with its source; undo removes the report, its marker and its audio; type guessed from the comment ("van" → Mobile, "not there" → Camera gone); review edits update or remove the My reports marker; "not there" hides the related camera; DrivingState blocks Send while connected or moving.
 - **TurnByTurnMapper**: sample NavInfo → expected RoutingInfo.
 
+- **As built (2026-10-25, the test tier; owner: test code at least as large as the app's code):** 448 `:core` tests and 543 `:app` tests, 11,823 test code lines against 10,385 production code lines (blank, comment, import and package lines not counted). `:core` adds per-topic files beside the ones above (direction parity engine vs trace, stages, zones, speech policy, placeholders, estimator resets, limit index and file, shapefiles, every importer, zip safety, guidance texts, PGW pages/release/submission, I/O, geo, logs). `:app` has a pure-JVM tier (stage rules, set naming, icons, alert words, report guesses and submission, Eco routes, limit announcer, car data freshness, trip mapping, Maps key helpers, settings restore, regions, diagnostics names, phone helpers, RemoteZip on MockWebServer) and a **Robolectric tier** (SDK 36; TESTING.md §1.3): every car screen's template as a value through `CarScreenHost` and `TestCarContext` (rows, actions, one stop, one recenter, re-sent only on change), TripMapper and TripPublisher, Room DAOs and the migration chain from a raw v1 file, PoiRepository imports (one set per file), PgwClient and the PGW workers against a fake site, the speed-limit repository, notifications and their permission gate, camera reports, the speed panel, banner and map buttons, the marker-layer diff through its `MarkerMap` seam, NavTts focus and mute, the alert heads-up, the location feeds and contacts. Most of §15.2's list now runs on the JVM this way. What the tests found is in ISSUES.md (B8–B12, D9, D10); each test pins today's code unless it says otherwise.
+
 ### 15.2 Instrumented tests (`src/androidTest`)
 - Room: staging import, atomic swap keeping the user's customisations, cleanup of leftover staging sets at startup, cascade delete.
 - **Automatic update end to end** (MockWebServer): feed shows new version → PgwSyncWorker runs with **no user action**; expired cookie → logs in once and continues; wrong password → AUTH_FAILED + one notification, old data kept; logged in but no package → SUBSCRIPTION_REQUIRED; Release.txt version ≠ feed version → warning but import goes ahead; during guidance → staging done, swap held until guidance ends.
@@ -1837,7 +1842,7 @@ Setup: phone with Android Auto developer mode → "Start head unit server"; `adb
 | Tag | File | Lines |
 |---|---|---|
 | `Session` | nav | `create api= host=`, `destroy`, `hostStopNavigation` |
-| `Guidance` | nav | `setDestination title lat lon placeId ev= tolls=`, `routeStatus=<OK\|…> ms= points=`, `start simulate=`, `stop caller=<HOST\|ARRIVED\|KEY_CHANGED\|SESSION_DESTROY>`, `rerouting`, `routeChanged points=`, `ecoReask status=`, `preview abandoned`, `arrived`, `Places remember "<title>"` |
+| `Guidance` | nav | `setDestination title lat lon placeId ev= tolls=`, `routeStatus=<OK\|…> ms= points=`, `start simulate=`, `stop caller=<HOST\|ARRIVED\|KEY_CHANGED>`, `rerouting`, `routeChanged points=`, `ecoReask status=`, `preview abandoned`, `arrived`, `Places remember "<title>"` |
 | `Trip` | nav | `navigationStarted` / `navigationEnded` |
 | `Map` | nav | `ready`, `surface w×h`, `visible Rect`, `tap x,y hit=<…>`, `followOff`, `recenter`, `refollow d=`, `rebuild d=`, `watchdog skip (reason)` |
 | `Search` | nav | `textChanged/submitted/voice len=`, `Places textSearch n= ms= status=`, `NavigateIntent` |
@@ -1895,7 +1900,7 @@ Setup: phone with Android Auto developer mode → "Start head unit server"; `adb
 | 20a | Creating the Maps key from the app (§13.1) | Needs an OAuth client set up once by the maintainer; the `cloud-platform` scope is sensitive, so the app is limited to 100 test users until Google verifies it; billing accounts can't be created by API; the API may need its terms accepted in the Console | Pasting a key by hand always works; billing and terms errors open the right Console page; the service name is confirmed and also looked up at run time if it changes |
 | 20b | Android Auto on the emulator | Recent emulator images ship only a stub of Android Auto (`1.2.x-stub`, no head-unit server), and Play says the real one "isn't compatible". Without it the DHU has nothing to connect to. | Copy Android Auto from a real phone (`adb pull` its split APKs, `install-multiple` on the emulator; the emulator translates ARM code). Works with 17.9 on the API 36 image (2026-10-12). Never from third-party APK sites. TESTING.md §3. |
 | 20c | Driving the DHU from scripts | The DHU console has no tap command, and GNOME blocks desktop screenshots | `bench.sh` uses a touch + rotary profile so `dpad` commands work, and the DHU's own `screenshot` command; restarting the DHU reopens the last nav app |
-| 21 | Live incident reporting on Android Auto (crashes, congestion, police, roadworks…) | Google Maps has it, but the Navigation SDK doesn't offer it to apps on Android Auto: "real-time disruptions are not available on Android Auto". As of SDK 8.0.0 the APIs exist on `NavigationView` only, and Google fixed the panel "appearing in Android Auto projections" in Apr 2025. Open request: googlemaps/flutter-navigation-sdk#726. | **Watched.** `IncidentReporting.kt` looks the APIs up by reflection on `NavigationViewForAuto` (`supportedBySdk/availableNow/showPanel`); its dead `enableButton` call, a `setReportIncidentButtonEnabled` that doesn't exist in SDK 8.0.0, was **removed 2026-10-12**. If a future SDK adds the APIs, Google's report button appears on the car map, plus "Report to Google Maps" in More, with no code change. A **quarterly GitHub Actions workflow** (`.github/workflows/nav-sdk-feature-watch.yml`, 1 Jan/Apr/Jul/Oct) runs `tools/check-nav-sdk-features.sh --latest` and opens an issue when Android Auto gains the APIs. It can also be run by hand from the Actions tab, or locally. |
+| 21 | Live incident reporting on Android Auto (crashes, congestion, police, roadworks…) | Google Maps has it, but the Navigation SDK doesn't offer it to apps on Android Auto: "real-time disruptions are not available on Android Auto". As of SDK 8.0.0 the APIs exist on `NavigationView` only, and Google fixed the panel "appearing in Android Auto projections" in Apr 2025. Open request: googlemaps/flutter-navigation-sdk#726. | **Watched by the workflow only** (owner, 2026-10-25: code no user can reach is removed). Until then `IncidentReporting.kt` looked the APIs up by reflection on `NavigationViewForAuto` (`supportedBySdk/availableNow/showPanel`) and `MapSurface` and the More screen switched the button and a "Report to Google Maps" row on if they existed; SDK 8.0.0 has none of them on Android Auto, so the row never appeared and the code was removed with the reduction pass. When a future SDK offers the APIs on Android Auto, the feature is designed here first and built again (button on the map, row in More). A **quarterly GitHub Actions workflow** (`.github/workflows/nav-sdk-feature-watch.yml`, 1 Jan/Apr/Jul/Oct) runs `tools/check-nav-sdk-features.sh --latest` and opens an issue when Android Auto gains the APIs. It can also be run by hand from the Actions tab, or locally. |
 | 22 | **Route cleared on drive-off** (first real-car drive, XPENG G6, wireless Android Auto, 2026-10-12) | A route set while parked (Search → Go) cleared within seconds of moving; EV routing on, Google Maps not navigating, no log survived. Candidates: **A** the EV re-ask on the first off-route after drive-off, racing the SDK's reroute from a headingless origin with the `RouteStatus` ignored (prime suspect); **B** the follow watchdog rebuilding `NavigationViewForAuto` while the preview's route overview held the camera far away, or comparing the SDK's phone-based camera with our car-GPS fix; **C** a host `onStopNavigation`, handled silently | Guards shipped together, each "do less, and say so": the re-ask policy (§8.3a), the watchdog free-drive-only against the SDK's own position (§8), the host stop logged and toasted (§9.3), `stopGuidance(reason)`. **Resolved when the next drive's `debug-nav` shows which fired** (`Guidance stop caller=`, `Trip navigationEnded`, `App start`, `Session`, `Location source` in the preceding 30 s), or that none did. **Bench, 2026-10-13: candidate C fired.** 2 min 35 s into a guided drive (emulator + DHU, nothing else navigating, no `Trip navigationEnded` from us beforehand) the host called `onStopNavigation`: our log `Session hostStopNavigation guiding=true` → `Guidance stop caller=HOST`; the host's own log `GH.GhNavFocusManager: Focus abandoned … GRANTED→RELEASING` then `RouteInfoService: Stopping Navigation`, 2 s after `GH.MsgNotifParser: No semantic reply action found for io.autonav.alerts … skipped=5` (the host parsing our notifications as messages). Cause not yet known; next run captures the host's `GH.GhNavFocusManager`/`RouteInfoService`/`MsgNotifParser` lines to a file for the 30 s before any stop. Alerts carried on in free drive after it. |
 | 23 | SDK-drawn controls dead on Android Auto (2026-10-12) | `NavigationViewForAuto` draws its own ETA card (with an X), header, recenter, speedometer and trip bar, but no touch reaches the SDK view through a `SurfaceCallback`, so they're dead and overlap ours | **Resolved by disabling** all of them on the inner `NavigationView` that `NavigationViewForAuto` wraps (§8 step 6, 2026-10-13); `NavigationViewForAuto` itself has no setters. The host's own travel-estimate card (drawn from our `Trip`, bottom-left) stays and its X is the one cancel on the car screen (owner, 2026-10-13; our strip stop was removed). Bench: no SDK card, header, recenter, speedometer or trip bar during guidance; the host's card and its X there (TESTING.md §6.2, U1). |
 | 24 | Some alerts not spoken (mixed: some spoke, some didn't, in no order; 2026-10-12) | Four independent silent paths, none logged: a `speaking` flag stuck after an interruption (`onStop` not handled, no timeout); a waiting stage replaced by the next one for the same POI, so only the last spoke, possibly after the camera; silent drops on a non-SUCCESS `speak()`/`onError`; the engine's rate limit setting the fired flag before deciding not to speak | The speech policy of §12.3 (onStop, watchdog, distance staleness, PASSING never dropped, retry then chime, every decision recorded), events never dropped (§11 step 7), `SpeechSchedulerTest`. Resolved when every STAGE has `spoken=true` except under mute. |

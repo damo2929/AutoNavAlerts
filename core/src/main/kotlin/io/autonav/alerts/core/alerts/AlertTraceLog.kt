@@ -3,7 +3,6 @@
 
 package io.autonav.alerts.core.alerts
 
-import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.poi.DirectionType
 import kotlin.math.roundToInt
 
@@ -75,7 +74,7 @@ class AlertTraceLog(
             sink("Trace", "enter poi=$poiId set=\"$set\" d=${d.toInt()} hdg=${deg(headingDeg)} camBrg=${deg(poiBearing?.toDouble())} dir=$dirType")
         } else {
             if (p.lastVerdict == Verdict.AHEAD_OK) sink("Trace", "leave poi=$poiId set=\"$set\" d=${d.toInt()} verdict=$verdict")
-            val reason = reasonOf(verdict)
+            val reason = verdict.reason
             val mismatch = mismatchDeg(poiBearing, dirType, headingDeg)
             val detail = if (verdict == Verdict.WRONG_DIRECTION && mismatch != null) "$reason(${mismatch.toInt()}°)" else reason
             p.lastSuppress = detail
@@ -116,8 +115,7 @@ class AlertTraceLog(
             return
         }
         sink("Trace", "spoken $kind poi=$poiId spoken=$spoken delayMs=${delayMs ?: "-"} outcome=$outcome")
-        val p = passages[poiId] ?: return
-        val rec = p.stages.lastOrNull { it.kind == kind && it.spoken == null } ?: return
+        val rec = passages[poiId]?.stages?.lastOrNull { it.kind == kind && it.spoken == null } ?: return
         rec.spoken = spoken
         rec.delayMs = delayMs
         rec.outcome = outcome
@@ -180,32 +178,15 @@ class AlertTraceLog(
     }
 
     companion object {
-        /** The verdict as the `suppressed reason=` word of §15.5. */
-        fun reasonOf(v: Verdict): String = when (v) {
-            Verdict.WRONG_DIRECTION -> "direction"
-            Verdict.OFF_ROAD -> "offRoad"
-            Verdict.NOT_AHEAD -> "notAhead"
-            Verdict.NOT_MOVING -> "notMoving"
-            Verdict.NO_HEADING -> "noHeading"
-            Verdict.OUT_OF_RANGE -> "outOfRange"
-            Verdict.BEHIND -> "behind"
-            Verdict.AHEAD_OK -> "ok"
-        }
+        /** The verdict as the `suppressed reason=` word of §15.5: [Verdict.reason]. */
+        fun reasonOf(v: Verdict): String = v.reason
 
         /**
-         * The camera's bearing against our heading (both ways for BOTH), or null when either is unknown.
-         * The same test as `AlertEngine.headingMismatch` (§11 step 3), which is private to the engine
-         * and takes its `AlertPoi`; this one takes the raw columns the trace has.
+         * The camera's bearing against our heading (both ways for BOTH), or null when either is unknown:
+         * [directionMismatchDeg] without its bearing-to-camera leg, from the raw columns the trace has.
          */
-        fun mismatchDeg(bearing: Float?, dirType: DirectionType, heading: Double?): Double? {
-            val b = bearing?.toDouble() ?: return null
-            val h = heading ?: return null
-            return when (dirType) {
-                DirectionType.ANY -> 0.0
-                DirectionType.ONE_WAY -> Geo.absAngleDiffDeg(b, h)
-                DirectionType.BOTH -> minOf(Geo.absAngleDiffDeg(b, h), Geo.absAngleDiffDeg(b + 180.0, h))
-            }
-        }
+        fun mismatchDeg(bearing: Float?, dirType: DirectionType, heading: Double?): Double? =
+            bearing?.toDouble()?.let { b -> heading?.let { directionMismatchDeg(b, dirType, it) } }
 
         private fun deg(v: Double?): String = if (v == null || v.isNaN()) "-" else v.roundToInt().toString()
         private fun metres(v: Double): String = if (v.isNaN()) "-" else v.roundToInt().toString()

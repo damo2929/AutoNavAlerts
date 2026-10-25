@@ -2,7 +2,13 @@
 
 What changed for the person using the app, by day. Each entry names the DESIGN.md section that holds the rule, where there is one; the commit history has the rest. Newest first.
 
-## 2026-10-25 — the reuse pass (uncommitted at the time of writing)
+## 2026-10-25 — the reduction pass and the test tier (uncommitted at the time of writing)
+
+- **No change to what you see or hear.** A second pass of reuse and plainer Kotlin took the code from 10,971 to about 10,330 code lines (11,816 before the reuse pass: −13% over both). The settings file, logs, notifications and screens are the same. The owner was told again that 50% is not reachable with every function kept, and chose this ceiling plus the removal of code no user could reach (owner, 2026-10-25).
+- **Removed because nobody could reach it** (owner, 2026-10-25): the stand-by code for Google's incident reporting on the car, which the Navigation SDK does not offer on Android Auto (a quarterly check still watches for it; DESIGN §16 row 21); the unused favourite and undo calls in the places search (favourites from older data still show; §8.2); an unused guidance stop reason (§9.3); an unused speech shutdown (§12.3).
+- **Many more automatic tests**, including tests that run Android code on the computer (Robolectric): the car screens' templates, the database, the camera-download jobs, notifications, the map views and speech. They pin today's behaviour so later changes can't drift from the design (DESIGN §15.1).
+
+## 2026-10-25 — the reuse pass (`1311634`)
 
 - **No change to what you see or hear.** The code was made smaller by reusing what was already there: 11,816 → 10,971 code lines (comments not counted, −7%), across 70 files; the behaviour, settings file, logs and screens are the same. The 50% cut the owner first asked for is not reachable without removing features; the owner chose the reuse pass only (DESIGN §3, the regenerated class map).
 - **Mute could no longer wedge speech** (found in passing while NavTts was simplified): muting while a *direction* was being spoken used to leave the speech queue waiting for ever, so every later alert and direction was silent until the app restarted. Now mute stops alerts, leaves the direction to finish, and the queue moves on (DESIGN §12.3).

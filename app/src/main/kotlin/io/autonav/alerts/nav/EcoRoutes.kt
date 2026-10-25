@@ -6,6 +6,7 @@ package io.autonav.alerts.nav
 import android.content.Context
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.settings.MapsKeyCreator
 import io.autonav.alerts.settings.SettingsStore
 import kotlinx.coroutines.Dispatchers
@@ -128,7 +129,7 @@ class EcoRoutes @Inject constructor(
             .header("X-Android-Cert", certHex)
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .build()
-        try {
+        runCatching {
             http.newCall(req).execute().use { r ->
                 val text = r.body.string()
                 if (!r.isSuccessful) {
@@ -138,13 +139,9 @@ class EcoRoutes @Inject constructor(
                         // 403 is the common first-run case: the key exists but the Routes API isn't enabled on it (§8.3a Bench).
                         if (r.code == 403) "turn on the Routes API for your Maps key in Settings" else "Routes API error ${r.code}")
                 }
-                val json = JSONObject(text)
-                val routes = json.optJSONArray("routes")
-                Log.i(TAG, "Routes API: ${routes?.length() ?: 0} routes, labels " +
-                    (0 until (routes?.length() ?: 0)).joinToString { routes!!.getJSONObject(it).optJSONArray("routeLabels").toString() })
-                pick(json)
+                pick(JSONObject(text))
             }
-        } catch (e: Exception) {
+        }.getOrElse { e ->
             Log.w(TAG, "Routes API call failed: ${e.message}")
             Result.Unavailable("no connection to the Routes API")
         }
@@ -167,11 +164,7 @@ class EcoRoutes @Inject constructor(
                 .minOfOrNull { it.optInt("startPolylinePointIndex", 0) } ?: return null
             val pts = decode(r.optJSONObject("polyline")?.optString("encodedPolyline").orEmpty())
             if (pts.size < 2) return null
-            var m = 0.0
-            for (i in 1..minOf(jamStart, pts.size - 1)) {
-                m += io.autonav.alerts.core.geo.Geo.distanceM(pts[i - 1].first, pts[i - 1].second, pts[i].first, pts[i].second)
-            }
-            return m.toInt()
+            return (1..minOf(jamStart, pts.size - 1)).sumOf { i -> Geo.distanceM(pts[i - 1].first, pts[i - 1].second, pts[i].first, pts[i].second) }.toInt()
         }
 
         /**

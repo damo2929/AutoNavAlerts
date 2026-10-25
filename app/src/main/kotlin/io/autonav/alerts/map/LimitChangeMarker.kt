@@ -7,7 +7,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
 import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
@@ -58,13 +57,10 @@ class LimitChangeMarker(private val density: Float) {
         main.post {
             val m = map ?: return@post
             val icon = images.getOrPut(value) { BitmapDescriptorFactory.fromBitmap(draw(value)) }
-            val mk = marker
-            if (mk == null) {
-                marker = m.addMarker(MarkerOptions().position(at).icon(icon).anchor(0.5f, 0.5f).zIndex(Z))
-            } else {
-                mk.position = at
-                mk.setIcon(icon)
-            }
+            marker = marker?.apply {
+                position = at
+                setIcon(icon)
+            } ?: m.addMarker(MarkerOptions().position(at).icon(icon).anchor(0.5f, 0.5f).zIndex(Z))
         }
     }
 
@@ -82,8 +78,7 @@ class LimitChangeMarker(private val density: Float) {
         val side = (30 * density).toInt()
         val bmp = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        val r = RectF(0f, 0f, side.toFloat(), side.toFloat())
-        c.drawRoundRect(r, 4 * density, 4 * density, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BACKING })
+        c.drawRoundRect(0f, 0f, side.toFloat(), side.toFloat(), 4 * density, 4 * density, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BACKING })
         val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = TEXT
             typeface = Typeface.DEFAULT_BOLD

@@ -117,10 +117,7 @@ class DriveRecorder @Inject constructor(
     }
 
     /** Writes buffered rows to disk now (before an export). */
-    @Synchronized
-    fun flush() {
-        runCatching { writer?.flush() }
-    }
+    @Synchronized fun flush() { runCatching { writer?.flush() } }
 
     /** All recordings, newest first. */
     fun files(): List<File> =

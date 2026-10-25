@@ -5,10 +5,8 @@ package io.autonav.alerts.pgw
 
 import android.app.NotificationManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.BackoffPolicy
 import androidx.work.CoroutineWorker
@@ -22,13 +20,19 @@ import androidx.work.workDataOf
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.autonav.alerts.BuildConfig
 import io.autonav.alerts.R
 import io.autonav.alerts.core.pgw.PgwConfig
+import io.autonav.alerts.core.pgw.PgwPages
 import io.autonav.alerts.core.pgw.PgwUpdateFeed
 import io.autonav.alerts.data.PoiRepository
+import io.autonav.alerts.data.ReportStatus
 import io.autonav.alerts.nav.GuidanceController
+import io.autonav.alerts.reports.CameraReportRepository
+import io.autonav.alerts.reports.DrivingState
+import io.autonav.alerts.settings.PgwState
 import io.autonav.alerts.settings.SettingsStore
-import io.autonav.alerts.util.ensureChannel
+import io.autonav.alerts.util.notifyIfAllowed
 import io.autonav.alerts.util.network
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -99,6 +103,9 @@ class PgwScheduler @Inject constructor(
     }
 }
 
+/** The feed's newest release recorded as the latest known (§6.2): what the phone's status shows, and what a sync compares with the installed version. */
+private fun PgwState.withLatest(r: FeedResult.Releases) = copy(latestVersion = r.newest?.version, latestSummary = r.newest?.summary)
+
 /**
  * Daily conditional GET of the RSS feed; queues a download on a new release (DESIGN.md §6.2, §6.2a). A
  * WorkManager periodic job built by Hilt (`@HiltWorker`), scheduled by [PgwScheduler.schedule]; runs on
@@ -123,10 +130,7 @@ class PgwFeedCheckWorker @AssistedInject constructor(
             FeedResult.NotModified -> settings.updatePgw { it.copy(lastFeedCheckMs = now) }
             is FeedResult.Releases -> {
                 val newest = r.newest
-                settings.updatePgw {
-                    it.copy(lastFeedCheckMs = now, feedEtag = r.etag, feedLastModified = r.lastModified,
-                        latestVersion = newest?.version, latestSummary = newest?.summary)
-                }
+                settings.updatePgw { it.withLatest(r).copy(lastFeedCheckMs = now, feedEtag = r.etag, feedLastModified = r.lastModified) }
                 // A download is due when the feed is newer than what's installed (a first run counts as newer), or
                 // the user switched package (OV2 ↔ iGO), or the import layout changed and the sets must be rebuilt (§5.2).
                 val wanted = settings.current().pgwDownload.idPackage
@@ -160,14 +164,23 @@ class PgwFeedCheckWorker @AssistedInject constructor(
  * private cache only until imported, then deleted.
  */
 @HiltWorker
-class PgwSyncWorker @AssistedInject constructor(
-    @Assisted context: Context,
-    @Assisted params: WorkerParameters,
+class PgwSyncWorker internal constructor(
+    context: Context,
+    params: WorkerParameters,
     private val client: PgwClient,
     private val settings: SettingsStore,
     private val repo: PoiRepository,
-    private val guidance: GuidanceController,
+    /** True while guidance runs (`GuidanceController.guiding`); a JVM test passes its own (§15.2). */
+    private val guiding: () -> Boolean,
 ) : CoroutineWorker(context, params) {
+    @AssistedInject constructor(
+        @Assisted context: Context,
+        @Assisted params: WorkerParameters,
+        client: PgwClient,
+        settings: SettingsStore,
+        repo: PoiRepository,
+        guidance: GuidanceController,
+    ) : this(context, params, client, settings, repo, { guidance.guiding.value })
 
     override suspend fun doWork(): Result {
         val force = inputData.getBoolean(KEY_FORCE, false)
@@ -176,7 +189,7 @@ class PgwSyncWorker @AssistedInject constructor(
         // and was built for the chosen package and this import layout (§6.2 "Sync now checks the feed").
         if (inputData.getBoolean(KEY_CHECK_FEED, false)) {
             runCatching { client.checkFeed(null, null) }.getOrNull()?.let { r ->
-                if (r is FeedResult.Releases) settings.updatePgw { it.copy(latestVersion = r.newest?.version, latestSummary = r.newest?.summary, pendingVersion = r.newest?.version) }
+                if (r is FeedResult.Releases) settings.updatePgw { it.withLatest(r).copy(pendingVersion = r.newest?.version) }
             }
             val st = settings.currentPgw()
             val samePackage = st.installedPackage == settings.current().pgwDownload.idPackage && st.installedLayout == IMPORT_LAYOUT
@@ -187,7 +200,7 @@ class PgwSyncWorker @AssistedInject constructor(
         }
         // Don't swap cameras mid-journey (DESIGN.md §6.2): retry shortly after guidance ends.
         // (The whole job waits, not only the swap; §6.2 would let the download and staging go ahead.)
-        if (guidance.guiding.value) return Result.retry()
+        if (guiding()) return Result.retry()
 
         val zip = File(client.cacheDir(), "pgw-${now}.zip")
         return try {
@@ -213,37 +226,38 @@ class PgwSyncWorker @AssistedInject constructor(
             Result.success()
         } catch (e: PgwAuthException) {
             // §6.3 "Wrong credentials": no retry (the next feed check will requeue once the login is fixed); notify once.
-            settings.updatePgw { it.copy(lastResult = "Login problem: ${e.message}") }
-            notify("PocketGPSWorld login failed", "Open AutoNavAlerts to fix your login.")
-            Result.failure()
+            failed("Login problem: ${e.message}", "PocketGPSWorld login failed" to "Open AutoNavAlerts to fix your login.")
         } catch (e: PgwSubscriptionException) {
             // §6.2a "Expired subscription": nothing more is downloaded until the user acts.
-            settings.updatePgw { it.copy(lastResult = "Subscription required: ${e.message}") }
-            notify("PocketGPSWorld subscription needed", e.message ?: "")
-            Result.failure()
+            failed("Subscription required: ${e.message}", "PocketGPSWorld subscription needed" to (e.message ?: ""))
         } catch (e: PgwParseException) {
             // §6.3 "Site layout changed": keep the old data; the phone's status line points at manual import.
-            settings.updatePgw { it.copy(lastResult = "Site changed: ${e.message}. Use manual import.") }
-            Result.failure()
+            failed("Site changed: ${e.message}. Use manual import.")
         } catch (e: Exception) {
             // §6.3 "Network/timeout": WorkManager's backoff (1 h, exponential), 3 attempts in all (§6.2 "Backoff").
-            settings.updatePgw { it.copy(lastResult = "Network problem: ${e.message}") }
-            if (runAttemptCount < 3) Result.retry() else Result.failure()
+            failed("Network problem: ${e.message}", retry = runAttemptCount < 3)
         } finally {
             // Debug builds keep the last download for diagnosis (adb pull …/cache/pgw/last.zip).
-            if (io.autonav.alerts.BuildConfig.DEBUG && zip.exists()) zip.copyTo(File(client.cacheDir(), "last.zip"), overwrite = true)
+            if (BuildConfig.DEBUG && zip.exists()) zip.copyTo(File(client.cacheDir(), "last.zip"), overwrite = true)
             // §6.1 step 2.4: the zip is deleted after import, whatever happened.
             zip.delete()
         }
     }
 
+    /** A sync that didn't get there (§6.3): [result] goes on the phone's status line, then [notice] (title to text) is shown if there is one; [retry] for a transient failure. */
+    private suspend fun failed(result: String, notice: Pair<String, String>? = null, retry: Boolean = false): Result {
+        settings.updatePgw { it.copy(lastResult = result) }
+        notice?.let { (title, text) -> notify(title, text) }
+        return if (retry) Result.retry() else Result.failure()
+    }
+
     /** The result notification on its own low-importance channel (§6.1 step 4 "quiet"); skipped without the notification permission. */
     private fun notify(title: String, text: String) {
         val ctx = applicationContext
-        if (ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val nm = ensureChannel(ctx, CHANNEL, "Camera database", NotificationManager.IMPORTANCE_LOW)
-        nm.notify(30_001, NotificationCompat.Builder(ctx, CHANNEL).setSmallIcon(R.drawable.ic_action_report)
-            .setContentTitle(title).setContentText(text).setStyle(NotificationCompat.BigTextStyle().bigText(text)).build())
+        notifyIfAllowed(ctx, CHANNEL, "Camera database", NotificationManager.IMPORTANCE_LOW) { nm ->
+            nm.notify(30_001, NotificationCompat.Builder(ctx, CHANNEL).setSmallIcon(R.drawable.ic_action_report)
+                .setContentTitle(title).setContentText(text).setStyle(NotificationCompat.BigTextStyle().bigText(text)).build())
+        }
     }
 
     companion object {
@@ -272,23 +286,22 @@ class ReportSubmitWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted params: WorkerParameters,
     private val client: PgwClient,
-    private val reports: io.autonav.alerts.reports.CameraReportRepository,
-    private val driving: io.autonav.alerts.reports.DrivingState,
+    private val reports: CameraReportRepository,
+    private val driving: DrivingState,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         // Never send while driving (DESIGN.md §8.5): wait and retry once stopped.
         if (driving.blockedReason() != null) return Result.retry()
-        val queued = reports.pending()
-        for (r in queued) {
-            reports.update(r.copy(status = io.autonav.alerts.data.ReportStatus.SENDING))
+        for (r in reports.pending()) {
+            reports.update(r.copy(status = ReportStatus.SENDING))
             // idCam from the related camera's PGW id when the report is about a known camera (§8.5 "Camera IDs").
             val res = runCatching { client.submit(reports.toSubmissionWithId(r)) }
             // PGW's confirmation wording isn't known yet (DESIGN.md §16 #19): a logged-in 200 response
             // counts as sent, and the user can check it on the PGW site.
-            val ok = res.getOrNull()?.let { io.autonav.alerts.core.pgw.PgwPages.loginState(it) == io.autonav.alerts.core.pgw.PgwPages.LoginState.LOGGED_IN } == true
+            val ok = res.getOrNull()?.let { PgwPages.loginState(it) == PgwPages.LoginState.LOGGED_IN } == true
             // A failed report is left FAILED for the user to resend or open in the browser (§8.5 "Fallback"); the job itself doesn't retry it.
             if (ok) reports.markSent(r) else reports.update(r.copy(
-                status = io.autonav.alerts.data.ReportStatus.FAILED,
+                status = ReportStatus.FAILED,
                 lastError = res.exceptionOrNull()?.message ?: "Not accepted (logged out?)",
             ))
         }

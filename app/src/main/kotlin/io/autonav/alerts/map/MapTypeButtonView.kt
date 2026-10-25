@@ -46,11 +46,9 @@ class MapTypeButtonView(context: Context) : MapButton(context, WIDTH_DP, HEIGHT_
         rect.set(edge.strokeWidth / 2, edge.strokeWidth / 2, width - edge.strokeWidth / 2, h - edge.strokeWidth / 2)
         drawShape(canvas) { drawRoundRect(rect, h / 2, h / 2, it) }
         text.color = iconColor
-        icon.setTint(text.color)
         val pad = 12 * density
         val iconSize = (h - pad * 2).toInt()
-        icon.setBounds(pad.toInt(), pad.toInt(), pad.toInt() + iconSize, pad.toInt() + iconSize)
-        icon.draw(canvas)
+        drawIcon(canvas, icon, pad.toInt(), pad.toInt(), iconSize)
         val label = if (satellite) "Map" else "Satellite"
         canvas.drawText(label, pad * 1.6f + iconSize, h / 2 - (text.ascent() + text.descent()) / 2, text)
     }

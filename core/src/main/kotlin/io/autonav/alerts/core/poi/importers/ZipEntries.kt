@@ -95,16 +95,12 @@ object ZipEntries {
      * PGW camera files keyed by type stem, e.g. "gatso", "mobile", "redlight", "specs", "pmobile"
      * (consolidated by type) or "sc" (single file). Licence/Release/help files are left out.
      */
-    fun pgwTypeFiles(entries: Map<String, ByteArray>): Map<String, ByteArray> {
-        val out = LinkedHashMap<String, () -> ByteArray>()
-        for (name in entries.keys) {
-            val stem = PGW_FILE.matchEntire(name)?.groupValues?.get(1)?.lowercase() ?: continue
+    fun pgwTypeFiles(entries: Map<String, ByteArray>): Map<String, ByteArray> = LazyBytes.select(entries) { name ->
+        PGW_FILE.matchEntire(name)?.groupValues?.get(1)?.lowercase()?.takeIf {
             val bytes = entries.getValue(name)
-            if (IgoTxtImporter().sniff(String(bytes, 0, minOf(200, bytes.size), Charsets.ISO_8859_1))) out[stem] = { entries.getValue(name) }
+            IgoTxtImporter().sniff(String(bytes, 0, minOf(200, bytes.size), Charsets.ISO_8859_1))
         }
-        return LazyBytes(out)
     }
-
 }
 
 /**
@@ -113,6 +109,18 @@ object ZipEntries {
  * themselves, briefly. [keys], [size] and [containsKey] never touch the data.
  */
 open class LazyBytes(protected val loaders: LinkedHashMap<String, () -> ByteArray>) : AbstractMap<String, ByteArray>() {
+    companion object {
+        /**
+         * The entries of [entries] that [keyOf] gives a key, under that key, in [entries]' order and
+         * still lazy: a value is read from [entries] each time it is used. A later entry with the
+         * same key replaces the earlier one's loader in its place.
+         */
+        fun select(entries: Map<String, ByteArray>, keyOf: (name: String) -> String?): LazyBytes =
+            LazyBytes(LinkedHashMap<String, () -> ByteArray>().apply {
+                for (name in entries.keys) keyOf(name)?.let { put(it) { entries.getValue(name) } }
+            })
+    }
+
     override val keys: Set<String> get() = loaders.keys
     override val size: Int get() = loaders.size
     override fun containsKey(key: String): Boolean = key in loaders

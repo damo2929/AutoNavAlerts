@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -89,24 +90,18 @@ class MainActivity : ComponentActivity() {
                     bottomBar = {
                         // The four tabs in DESIGN.md §13's order; the index is the TAB_* constant.
                         NavigationBar {
-                            TABS.forEachIndexed { i, (label, icon) ->
+                            TABS.forEachIndexed { i, t ->
                                 NavigationBarItem(
                                     selected = tab == i, onClick = { tab = i },
-                                    icon = { Icon(painterResource(icon), contentDescription = null) },
-                                    label = { Text(label) },
+                                    icon = { Icon(painterResource(t.icon), contentDescription = null) },
+                                    label = { Text(t.label) },
                                 )
                             }
                         }
                     },
                 ) { pad ->
-                    Box(Modifier.fillMaxSize().padding(pad)) {
-                        when (tab) {
-                            TAB_POIS -> PoiSetsScreen(deps)
-                            TAB_CAMERAS -> CameraDbScreen(deps)
-                            TAB_REPORTS -> ReportsScreen(this@MainActivity, deps)
-                            else -> SettingsScreen(this@MainActivity, deps)
-                        }
-                    }
+                    // A tab index past the table (an unknown extra) shows Settings, as before.
+                    Box(Modifier.fillMaxSize().padding(pad)) { TABS[tab.coerceIn(TABS.indices)].screen(this@MainActivity) }
                 }
             }
         }
@@ -123,12 +118,15 @@ class MainActivity : ComponentActivity() {
         const val TAB_REPORTS = 2
         /** The Settings tab, where setup lives too. */
         const val TAB_SETTINGS = 3
-        /** Label and icon per tab, in bar order; the position is the `TAB_*` constant. */
+        /** One bottom-bar tab: its label, icon and screen. */
+        private class Tab(val label: String, val icon: Int, val screen: @Composable (MainActivity) -> Unit)
+
+        /** The tabs in bar order; the position is the `TAB_*` constant. */
         private val TABS = listOf(
-            "POIs" to R.drawable.ic_action_layers,
-            "Cameras" to R.drawable.ic_action_report,
-            "Reports" to R.drawable.ic_action_place,
-            "Settings" to R.drawable.ic_action_more,
+            Tab("POIs", R.drawable.ic_action_layers) { PoiSetsScreen(it.deps) },
+            Tab("Cameras", R.drawable.ic_action_report) { CameraDbScreen(it.deps) },
+            Tab("Reports", R.drawable.ic_action_place) { ReportsScreen(it, it.deps) },
+            Tab("Settings", R.drawable.ic_action_more) { SettingsScreen(it, it.deps) },
         )
     }
 }

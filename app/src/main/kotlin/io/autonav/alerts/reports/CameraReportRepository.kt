@@ -7,9 +7,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.R
 import io.autonav.alerts.core.alerts.Fix
@@ -25,7 +23,7 @@ import io.autonav.alerts.data.PoiEntity
 import io.autonav.alerts.data.PoiRepository
 import io.autonav.alerts.data.ReportKind
 import io.autonav.alerts.data.ReportStatus
-import io.autonav.alerts.util.ensureChannel
+import io.autonav.alerts.util.notifyIfAllowed
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 import javax.inject.Inject
@@ -154,7 +152,7 @@ class CameraReportRepository @Inject constructor(
             ReportKind.WRONG_LIMIT, ReportKind.WRONG_DIRECTION, ReportKind.WRONG_TYPE -> local?.let { pois.deletePoi(it.id) }
             else -> local?.let {
                 pois.updatePoi(it.copy(
-                    lat = r.lat, lon = r.lon, gridCell = Grid.cellOf(r.lat, r.lon), name = label(r.kind),
+                    lat = r.lat, lon = r.lon, gridCell = Grid.cellOf(r.lat, r.lon), name = r.kind.label,
                     speedLimit = r.speedLimit, speedUnit = r.speedLimit?.let { SpeedUnit.MPH },
                     directionType = r.directionType, bearing = r.heading,
                     expiresAt = if (r.kind == ReportKind.MOBILE_SEEN || r.kind == ReportKind.UNSPECIFIED) it.expiresAt else null,
@@ -196,71 +194,69 @@ class CameraReportRepository @Inject constructor(
     suspend fun remindIfDrafts() {
         val n = drafts().size
         if (n == 0) return
-        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val nm = ensureChannel(context, CHANNEL, "Camera reports", NotificationManager.IMPORTANCE_DEFAULT)
-        val open = Intent(context, io.autonav.alerts.phone.MainActivity::class.java)
-            .putExtra(io.autonav.alerts.phone.MainActivity.EXTRA_TAB, io.autonav.alerts.phone.MainActivity.TAB_REPORTS)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val pi = PendingIntent.getActivity(context, 1, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        nm.notify(30_100, NotificationCompat.Builder(context, CHANNEL)
-            .setSmallIcon(R.drawable.ic_action_report)
-            .setContentTitle(if (n == 1) "1 camera report to check" else "$n camera reports to check")
-            .setContentText("Check the details and press Send when you've stopped.")
-            .setContentIntent(pi).setAutoCancel(true).build())
+        notifyIfAllowed(context, CHANNEL, "Camera reports", NotificationManager.IMPORTANCE_DEFAULT) { nm ->
+            val open = Intent(context, io.autonav.alerts.phone.MainActivity::class.java)
+                .putExtra(io.autonav.alerts.phone.MainActivity.EXTRA_TAB, io.autonav.alerts.phone.MainActivity.TAB_REPORTS)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            val pi = PendingIntent.getActivity(context, 1, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            nm.notify(30_100, NotificationCompat.Builder(context, CHANNEL)
+                .setSmallIcon(R.drawable.ic_action_report)
+                .setContentTitle(if (n == 1) "1 camera report to check" else "$n camera reports to check")
+                .setContentText("Check the details and press Send when you've stopped.")
+                .setContentIntent(pi).setAutoCancel(true).build())
+        }
     }
 
     /** Like [toSubmission], filling idCam from the related camera's PGW id when known (`Poi.sourceId`, carried in the OV2 download's names, §5.2a; the iGO download has none). */
     suspend fun toSubmissionWithId(r: CameraReportEntity): PgwSubmission = toSubmission(r, r.relatedPoiId?.let { pois.poi(it) }?.sourceId)
 
-    /**
-     * Maps a report onto PGW's form fields (DESIGN.md §8.5 "Mapping our report types" and the field table):
-     * Action 1 add, 2 change, 3 remove, 4 mobile seen again (2–4 only with a known camera id, else an add with the
-     * details in the comment); Type 0 not sure, 2 mobile, 4 SPECS, 5 red light, 10 RedSpeed. The comment carries
-     * the transcript plus "Reported via AutoNavAlerts; heading …; road …"; the country is picked from the position.
-     * Pure, so the phone's "Open in browser" fallback can show the same fields (§8.5 "Fallback").
-     */
-    fun toSubmission(r: CameraReportEntity, pgwCameraId: String? = null): PgwSubmission {
-        val (action, type) = when (r.kind) {
-            ReportKind.UNSPECIFIED -> 1 to 0
-            ReportKind.MOBILE_SEEN -> (if (pgwCameraId != null) 4 else 1) to 2
-            ReportKind.NEW_FIXED -> 1 to 0
-            ReportKind.NEW_AVERAGE -> 1 to 4
-            ReportKind.NEW_RED_LIGHT -> 1 to 5
-            ReportKind.NEW_RED_LIGHT_SPEED -> 1 to 10
-            ReportKind.CAMERA_GONE -> (if (pgwCameraId != null) 3 else 1) to 0
-            ReportKind.WRONG_LIMIT, ReportKind.WRONG_DIRECTION, ReportKind.WRONG_TYPE -> (if (pgwCameraId != null) 2 else 1) to 0
-        }
-        val details = buildString {
-            r.comment?.takeIf { it.isNotBlank() }?.let { append(it.trim().trimEnd('.')).append(". ") }
-            if (r.kind == ReportKind.MOBILE_SEEN && r.relatedPoiId != null) append("Mobile seen again at a known site. ")
-            if (r.kind.name.startsWith("WRONG")) append(r.kind.name.lowercase().replace('_', ' ')).append(". ")
-            append("Reported via AutoNavAlerts")
-            r.heading?.let { append("; heading ").append(it.roundToInt()).append("°") }
-            if (r.limitSource == LimitSource.GOOGLE) append("; limit from Google")
-            r.road?.let { append("; road ").append(it) }
-        }
-        // mapCountry2: 0 United Kingdom, 1 Ireland (§8.5 field table). A rough box for the island of Ireland (west of
-        // 5.3°W, 51.4–55.5°N) less its north-east corner (north of 54°N and east of 8.2°W), which is Northern Ireland.
-        val country = if (r.lon < -5.3 && r.lat in 51.4..55.5 && !(r.lat > 54.0 && r.lon > -8.2)) 1 else 0
-        return PgwSubmission(action, pgwCameraId, r.lat, r.lon, type, r.speedLimit, r.heading?.roundToInt(), r.directionType, details, country)
-    }
+    /** [Companion.toSubmission], for the phone's "Open in browser" fallback (§8.5 "Fallback"). */
+    fun toSubmission(r: CameraReportEntity, pgwCameraId: String? = null): PgwSubmission = Companion.toSubmission(r, pgwCameraId)
 
-    /**
-     * The closest camera behind you within 300 m: the one you've just passed, so a tap right after a camera can
-     * mean "not there" or "mobile seen again" about it (§8.5 "the nearest camera already in the database").
-     * [candidates] are (poi id, (lat, lon)) from the alert cache; "behind" is a bearing more than 90° off the heading.
-     * Null without a heading.
-     */
-    fun justPassed(fix: Fix, candidates: List<Pair<Long, Pair<Double, Double>>>): Long? {
-        val h = fix.heading ?: return null
-        return candidates.filter { (_, ll) ->
-            val d = Geo.distanceM(fix.lat, fix.lon, ll.first, ll.second)
-            d <= 300 && Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, ll.first, ll.second), h) > 90
-        }.minByOrNull { (_, ll) -> Geo.distanceM(fix.lat, fix.lon, ll.first, ll.second) }?.first
-    }
+    /** [Companion.justPassed], for the car's one-tap capture. */
+    fun justPassed(fix: Fix, candidates: List<Pair<Long, Pair<Double, Double>>>): Long? = Companion.justPassed(fix, candidates)
 
     companion object {
         private const val CHANNEL = "camera_reports"
+
+        /**
+         * Maps a report onto PGW's form fields (DESIGN.md §8.5 "Mapping our report types" and the field table):
+         * Action 1 add, 2 change, 3 remove, 4 mobile seen again (2–4 only with a known camera id, `ReportKind.knownAction`,
+         * else an add with the details in the comment); Type 0 not sure, 2 mobile, 4 SPECS, 5 red light, 10 RedSpeed
+         * (`ReportKind.type`). The comment carries the transcript plus "Reported via AutoNavAlerts; heading …; road …";
+         * the country is picked from the position. Pure (`CameraReportSubmissionTest`), so the phone's "Open in browser"
+         * fallback can show the same fields (§8.5 "Fallback").
+         */
+        fun toSubmission(r: CameraReportEntity, pgwCameraId: String? = null): PgwSubmission {
+            val action = if (pgwCameraId != null) r.kind.knownAction else 1
+            val details = buildString {
+                r.comment?.takeIf { it.isNotBlank() }?.let { append(it.trim().trimEnd('.')).append(". ") }
+                if (r.kind == ReportKind.MOBILE_SEEN && r.relatedPoiId != null) append("Mobile seen again at a known site. ")
+                if (r.kind.name.startsWith("WRONG")) append(r.kind.name.lowercase().replace('_', ' ')).append(". ")
+                append("Reported via AutoNavAlerts")
+                r.heading?.let { append("; heading ").append(it.roundToInt()).append("°") }
+                if (r.limitSource == LimitSource.GOOGLE) append("; limit from Google")
+                r.road?.let { append("; road ").append(it) }
+            }
+            // mapCountry2: 0 United Kingdom, 1 Ireland (§8.5 field table). A rough box for the island of Ireland (west of
+            // 5.3°W, 51.4–55.5°N) less its north-east corner (north of 54°N and east of 8.2°W), which is Northern Ireland.
+            val country = if (r.lon < -5.3 && r.lat in 51.4..55.5 && !(r.lat > 54.0 && r.lon > -8.2)) 1 else 0
+            return PgwSubmission(action, pgwCameraId, r.lat, r.lon, r.kind.type, r.speedLimit, r.heading?.roundToInt(), r.directionType, details, country)
+        }
+
+        /**
+         * The closest camera behind you within 300 m: the one you've just passed, so a tap right after a camera can
+         * mean "not there" or "mobile seen again" about it (§8.5 "the nearest camera already in the database").
+         * [candidates] are (poi id, (lat, lon)) from the alert cache; "behind" is a bearing more than 90° off the heading.
+         * Null without a heading. Pure (`CameraReportSubmissionTest`).
+         */
+        fun justPassed(fix: Fix, candidates: List<Pair<Long, Pair<Double, Double>>>): Long? {
+            val h = fix.heading ?: return null
+            return candidates.filter { (_, ll) ->
+                val d = Geo.distanceM(fix.lat, fix.lon, ll.first, ll.second)
+                d <= 300 && Geo.absAngleDiffDeg(Geo.bearingDeg(fix.lat, fix.lon, ll.first, ll.second), h) > 90
+            }.minByOrNull { (_, ll) -> Geo.distanceM(fix.lat, fix.lon, ll.first, ll.second) }?.first
+        }
 
         /** Guesses the report type from the spoken comment (§8.5 step 3: "mobile", "van" → Mobile; "average", "specs" → Average speed; "red light"; "not there", "gone" → Camera not there; otherwise Not sure), confirmed at review. Order matters: "not there" is tested before anything else. */
         fun guessKind(text: String): ReportKind {
@@ -277,18 +273,7 @@ class CameraReportRepository @Inject constructor(
             }
         }
 
-        /** The "My reports" marker's name per type, shown on the map and said as `{category}` when the set has no category (§7.2). */
-        fun label(kind: ReportKind) = when (kind) {
-            ReportKind.UNSPECIFIED -> "Camera (type to check)"
-            ReportKind.MOBILE_SEEN -> "Mobile camera (reported)"
-            ReportKind.NEW_FIXED -> "Fixed camera (reported)"
-            ReportKind.NEW_AVERAGE -> "Average speed camera (reported)"
-            ReportKind.NEW_RED_LIGHT -> "Red light camera (reported)"
-            ReportKind.NEW_RED_LIGHT_SPEED -> "Red light + speed camera (reported)"
-            ReportKind.CAMERA_GONE -> "Camera not there"
-            ReportKind.WRONG_LIMIT -> "Wrong speed limit"
-            ReportKind.WRONG_DIRECTION -> "Wrong direction"
-            ReportKind.WRONG_TYPE -> "Wrong camera type"
-        }
+        /** The "My reports" marker's name per type (`ReportKind.label`), for the phone's Reports tab. */
+        fun label(kind: ReportKind) = kind.label
     }
 }

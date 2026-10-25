@@ -59,18 +59,10 @@ object OsmSpeedLimits {
     fun within(lat: Double, lon: Double, km: Double): List<Long> {
         val dLat = km / 111.0
         val dLon = km / (111.0 * cos(Math.toRadians(lat)))
-        val out = ArrayList<Pair<Double, Long>>()
-        var r = floor((lat - dLat) / TILE_DEG).toInt()
-        while (r * TILE_DEG <= lat + dLat) {
-            var c = floor((lon - dLon) / TILE_DEG).toInt()
-            while (c * TILE_DEG <= lon + dLon) {
-                val d = Geo.distanceM(lat, lon, (r + 0.5) * TILE_DEG, (c + 0.5) * TILE_DEG)
-                if (d <= km * 1000) out += d to tileKey(r, c)
-                c++
-            }
-            r++
-        }
-        return out.sortedBy { it.first }.map { it.second }
+        val rows = generateSequence(floor((lat - dLat) / TILE_DEG).toInt()) { it + 1 }.takeWhile { it * TILE_DEG <= lat + dLat }
+        val cols = generateSequence(floor((lon - dLon) / TILE_DEG).toInt()) { it + 1 }.takeWhile { it * TILE_DEG <= lon + dLon }
+        return rows.flatMap { r -> cols.map { c -> Geo.distanceM(lat, lon, (r + 0.5) * TILE_DEG, (c + 0.5) * TILE_DEG) to tileKey(r, c) } }
+            .filter { (d, _) -> d <= km * 1000 }.sortedBy { it.first }.map { it.second }.toList()
     }
 
     /** The limit in the panel's units, whole. */

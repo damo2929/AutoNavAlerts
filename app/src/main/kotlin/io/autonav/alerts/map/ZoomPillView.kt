@@ -42,17 +42,12 @@ class ZoomPillView(context: Context, private val onZoom: (Float) -> Unit) : MapB
         // The hairline between the halves (§8 "Map buttons"), 1 dp, over the middle 60 % of the width.
         line.color = if (dark) Color.argb(90, 255, 255, 255) else edge.color
         canvas.drawRect(w * 0.2f, h / 2 - density / 2, w * 0.8f, h / 2 + density / 2, line)
-        val tint = iconColor
         // Each icon half the pill's width, centred in its half.
         val size = width / 2
         val left = (width - size) / 2
         val top = (height / 4) - size / 2
-        plus.setTint(tint)
-        plus.setBounds(left, top, left + size, top + size)
-        plus.draw(canvas)
-        minus.setTint(tint)
-        minus.setBounds(left, top + height / 2, left + size, top + height / 2 + size)
-        minus.draw(canvas)
+        drawIcon(canvas, plus, left, top, size)
+        drawIcon(canvas, minus, left, top + height / 2, size)
     }
 
     companion object {

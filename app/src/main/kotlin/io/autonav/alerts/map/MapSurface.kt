@@ -29,6 +29,7 @@ import io.autonav.alerts.R
 import io.autonav.alerts.car.CarDeps
 import io.autonav.alerts.core.nav.FollowWatchdog
 import io.autonav.alerts.diag.EventLog
+import com.google.android.gms.maps.CameraUpdate
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.model.LatLng
@@ -113,15 +114,23 @@ class MapSurface(
     /** The `GoogleMap` once ready, null before and after release; observed by the bench hooks. */
     val map: StateFlow<GoogleMap?> = _map
 
+    /**
+     * Our views on the map window's frame (§8 "Map surface set-up" step 4), made together by [attach]
+     * and dropped together by [release]: the speed panel (§8.4), the alert banner (§12.1), the
+     * satellite toggle and the zoom/recenter column under it (§8 "Map buttons"; empty below car API 5).
+     */
+    private class Overlays(val panel: SpeedPanelView, val banner: AlertBannerView, val toggle: MapTypeButtonView, val buttons: List<MapButton>)
+    private var overlays: Overlays? = null
     /** The speed panel at the bottom right (DESIGN.md §8.4), or null before the map exists; `NavSession` posts updates to it. */
-    var speedPanel: SpeedPanelView? = null
-        private set
+    val speedPanel: SpeedPanelView? get() = overlays?.panel
+    /** The alert banner at the bottom of the map (DESIGN.md §12.1), or null before the map exists. */
+    val alertBanner: AlertBannerView? get() = overlays?.banner
+    /** The satellite toggle at the top right of the map (DESIGN.md §8), or null before the map exists. */
+    private val mapTypeButton: MapTypeButtonView? get() = overlays?.toggle
+    /** The column under the satellite toggle: the zoom pill and recenter (car API 5+; DESIGN.md §8 "Map buttons"). */
+    private val mapButtons: List<MapButton> get() = overlays?.buttons.orEmpty()
     /** The car map window's root view (debug bench checks of what draws). */
     var overlayRoot: FrameLayout? = null
-        private set
-
-    /** The alert banner at the bottom of the map (DESIGN.md §12.1), or null before the map exists. */
-    var alertBanner: AlertBannerView? = null
         private set
 
     private var surfaceWidth = 0
@@ -144,12 +153,6 @@ class MapSurface(
      */
     private var followZoom: Float = MAX_ZOOM
     private var container: SurfaceContainer? = null
-
-    /** The satellite toggle at the top right of the map (DESIGN.md §8), or null before the map exists. */
-    private var mapTypeButton: MapTypeButtonView? = null
-
-    /** The column under the satellite toggle: the zoom pill and recenter (car API 5+; DESIGN.md §8 "Map buttons"). */
-    private var mapButtons: List<MapButton> = emptyList()
     /** Day or night colours for our buttons, from the car (DESIGN.md §8). */
     private var dark = true
 
@@ -171,8 +174,7 @@ class MapSurface(
     /** The one place the map type is set (DESIGN.md §8); true when it changed. Traffic is always on. */
     private fun setMapType(m: GoogleMap): Boolean {
         val type = if (satellite) GoogleMap.MAP_TYPE_HYBRID else GoogleMap.MAP_TYPE_NORMAL
-        val changed = m.mapType != type
-        if (changed) m.mapType = type
+        val changed = (m.mapType != type).also { if (it) m.mapType = type }
         m.isTrafficEnabled = true
         return changed
     }
@@ -225,30 +227,23 @@ class MapSurface(
         // Drawing order (§8 step 4): the SDK view, then the speed panel (bottom end, §8.4), then the banner.
         val panel = SpeedPanelView(pres.context)
         root.addView(panel, lp(Gravity.BOTTOM or Gravity.END))
-        speedPanel = panel
         // Anchored at the start only so a left margin can place it; layoutOverlays centres it (§12.1).
         val banner = AlertBannerView(pres.context)
         root.addView(banner, lp(Gravity.BOTTOM or Gravity.START))
-        alertBanner = banner
         dark = carContext.isDarkMode
+        // Our buttons are on the right only (CHECKPOINT.md §5), anchored to the right edge from the start;
+        // their margins come from layoutOverlays below, before the window shows.
         val toggle = MapTypeButtonView(pres.context).apply { satellite = this@MapSurface.satellite; dark = this@MapSurface.dark }
-        // Our buttons are on the right only (CHECKPOINT.md §5), anchored to the right edge from the
-        // start: before the host reports the visible area they sit under the action strip at the right.
-        val density = pres.context.resources.displayMetrics.density
-        val clearTop = (ACTION_STRIP_CLEAR_DP * density).toInt() + 16
-        root.addView(toggle, lp(Gravity.TOP or Gravity.END, clearTop))
-        mapTypeButton = toggle
+        root.addView(toggle, lp(Gravity.TOP or Gravity.END))
         // Below car API 5 there's no onClick, so the host's map action strip keeps these instead.
-        if (carContext.carAppApiLevel >= androidx.car.app.versioning.CarAppApiLevels.LEVEL_5) mapButtons = listOf(
-            ZoomPillView(pres.context) { zoom(it) }.apply { dark = this@MapSurface.dark },
-            MapButtonView(pres.context, R.drawable.ic_action_recenter) { recenter() }.apply { dark = this@MapSurface.dark },
-        ).also { buttons ->
-            var top = clearTop + ((MapTypeButtonView.HEIGHT_DP + MapButtonView.GAP_DP) * density).toInt()
-            for (b in buttons) {
-                root.addView(b, lp(Gravity.TOP or Gravity.END, top))
-                top += ((b.heightDp + MapButtonView.GAP_DP) * density).toInt()
-            }
+        val buttons = if (carContext.carAppApiLevel < androidx.car.app.versioning.CarAppApiLevels.LEVEL_5) emptyList() else listOf(
+            ZoomPillView(pres.context) { zoom(it) },
+            MapButtonView(pres.context, R.drawable.ic_action_recenter) { recenter() },
+        ).onEach { b ->
+            b.dark = dark
+            root.addView(b, lp(Gravity.TOP or Gravity.END))
         }
+        overlays = Overlays(panel, banner, toggle, buttons)
         layoutOverlays()
         pres.show()
         presentation = pres
@@ -274,11 +269,8 @@ class MapSurface(
         }
     }
 
-    /** Wrap-content layout params at [gravity]; a right-anchored view also gets its 16 px right margin and [topPx] (hard rule 4). */
-    private fun lp(gravity: Int, topPx: Int? = null) = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-        this.gravity = gravity
-        if (topPx != null) { rightMargin = 16; topMargin = topPx }
-    }
+    /** Wrap-content layout params at [gravity]; the margins are [layoutOverlays]'s (hard rule 4). */
+    private fun lp(gravity: Int) = FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, gravity)
 
     /** Tear-down (§8): the set-up is cancelled and the view, Presentation and VirtualDisplay released. The surface may come back. */
     override fun onSurfaceDestroyed(container: SurfaceContainer) {
@@ -411,18 +403,17 @@ class MapSurface(
     private fun hit(v: View, x: Float, y: Float) = x >= v.left && x <= v.right && y >= v.top && y <= v.bottom
 
     /** A drag pans the map and enters pan mode, which turns camera-follow off (§8 "Gestures"). */
-    override fun onScroll(distanceX: Float, distanceY: Float) {
-        val m = _map.value ?: return
-        followOff("scroll")
-        m.moveCamera(CameraUpdateFactory.scrollBy(distanceX, distanceY))
-    }
+    override fun onScroll(distanceX: Float, distanceY: Float) = pan("scroll", CameraUpdateFactory.scrollBy(distanceX, distanceY), animate = false)
 
-    /** A fling gives a short animated pan (§8 "Gestures"); follow goes off as for a scroll. */
-    override fun onFling(velocityX: Float, velocityY: Float) {
+    // A fling gives a short animated pan (§8 "Gestures"); follow goes off as for a scroll. The velocity is
+    // px/s; a tenth of it is a comfortable overshoot on the car screen.
+    override fun onFling(velocityX: Float, velocityY: Float) = pan("fling", CameraUpdateFactory.scrollBy(-velocityX / 10f, -velocityY / 10f), animate = true)
+
+    /** A user pan ([how] for the log): follow goes off, then the camera moves by [update], at once or animated. */
+    private fun pan(how: String, update: CameraUpdate, animate: Boolean) {
         val m = _map.value ?: return
-        followOff("fling")
-        // The velocity is px/s; a tenth of it is a comfortable overshoot on the car screen.
-        m.animateCamera(CameraUpdateFactory.scrollBy(-velocityX / 10f, -velocityY / 10f))
+        followOff(how)
+        if (animate) m.animateCamera(update) else m.moveCamera(update)
     }
 
     /** The user panned: follow mode ends until Recenter (logged once per pan, not per event). */
@@ -467,9 +458,7 @@ class MapSurface(
     @SuppressLint("MissingPermission")
     private fun follow(m: GoogleMap) {
         // Location permission is granted on the phone during setup; without it this is a no-op.
-        runCatching {
-            m.followMyLocation(GoogleMap.CameraPerspective.TILTED, FollowMyLocationOptions.builder().setZoomLevel(followZoom).build())
-        }
+        runCatching { m.followMyLocation(GoogleMap.CameraPerspective.TILTED, FollowMyLocationOptions.builder().setZoomLevel(followZoom).build()) }
     }
 
     /** Whether the map is following the car (for the bench hooks and the session's logs). */
@@ -551,13 +540,10 @@ class MapSurface(
         }
         val off = ArrayList<String>()
         val failed = ArrayList<String>()
-        val setters: List<Pair<String, () -> Unit>> = listOf(
-            "setHeaderEnabled" to { inner.setHeaderEnabled(false) },
-            "setEtaCardEnabled" to { inner.setEtaCardEnabled(false) },
-            "setRecenterButtonEnabled" to { inner.setRecenterButtonEnabled(false) },
-            "setSpeedometerEnabled" to { inner.setSpeedometerEnabled(false) },
-            "setTripProgressBarEnabled" to { inner.setTripProgressBarEnabled(false) },
-            "setSpeedLimitIconEnabled" to { inner.setSpeedLimitIconEnabled(false) },
+        // Logged by their own names (`KFunction.name` is the referenced method's source name, no reflection library needed).
+        val setters = listOf(
+            inner::setHeaderEnabled, inner::setEtaCardEnabled, inner::setRecenterButtonEnabled,
+            inner::setSpeedometerEnabled, inner::setTripProgressBarEnabled, inner::setSpeedLimitIconEnabled,
         )
         // The navigation camera (tilted, our padding) only works with the navigation UI on; a fresh start
         // had it off until the first route, so free drive showed a flat map with the car centred (DESIGN.md §8).
@@ -568,7 +554,7 @@ class MapSurface(
             // centred (bench, after a reinstall): the frame is set again.
             applyView("navUi on")
         }
-        for ((name, call) in setters) runCatching(call).onSuccess { off += name }.onFailure { failed += name }
+        for (s in setters) runCatching { s(false) }.onSuccess { off += s.name }.onFailure { failed += s.name }
         applyNightMode(inner)
         // Belt and braces: the SDK draws its cards as ordinary child views beside the map container
         // (the one holding the GL texture view), and a setter called before a card exists did nothing
@@ -610,13 +596,6 @@ class MapSurface(
         if (this is ViewGroup) for (i in 0 until childCount) getChildAt(i).firstDescendant(match)?.let { return it }
         return null
     }
-
-    /** Google incident reporting on the car screen, if a future Navigation SDK supports it (§16 #21). */
-    val incidentReportingSupported: Boolean get() = navView?.let(IncidentReporting::supportedBySdk) == true
-    /** True when Google's reporting can be used right now (guiding, in a supported country); false on today's SDK. */
-    val incidentReportingAvailableNow: Boolean get() = navView?.let(IncidentReporting::availableNow) == true
-    /** Opens Google's report panel on the car screen; false when it can't (More then shows a toast). */
-    fun showIncidentPanel(): Boolean = navView?.let(IncidentReporting::showPanel) == true
 
     /**
      * The one place the camera frame is set (DESIGN.md §8 "One view for both map types"): our overlays,
@@ -711,46 +690,44 @@ class MapSurface(
         val key = "$w×$h $visibleArea $stableArea ${System.identityHashCode(speedPanel)}"
         if (key == lastOverlayKey) return
         lastOverlayKey = key
-        val area = stableArea ?: visibleArea ?: Rect(0, 0, w, h)
-        speedPanel?.updateLayoutParams<FrameLayout.LayoutParams> {
-            // Bottom right of the visible area (DESIGN.md §8.4).
-            val v = visibleArea ?: area
-            rightMargin = (w - v.right).coerceAtLeast(0) + 16
-            bottomMargin = (h - v.bottom).coerceAtLeast(0) + 16
+        val o = overlays ?: return
+        val density = o.panel.resources.displayMetrics.density
+        // Everything is placed in the visible area (the stable area, then the whole surface, until the host reports one),
+        // 16 px inside its right and bottom edges.
+        val v = visibleArea ?: stableArea ?: Rect(0, 0, w, h)
+        val right = (w - v.right).coerceAtLeast(0) + 16
+        val bottom = (h - v.bottom).coerceAtLeast(0) + 16
+        // Bottom right of the visible area (DESIGN.md §8.4).
+        o.panel.updateLayoutParams<FrameLayout.LayoutParams> {
+            rightMargin = right
+            bottomMargin = bottom
         }
-        // The banner: bottom centre of the visible area, kept clear of the speed panel on the left.
-        alertBanner?.let { b ->
+        // The banner: bottom centre of the visible area, kept clear of the speed panel on the left. Up to 640 dp
+        // wide, the same clearance each side so it stays centred, never under half the visible width (§12.1).
+        o.banner.updateLayoutParams<FrameLayout.LayoutParams> {
+            val clear = (SPEED_PANEL_CLEAR_DP * density).toInt()
+            width = minOf(v.width() - clear * 2, (AlertBannerView.MAX_WIDTH_DP * density).toInt()).coerceAtLeast(v.width() / 2)
+            leftMargin = v.left + (v.width() - width) / 2
+            bottomMargin = bottom
+        }
+        // The satellite toggle: top-right corner of the visible area. The host shrinks that area while its
+        // action strip is showing, so the toggle moves down out of its way and back up. Always below the
+        // action strip: it's persistent now, but the host sometimes reports a visible area that ignores it
+        // (right after the map starts), which put the toggle under it.
+        var top = maxOf(v.top, stableArea?.top ?: 0, (ACTION_STRIP_CLEAR_DP * density).toInt()) + 16
+        o.toggle.updateLayoutParams<FrameLayout.LayoutParams> {
+            rightMargin = right
+            topMargin = top
+        }
+        // The zoom pill, then recenter: down the right edge under the toggle.
+        val gap = (MapButtonView.GAP_DP * density).toInt()
+        top += (MapTypeButtonView.HEIGHT_DP * density).toInt() + gap
+        for (b in o.buttons) {
             b.updateLayoutParams<FrameLayout.LayoutParams> {
-                val v = visibleArea ?: area
-                val density = b.resources.displayMetrics.density
-                // Up to 640 dp wide, the same clearance each side so it stays centred, never under half the visible width (§12.1).
-                val clear = (SPEED_PANEL_CLEAR_DP * density).toInt()
-                width = minOf(v.width() - clear * 2, (AlertBannerView.MAX_WIDTH_DP * density).toInt()).coerceAtLeast(v.width() / 2)
-                leftMargin = v.left + (v.width() - width) / 2
-                bottomMargin = (h - v.bottom).coerceAtLeast(0) + 16
+                rightMargin = right
+                topMargin = top
             }
-        }
-        // The satellite toggle: top-right corner of the visible area. The host shrinks that area
-        // while its action strip is showing, so the toggle moves down out of its way and back up.
-        mapTypeButton?.let { t ->
-            t.updateLayoutParams<FrameLayout.LayoutParams> {
-                val v = visibleArea ?: area
-                val density = t.resources.displayMetrics.density
-                rightMargin = (w - v.right).coerceAtLeast(0) + 16
-                // Always below the action strip: it's persistent now, but the host sometimes reports a
-                // visible area that ignores it (right after the map starts), which put the toggle under it.
-                topMargin = maxOf(v.top, stableArea?.top ?: 0, (ACTION_STRIP_CLEAR_DP * density).toInt()) + 16
-                // The zoom pill, then recenter: down the right edge under the toggle.
-                val gap = (MapButtonView.GAP_DP * density).toInt()
-                var top = topMargin + (MapTypeButtonView.HEIGHT_DP * density).toInt() + gap
-                for (b in mapButtons) {
-                    b.updateLayoutParams<FrameLayout.LayoutParams> {
-                        rightMargin = (w - v.right).coerceAtLeast(0) + 16
-                        topMargin = top
-                    }
-                    top += (b.heightDp * density).toInt() + gap
-                }
-            }
+            top += (b.heightDp * density).toInt() + gap
         }
     }
 
@@ -764,10 +741,7 @@ class MapSurface(
         _map.value = null
         lastOverlayKey = null
         lastFrame = null
-        speedPanel = null
-        alertBanner = null
-        mapTypeButton = null
-        mapButtons = emptyList()
+        overlays = null
         navView?.let { v ->
             runCatching { v.onPause(); v.onStop(); v.onDestroy() }.onFailure { Log.w(TAG, "navView teardown", it) }
         }

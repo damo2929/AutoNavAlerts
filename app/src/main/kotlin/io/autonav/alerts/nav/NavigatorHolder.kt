@@ -143,27 +143,24 @@ class NavigatorHolder @Inject constructor(
         if (_navigator.value != null) NavigationApi.getRoadSnappedLocationProvider(app) else null
 
     /** The Places client for search and autocomplete (§8), or null with no key. */
-    suspend fun placesClient(): PlacesClient? {
-        if (!applyApiKey()) return null
-        return places
-    }
+    suspend fun placesClient(): PlacesClient? = if (applyApiKey()) places else null
 
-    /** Run by [keyChanged] before the old Navigator is cleaned up; copy-on-write so a listener may register from any thread. */
-    private val keyListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    /** Run by [keyChanged] before the old Navigator is cleaned up (the one registrant is `GuidanceController`). */
+    @Volatile private var keyListener: (() -> Unit)? = null
 
     /**
      * Runs [l] from [keyChanged], before the old Navigator is cleaned up, so guidance can stop on
      * a live navigator (`GuidanceController` registers `stopGuidance(KEY_CHANGED)`, DESIGN.md §9.3).
      */
     fun onKeyChanged(l: () -> Unit) {
-        keyListeners += l
+        keyListener = l
     }
 
     /** Call after the user changes the key so the next use re-initialises. */
     fun keyChanged() {
         keyApplied = null
-        // Listeners first: they need the navigator that is about to go.
-        for (l in keyListeners) runCatching { l() }.onFailure { Log.w(TAG, "keyChanged listener", it) }
+        // The listener first: it needs the navigator that is about to go.
+        keyListener?.let { l -> runCatching(l).onFailure { Log.w(TAG, "keyChanged listener", it) } }
         _navigator.value?.cleanup()
         _navigator.value = null
     }

@@ -13,7 +13,6 @@ import android.os.Messenger
 import com.google.android.libraries.mapsplatform.turnbyturn.TurnByTurnManager
 import com.google.android.libraries.mapsplatform.turnbyturn.model.NavInfo
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Receives the Navigation SDK's turn-by-turn feed (registered via `registerServiceForNavUpdates`
@@ -33,7 +32,7 @@ class NavUpdatesService : Service() {
         override fun handleMessage(msg: Message) {
             if (msg.what == TurnByTurnManager.MSG_NAV_INFO) {
                 // A bundle that fails to decode (an SDK version skew) is dropped rather than crashing guidance.
-                runCatching { manager.readNavInfoFromBundle(msg.data) }.getOrNull()?.let { latest.value = it }
+                runCatching { manager.readNavInfoFromBundle(msg.data) }.getOrNull()?.let { navInfo.value = it }
             } else {
                 super.handleMessage(msg)
             }
@@ -44,14 +43,12 @@ class NavUpdatesService : Service() {
 
     /** The SDK let go (guidance ended): the feed goes null so the turn card and cluster clear (§9.3). */
     override fun onUnbind(intent: Intent?): Boolean {
-        latest.value = null
+        navInfo.value = null
         return super.onUnbind(intent)
     }
 
     companion object {
-        /** Latest turn-by-turn state; null when no guidance is running. */
-        val latest = MutableStateFlow<NavInfo?>(null)
-        /** Read-only view for collectors: the current step, distances, ETA and nav state, or null without guidance. */
-        val navInfo: StateFlow<NavInfo?> get() = latest
+        /** The latest turn-by-turn state (the current step, distances, ETA and nav state), null without guidance; written only here. */
+        val navInfo = MutableStateFlow<NavInfo?>(null)
     }
 }

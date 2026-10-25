@@ -82,6 +82,15 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        unitTests {
+            // android.util.Log and friends return defaults instead of throwing in plain JVM tests (DESIGN.md §15.1).
+            isReturnDefaultValues = true
+            // Robolectric needs the merged manifest and resources (DESIGN.md §15.1, the Robolectric tier).
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 kotlin {
@@ -89,6 +98,15 @@ kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
+}
+
+// Robolectric (SDK 36 on JDK 21) reaches into java.base internals for shared memory and file descriptors.
+tasks.withType<Test>().configureEach {
+    jvmArgs(
+        "--add-exports=java.base/jdk.internal.access=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    )
 }
 
 // Hilt's generated Java compile tasks need a full JDK too (the machine may only have a JRE).
@@ -138,4 +156,14 @@ dependencies {
     testImplementation(libs.okhttp.mockwebserver)
     // Real org.json for JVM tests (Android's is a stub there).
     testImplementation("org.json:json:20240303")
+    testImplementation(libs.kotlinx.coroutines.test)
+    // The Robolectric tier (DESIGN.md §15.1): screens as templates, Room in memory, workers, notifications, views.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.ext.junit)
+    testImplementation(libs.androidx.car.app.testing)
+    testImplementation(libs.androidx.room.testing)
+    testImplementation(libs.androidx.work.testing)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

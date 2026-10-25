@@ -24,11 +24,7 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
     private val lat = DoubleArray(points.size) { points[it].lat }
     private val lon = DoubleArray(points.size) { points[it].lon }
     /** Distance along the route to each point. */
-    private val cum = DoubleArray(points.size)
-
-    init {
-        for (i in 1 until points.size) cum[i] = cum[i - 1] + Geo.distanceM(lat[i - 1], lon[i - 1], lat[i], lon[i])
-    }
+    private val cum = Geo.cumulativeM(points)
 
     /** Points and segments in the route. */
     val size: Int get() = lat.size
@@ -95,14 +91,8 @@ class RoutePolyline(points: List<LatLngLike>, private val aheadM: Double = 3_000
     fun distanceAheadM(pLat: Double, pLon: Double, fromIndex: Int = carIndex): Double {
         if (segments == 0) return Double.MAX_VALUE
         val from = fromIndex.coerceIn(0, segments - 1)
-        var best = Double.MAX_VALUE
-        var i = from
-        while (i < segments && cum[i] - cum[from] <= aheadM) {
-            val d = segDistance(i, pLat, pLon)
-            if (d < best) best = d
-            i++
-        }
-        return best
+        return (from until segments).asSequence().takeWhile { cum[it] - cum[from] <= aheadM }
+            .minOfOrNull { segDistance(it, pLat, pLon) } ?: Double.MAX_VALUE
     }
 
     /** The engine's view (§11 step 4): the POI's distance to the route ahead of the car's last located segment. */

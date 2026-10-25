@@ -79,8 +79,21 @@ data class AlertPoi(
  * stage, so it is never reported or shown as one (owner, 2026-10-13). [GUIDANCE] is a turn-by-turn
  * direction we speak ourselves (DESIGN.md §12.3), never a camera stage. The last two are made by
  * the app, not by this engine, and share the speech queue ([SpeechScheduler]).
+ *
+ * [priority] is the speech queue's (§12.3): PASSING 100 (never dropped), GUIDANCE 80, zone
+ * enter/exit 60, SECOND and OVERSPEED 50, FIRST and a limit change 10. [isStage] marks the three
+ * camera stages, listed in order so a later one replaces an earlier one waiting for the same POI.
  */
-enum class AlertKind { FIRST, SECOND, PASSING, ZONE_ENTER, ZONE_EXIT, OVERSPEED, LIMIT_CHANGE, GUIDANCE }
+enum class AlertKind(val priority: Int, val isStage: Boolean = false) {
+    FIRST(10, isStage = true),
+    SECOND(50, isStage = true),
+    PASSING(100, isStage = true),
+    ZONE_ENTER(60),
+    ZONE_EXIT(60),
+    OVERSPEED(50),
+    LIMIT_CHANGE(10),
+    GUIDANCE(80),
+}
 
 /**
  * One alert to dispatch (DESIGN.md §11.1 "Output", §12): the app turns it into text, a banner, a
@@ -174,8 +187,9 @@ fun interface RouteMatcher {
  * (§1.3, §11 step 3, AGENTS.md §3.1 rule 1): a camera alerts only when its stored bearing is within
  * 45° of the car's heading, or within 45° of the bearing from the car to the camera while the camera
  * is properly ahead; ONE_WAY and BOTH keep their meaning; a camera with a bearing is never treated
- * as ANY; an opposite-facing camera is dimmed, never hidden, and never alerts. [directionMismatch]
- * is the one place it is applied, [Config.directionToleranceDeg] cannot be raised above 45°, and
+ * as ANY; an opposite-facing camera is dimmed, never hidden, and never alerts. [directionMismatchDeg]
+ * (beside [Verdict]) is the one place the rule is written and [directionMismatch] the one place
+ * this engine applies it, [Config.directionToleranceDeg] cannot be raised above 45°, and
  * the tests `camera_30DegBend_directionPassesViaBearingToCamera` and
  * `oppositeCameraStillRejectedOnABend` (plus the wrong-way bench scenario) must keep passing after
  * any change here, in the importers, in the heading maths or in the markers.
@@ -265,17 +279,19 @@ class AlertEngine(
     private val dirTol = minOf(config.directionToleranceDeg, 45.0)
     private val sinFar = sin(Math.toRadians(config.freeDriveFarDeg))
 
-    // Average-speed zone state
-    private var inZone = false
-    private var zoneLimitMps: Double? = null
-    private var zoneStartLat = 0.0
-    private var zoneStartLon = 0.0
-    private var zoneStartMs = 0L
-    private var lastZonePointLat = 0.0
-    private var lastZonePointLon = 0.0
+    /**
+     * An open average-speed zone (§11 step 8): where and when it opened, its limit, and the zone
+     * camera last passed ([poiId]: zone alerts carry its id for the icon and limit). Null between zones.
+     */
+    private class Zone(val startLat: Double, val startLon: Double, val startMs: Long, var limitMps: Double?) {
+        var poiId = -1L
+        var lastPointLat = 0.0
+        var lastPointLon = 0.0
+    }
+
+    private var zone: Zone? = null
+    /** The over-the-limit chime's last time, kept across zones so it never repeats inside 15 s. */
     private var lastZoneOverspeedMs = Long.MIN_VALUE / 2
-    /** The zone camera last passed: zone alerts carry its id (icon and limit), or -1 if unknown. */
-    private var zonePoiId = -1L
     private var prevLat = Double.NaN
     private var prevLon = Double.NaN
     // This fix's candidates and heading, for the zone checks in handleZonePass.
@@ -283,7 +299,7 @@ class AlertEngine(
     private var fixHeading: Double? = null
 
     /** Whether an average-speed zone is open (§11 step 8); the panel shows the zone's limit while it is. */
-    val isInZone: Boolean get() = inZone
+    val isInZone: Boolean get() = zone != null
 
     /** Forgets every POI's approach, the heading and the zone: a new drive or a simulated one starting. */
     fun reset() {
@@ -291,8 +307,7 @@ class AlertEngine(
         lastHeading = null
         movingFlag = false
         lastMovedMs = Long.MIN_VALUE / 2
-        inZone = false
-        zonePoiId = -1L
+        zone = null
         prevLat = Double.NaN
         prevLon = Double.NaN
     }
@@ -317,7 +332,7 @@ class AlertEngine(
         }
         val out = ArrayList<AlertEvent>()
         // A jump (GPS lost, or a bench geo fix) means we can't tell which road we're on: drop the zone.
-        if (!prevLat.isNaN() && Geo.distanceM(prevLat, prevLon, fix.lat, fix.lon) > config.zoneJumpM) inZone = false
+        if (!prevLat.isNaN() && Geo.distanceM(prevLat, prevLon, fix.lat, fix.lon) > config.zoneJumpM) zone = null
         prevLat = fix.lat
         prevLon = fix.lon
         fixCandidates = candidates
@@ -366,21 +381,18 @@ class AlertEngine(
             // to the camera when it is properly ahead. Applied on every fix, tracked or not.
             val mismatch = directionMismatch(poi, heading, toPoi, aheadProper)
             val dirOk = mismatch <= dirTol
-            val lateral: Double
-            val allowed: Double
-            val latchAllowed: Double
             val routeDist = route?.distanceToRouteM(poi.lat, poi.lon)
             // Step 4: the side allowance is the route's 50 m or free drive's 40 m, raised to the POI's own
             // (100 m for mobile sites, marked where the van parks).
             val sideTol = maxOf(if (routeDist != null) config.routeToleranceM else config.lateralToleranceM, poi.sideToleranceM ?: 0.0)
-            if (routeDist != null) {
-                lateral = routeDist; allowed = sideTol; latchAllowed = sideTol
+            // The POI's lateral offset, what the corridor allows, and what the tracked latch allows: with a
+            // route its cross-track distance against the side allowance; in free drive the offset from the
+            // straight line ahead, allowed up to max(side, d·sin 12°), the latch letting go only past twice
+            // that (§11 step 4, "Tracked latch").
+            val (lateral, allowed, latchAllowed) = if (routeDist != null) {
+                Triple(routeDist, sideTol, sideTol)
             } else {
-                // Free drive: the lateral offset from the straight line ahead, allowed up to max(side, d·sin 12°);
-                // the tracked latch only lets go past twice that (§11 step 4, "Tracked latch").
-                lateral = abs(d * sin(Math.toRadians(offAxis)))
-                allowed = maxOf(sideTol, d * sinFar)
-                latchAllowed = maxOf(sideTol, 2.0 * d * sinFar)
+                Triple(abs(d * sin(Math.toRadians(offAxis))), maxOf(sideTol, d * sinFar), maxOf(sideTol, 2.0 * d * sinFar))
             }
             val onRoad = lateral <= allowed
 
@@ -389,9 +401,7 @@ class AlertEngine(
             // jump, or slow fixes that skipped the 20 yd mark) gets its PASSING now. Sound on means it can't be missed.
             if (state.tracked && behind && d <= 150.0 && poi.soundOn && !state.passingFired) {
                 state.tracked = false
-                markFired(state, AlertKind.PASSING, now, d)
-                out += emit(poi, AlertKind.PASSING, d, fix, config.passingM, null)
-                handleZonePass(poi, fix, out)
+                fire(poi, state, AlertKind.PASSING, d, fix, config.passingM, null, out)
                 setVerdict(state, poi, Verdict.BEHIND, inLookahead, d, offAxis, heading, lateral, allowed)
                 continue
             }
@@ -428,19 +438,9 @@ class AlertEngine(
             val crossedSecond = canStage && secondTrigger != null && !state.secondFired && d <= secondTrigger
             val crossedFirst = canStage && !state.firstFired && d <= state.firstTriggerM
             when {
-                crossedPassing -> {
-                    markFired(state, AlertKind.PASSING, now, d)
-                    out += emit(poi, AlertKind.PASSING, d, fix, passingTrigger, null)
-                    handleZonePass(poi, fix, out)
-                }
-                crossedSecond -> {
-                    markFired(state, AlertKind.SECOND, now, d)
-                    out += emit(poi, AlertKind.SECOND, d, fix, secondTrigger!!, passingTrigger)
-                }
-                crossedFirst -> {
-                    markFired(state, AlertKind.FIRST, now, d)
-                    out += emit(poi, AlertKind.FIRST, d, fix, state.firstTriggerM, secondTrigger ?: passingTrigger)
-                }
+                crossedPassing -> fire(poi, state, AlertKind.PASSING, d, fix, passingTrigger, null, out)
+                crossedSecond -> fire(poi, state, AlertKind.SECOND, d, fix, secondTrigger!!, passingTrigger, out)
+                crossedFirst -> fire(poi, state, AlertKind.FIRST, d, fix, state.firstTriggerM, secondTrigger ?: passingTrigger, out)
             }
             // Without sound, a zone point still counts as passed once we're very close.
             // Sound off: no PASSING is spoken or shown, but the zone chain still needs to know we passed it.
@@ -478,15 +478,8 @@ class AlertEngine(
     }
 
     /** Removes every state [gone] says so of, tracing a clear for those that had entered their lookahead. */
-    private inline fun drop(gone: (Long, PoiState) -> Boolean) {
-        val it = states.entries.iterator()
-        while (it.hasNext()) {
-            val e = it.next()
-            if (gone(e.key, e.value)) {
-                it.remove()
-                if (e.value.entered) trace?.cleared(e.key, ClearReason.PRUNED)
-            }
-        }
+    private fun drop(gone: (Long, PoiState) -> Boolean) {
+        states.entries.removeAll { (id, s) -> gone(id, s).also { if (it && s.entered) trace?.cleared(id, ClearReason.PRUNED) } }
     }
 
     private fun clear(id: Long, state: PoiState, reason: ClearReason) {
@@ -529,72 +522,55 @@ class AlertEngine(
         if (poi.bearing == null || poi.directionType == DirectionType.ANY) return
         // The camera's bearing against our heading alone (the dimming confidence, §8.1): the rule without its β leg.
         val mismatch = directionMismatch(poi, heading, heading, betaAllowed = false)
-        val was = state.hidden
         // Dim only on a confident mismatch: beyond 45° plus the heading's own error, while moving (§8.1).
         // Undim with hysteresis once the mismatch is under 40°, the rule passes, or the POI is behind.
-        if (!state.hidden) {
-            if (verdict == Verdict.WRONG_DIRECTION && moving && mismatch > dirTol + headingAcc) state.hidden = true
-        } else if (dirOk || mismatch < 40.0 || behind) {
-            state.hidden = false
-        }
-        if (was != state.hidden) trace?.dimmed(poi.id, state.hidden, mismatch, headingAcc)
-    }
-
-    private fun markFired(state: PoiState, kind: AlertKind, nowMs: Long, d: Double) {
-        when (kind) {
-            AlertKind.PASSING -> { state.passingFired = true; state.secondFired = true; state.firstFired = true }
-            AlertKind.SECOND -> { state.secondFired = true; state.firstFired = true }
-            else -> state.firstFired = true
-        }
-        state.firedAtMs = nowMs
-        state.firedAtD = d
-    }
-
-    /** The 2nd stage, held at least 100 m inside the 1st (§11.1 validation, applied at runtime). */
-    private fun effectiveSecondTrigger(poi: AlertPoi, state: PoiState): Double? {
-        if (!poi.second.enabled) return null
-        return minOf(state.secondTriggerM, state.firstTriggerM - 100.0).coerceAtLeast(SECOND_FLOOR_M)
+        val hidden = if (state.hidden) !(dirOk || mismatch < 40.0 || behind) else verdict == Verdict.WRONG_DIRECTION && moving && mismatch > dirTol + headingAcc
+        if (hidden == state.hidden) return
+        state.hidden = hidden
+        trace?.dimmed(poi.id, hidden, mismatch, headingAcc)
     }
 
     /**
-     * Degrees by which the camera's direction misses ours, 0 for ANY or no bearing (§11 step 3): the
-     * smallest, over the bearings it covers (both ways for BOTH), of the difference to our heading or,
-     * when [betaAllowed] (the camera is properly ahead), to the bearing from us to the camera.
+     * A stage crossed: it and every earlier stage count as fired (a skipped stage is never spoken
+     * late, §11 step 7), the event is emitted, and a PASSING tells the zone chain (§11 step 8).
      */
-    private fun directionMismatch(poi: AlertPoi, heading: Double, toPoi: Double, betaAllowed: Boolean): Double {
-        val b = poi.bearing?.toDouble() ?: return 0.0
-        fun miss(x: Double): Double {
-            val h = Geo.absAngleDiffDeg(x, heading)
-            return if (betaAllowed) minOf(h, Geo.absAngleDiffDeg(x, toPoi)) else h
-        }
-        return when (poi.directionType) {
-            DirectionType.ANY -> 0.0
-            DirectionType.ONE_WAY -> miss(b)
-            DirectionType.BOTH -> minOf(miss(b), miss(b + 180.0))
-        }
+    private fun fire(poi: AlertPoi, state: PoiState, kind: AlertKind, d: Double, fix: Fix, triggerM: Double, staleBelowM: Double?, out: MutableList<AlertEvent>) {
+        state.firstFired = true
+        state.secondFired = state.secondFired || kind != AlertKind.FIRST
+        state.passingFired = state.passingFired || kind == AlertKind.PASSING
+        state.firedAtMs = fix.timeMs
+        state.firedAtD = d
+        out += emit(poi, kind, d, fix, triggerM, staleBelowM)
+        if (kind == AlertKind.PASSING) handleZonePass(poi, fix, out)
     }
+
+    /** The 2nd stage, held at least 100 m inside the 1st (§11.1 validation, applied at runtime). */
+    private fun effectiveSecondTrigger(poi: AlertPoi, state: PoiState): Double? =
+        if (poi.second.enabled) minOf(state.secondTriggerM, state.firstTriggerM - 100.0).coerceAtLeast(SECOND_FLOOR_M) else null
+
+    /**
+     * Degrees by which the camera's direction misses ours, 0 for ANY or no bearing (§11 step 3):
+     * [directionMismatchDeg], with its bearing-to-camera leg only when [betaAllowed] (the camera is
+     * properly ahead).
+     */
+    private fun directionMismatch(poi: AlertPoi, heading: Double, toPoi: Double, betaAllowed: Boolean): Double =
+        poi.bearing?.toDouble()?.let { directionMismatchDeg(it, poi.directionType, heading, toPoi.takeIf { betaAllowed }) } ?: 0.0
 
     private fun emit(poi: AlertPoi, kind: AlertKind, d: Double, fix: Fix, triggerM: Double, staleBelowM: Double?): AlertEvent {
         // In a zone, its cameras are judged against the zone's limit; any other camera (a red-light camera
         // at 30 inside a 50 zone) against its own, and the zone's only when it has none.
+        val z = zone
         val limit = when {
-            inZone && poi.zoneRole != ZoneRole.NONE -> zoneLimitMps ?: poi.speedLimitMps
-            inZone -> poi.speedLimitMps ?: zoneLimitMps
-            else -> poi.speedLimitMps
+            z == null -> poi.speedLimitMps
+            poi.zoneRole != ZoneRole.NONE -> z.limitMps ?: poi.speedLimitMps
+            else -> poi.speedLimitMps ?: z.limitMps
         }
         val over = limit != null && fix.speedMps > limit * (1 + overspeedPct)
-        // Speech priorities (§12.3): PASSING 100 (never dropped), SECOND and OVERSPEED 50, FIRST 10.
-        // Zone enter/exit are 60 and the app's GUIDANCE is 80, between a 2nd and a PASSING.
-        val priority = when (kind) {
-            AlertKind.PASSING -> 100
-            AlertKind.SECOND, AlertKind.OVERSPEED -> 50
-            else -> 10
-        }
-        return AlertEvent(poi.id, kind, d, over, priority, triggerM, staleBelowM).also { trace?.stage(it) }
+        return AlertEvent(poi.id, kind, d, over, kind.priority, triggerM, staleBelowM).also { trace?.stage(it) }
     }
 
     private fun zoneEvent(poiId: Long, kind: AlertKind, over: Boolean = false): AlertEvent =
-        AlertEvent(poiId, kind, 0.0, over, if (kind == AlertKind.OVERSPEED) 50 else 60).also { trace?.stage(it) }
+        AlertEvent(poiId, kind, 0.0, over, kind.priority).also { trace?.stage(it) }
 
     private fun handleZonePass(poi: AlertPoi, fix: Fix, out: MutableList<AlertEvent>) {
         when (poi.zoneRole) {
@@ -602,34 +578,30 @@ class AlertEngine(
                 // A real zone has another camera ahead with the same limit to time you against (§11 step 8);
                 // a start marker opens one on its own.
                 val ahead = poi.zoneRole == ZoneRole.ZONE_START || zonePointAhead(fix, poi.speedLimitMps, exclude = poi.id)
-                if (!inZone) {
+                val z = zone ?: run {
                     if (!ahead) return
-                    startZone(poi, fix)
-                    out += zoneEvent(poi.id, AlertKind.ZONE_ENTER)
-                } else {
-                    // A camera with no limit (variable or unknown) keeps the zone's.
-                    zoneLimitMps = poi.speedLimitMps ?: zoneLimitMps
+                    Zone(fix.lat, fix.lon, fix.timeMs, poi.speedLimitMps).also {
+                        zone = it
+                        out += zoneEvent(poi.id, AlertKind.ZONE_ENTER)
+                    }
                 }
-                zonePoiId = poi.id
-                lastZonePointLat = poi.lat; lastZonePointLon = poi.lon
+                // A camera with no limit (variable or unknown) keeps the zone's.
+                z.limitMps = poi.speedLimitMps ?: z.limitMps
+                z.poiId = poi.id
+                z.lastPointLat = poi.lat
+                z.lastPointLon = poi.lon
                 if (!ahead) {
                     // The last camera of the zone.
-                    inZone = false
+                    zone = null
                     out += zoneEvent(poi.id, AlertKind.ZONE_EXIT)
                 }
             }
-            ZoneRole.ZONE_END -> if (inZone) {
-                inZone = false
+            ZoneRole.ZONE_END -> if (zone != null) {
+                zone = null
                 out += zoneEvent(poi.id, AlertKind.ZONE_EXIT)
             }
             ZoneRole.NONE -> Unit
         }
-    }
-
-    private fun startZone(poi: AlertPoi, fix: Fix) {
-        inZone = true
-        zoneStartLat = fix.lat; zoneStartLon = fix.lon; zoneStartMs = fix.timeMs
-        zoneLimitMps = poi.speedLimitMps
     }
 
     /** Is a zone point with this limit ahead of us, facing our way, within the zone gap? */
@@ -651,23 +623,23 @@ class AlertEngine(
     private fun sameLimit(a: Double?, b: Double?) = a == null || b == null || abs(a - b) < 0.5
 
     private fun updateZone(fix: Fix, out: MutableList<AlertEvent>) {
-        if (!inZone) return
-        val sinceLastPoint = Geo.distanceM(fix.lat, fix.lon, lastZonePointLat, lastZonePointLon)
-        val fromStart = Geo.distanceM(fix.lat, fix.lon, zoneStartLat, zoneStartLon)
-        val chainAhead = zonePointAhead(fix, zoneLimitMps)
+        val z = zone ?: return
+        val sinceLastPoint = Geo.distanceM(fix.lat, fix.lon, z.lastPointLat, z.lastPointLon)
+        val fromStart = Geo.distanceM(fix.lat, fix.lon, z.startLat, z.startLon)
+        val chainAhead = zonePointAhead(fix, z.limitMps)
         // The zone ends when nothing same-limit is ahead within the gap and none has been passed for 5 km,
         // or after 30 km / 30 min (§11 step 8). A gap with a camera still ahead keeps it open.
         val endByGap = sinceLastPoint > config.zoneGapM && !chainAhead
-        val endByLimit = fromStart > config.zoneMaxM || fix.timeMs - zoneStartMs > config.zoneMaxMs
+        val endByLimit = fromStart > config.zoneMaxM || fix.timeMs - z.startMs > config.zoneMaxMs
         if (endByGap || endByLimit) {
-            inZone = false
-            out += zoneEvent(zonePoiId, AlertKind.ZONE_EXIT)
+            zone = null
+            out += zoneEvent(z.poiId, AlertKind.ZONE_EXIT)
             return
         }
-        val limit = zoneLimitMps ?: return
+        val limit = z.limitMps ?: return
         if (fix.speedMps > limit * (1 + overspeedPct) && fix.timeMs - lastZoneOverspeedMs >= config.zoneOverspeedRepeatMs) {
             lastZoneOverspeedMs = fix.timeMs
-            out += zoneEvent(zonePoiId, AlertKind.OVERSPEED, over = true)
+            out += zoneEvent(z.poiId, AlertKind.OVERSPEED, over = true)
         }
     }
 

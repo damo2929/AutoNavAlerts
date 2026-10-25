@@ -6,6 +6,7 @@ package io.autonav.alerts.data
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.room.withTransaction
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.autonav.alerts.core.alerts.AlertStage
@@ -20,7 +21,9 @@ import io.autonav.alerts.core.poi.importers.FormatSniffer
 import io.autonav.alerts.core.poi.importers.GpxImporter
 import io.autonav.alerts.core.poi.importers.IgoTxtImporter
 import io.autonav.alerts.core.poi.importers.KmlImporter
+import io.autonav.alerts.core.poi.importers.LazyBytes
 import io.autonav.alerts.core.poi.importers.Ov2Importer
+import io.autonav.alerts.core.poi.importers.PgwOv2
 import io.autonav.alerts.core.poi.importers.PoiFormat
 import io.autonav.alerts.core.poi.importers.ZipEntries
 import kotlinx.coroutines.Dispatchers
@@ -120,10 +123,9 @@ class PoiRepository @Inject constructor(
         replaceSetId: Long? = null,
     ): ImportOutcome = withContext(Dispatchers.IO) {
         val name = displayName(uri)
-        if (name.endsWith(".zip", true)) {
+        val outcome = if (name.endsWith(".zip", true)) {
             // Copied to a temp file (streamed), then each file is read from it only when needed.
-            val tmp = copyToTemp(uri) ?: return@withContext fail("Couldn't open the file")
-            try {
+            withTemp(uri, ".zip") { tmp ->
                 ZipEntries.read(tmp).use { entries ->
                     val poiFiles = poiFilesIn(entries)
                     if (poiFiles.isEmpty()) return@withContext fail("No POI file found in the zip")
@@ -133,15 +135,15 @@ class PoiRepository @Inject constructor(
                     val data = poiFiles.getValue(entryName)
                     importOne(entryName, data.copyOf(minOf(512, data.size)), format, { data.inputStream() }, csvProfile, replaceSetId)
                 }
-            } finally { tmp.delete() }
+            }
         } else {
             // A single file is streamed to a temp file and parsed from it, never held whole in memory (§1.3).
-            val tmp = copyToTemp(uri, ".poi") ?: return@withContext fail("Couldn't open the file")
-            try {
+            withTemp(uri, ".poi") { tmp ->
                 val head = tmp.inputStream().use { i -> ByteArray(512).let { b -> b.copyOf(i.read(b).coerceAtLeast(0)) } }
                 importOne(name, head, format, { tmp.inputStream() }, csvProfile, replaceSetId, sizeBytes = tmp.length())
-            } finally { tmp.delete() }
+            }
         }
+        outcome ?: fail("Couldn't open the file")
     }
 
     /**
@@ -182,40 +184,32 @@ class PoiRepository @Inject constructor(
      * The POI files in a picked zip (by extension, leaving out licence and readme files), as a lazy map: each
      * entry is inflated from the zip on disk only when read, and not kept (§5.2 "Never all in memory").
      */
-    private fun poiFilesIn(entries: Map<String, ByteArray>): Map<String, ByteArray> =
-        io.autonav.alerts.core.poi.importers.LazyBytes(LinkedHashMap<String, () -> ByteArray>().apply {
-            for (name in poiFileNames(entries.keys)) put(name) { entries.getValue(name) }
-        })
+    private fun poiFilesIn(entries: Map<String, ByteArray>): Map<String, ByteArray> = LazyBytes.select(entries) { it.takeIf(::isPoiFile) }
 
-    /** Which zip entries count as POI files: a known extension, and not a licence, release or readme text file. */
-    private fun poiFileNames(names: Collection<String>): List<String> = names.filter { name ->
-        val lower = name.lowercase()
-        listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } &&
-            listOf("licence", "license", "release", "readme").none { lower.contains(it) }
-    }
-
-    /** Streams a picked document to a temp file in the cache dir, so it can be parsed from disk (§1.3 Memory); null if it can't be opened. */
-    private fun copyToTemp(uri: Uri, suffix: String = ".zip"): java.io.File? {
-        val tmp = java.io.File.createTempFile("import", suffix, context.cacheDir)
-        val ok = context.contentResolver.openInputStream(uri)?.use { i -> tmp.outputStream().use { i.copyTo(it) }; true } ?: false
-        return if (ok) tmp else { tmp.delete(); null }
+    /**
+     * Streams a picked document to a temp file in the cache dir, so it can be parsed from disk (§1.3 Memory),
+     * runs [block] on it and deletes it; null, with nothing run, if the document can't be opened.
+     */
+    private inline fun <T> withTemp(uri: Uri, suffix: String, block: (File) -> T): T? {
+        val tmp = File.createTempFile("import", suffix, context.cacheDir)
+        try {
+            context.contentResolver.openInputStream(uri)?.use { i -> tmp.outputStream().use { i.copyTo(it) } } ?: return null
+            return block(tmp)
+        } finally { tmp.delete() }
     }
 
     /** Names of the POI files in a picked zip, for the import dialog's list (§5.2: from the zip's directory alone). Empty for a non-zip. */
     suspend fun zipPoiFileNames(uri: Uri): List<String> = withContext(Dispatchers.IO) {
         if (!displayName(uri).endsWith(".zip", true)) return@withContext emptyList()
         // Only the zip's directory is read; no file in it is inflated.
-        val tmp = copyToTemp(uri) ?: return@withContext emptyList()
-        try { runCatching { poiFileNames(ZipEntries.names(tmp)) }.getOrDefault(emptyList()) } finally { tmp.delete() }
+        withTemp(uri, ".zip") { tmp -> runCatching { ZipEntries.names(tmp).filter(::isPoiFile) }.getOrDefault(emptyList()) } ?: emptyList()
     }
 
     /**
      * The set name from a file name, never asked for (§5, hard rule 9): "Croydon_Tramlink_Stop_PGPSW.ov2" →
      * "Croydon Tramlink Stop". Drops the extension and a trailing "PGPSW" suffix, turns underscores into spaces.
      */
-    fun setNameFor(fileName: String): String =
-        fileName.substringBeforeLast('.').replace(Regex("(?i)[_ -]?pgpsw$"), "").replace('_', ' ').trim()
-            .ifEmpty { fileName }
+    fun setNameFor(fileName: String): String = Companion.setNameFor(fileName)
 
     /**
      * One set per POI file in a zip, never merged (§5, hard rule 9); re-importing the same zip updates those sets
@@ -229,38 +223,44 @@ class PoiRepository @Inject constructor(
         poiFiles: Map<String, ByteArray>,
         csvProfile: CsvProfile?,
     ): ImportOutcome {
-        var total = 0
-        var skippedRows = 0
-        var sets = 0
-        var firstId: Long? = null
-        val problems = ArrayList<String>()
-        for ((fileName, data) in poiFiles) {
-            val fmt = FormatSniffer.detect(fileName, data.copyOf(minOf(512, data.size)))
-            if (fmt == null) { problems += "$fileName: unknown format"; continue }
-            val result = parse(fmt, { data.inputStream() }, csvProfile)
-            if (result == null) { problems += "$fileName: CSV needs a column mapping"; continue }
-            val stem = fileName.substringBeforeLast('.')
-            val iconBytes = entries.entries.firstOrNull { (n, _) ->
-                n.substringBeforeLast('.').equals(stem, true) && n.lowercase().let { it.endsWith(".bmp") || it.endsWith(".png") }
-            }?.value
-            val icon = iconBytes?.let { icons.saveImportedIcon(stem, it) }
-            // Keyed by zip and file, so another zip with a file of the same name gets its own set.
-            // A set imported before 2026-10-13 has the old key without the zip: the first re-import claims it.
-            val key = "${fmt.name}:file:$zipName/$fileName"
-            val existing = db.poiSets().byFormat(key) ?: db.poiSets().byFormat("${fmt.name}:file:$fileName")
-            val out = storeImport(
-                result, setNameFor(fileName), PoiSourceType.FILE, key, existing?.id,
-                categoryNamer = { it }, defaultIcon = icon, fileIcon = icon != null,
-            )
-            if (out.failed) problems += "$fileName: ${out.message}" else {
-                total += out.imported; skippedRows += out.skipped; sets++
-                if (firstId == null) firstId = out.setId
-            }
+        val outs = poiFiles.map { (fileName, data) -> fileName to importZipFile(zipName, entries, fileName, data, csvProfile) }
+        return combine(outs) { imported, sets, skipped, problems ->
+            "Imported $imported POIs from $zipName into $sets sets" +
+                (if (skipped > 0) " ($skipped rows skipped)" else "") +
+                (if (problems.isNotEmpty()) ". Not imported: ${problems.joinToString("; ")}" else "")
         }
-        val msg = "Imported $total POIs from $zipName into $sets sets" +
-            (if (skippedRows > 0) " ($skippedRows rows skipped)" else "") +
-            (if (problems.isNotEmpty()) ". Not imported: ${problems.joinToString("; ")}" else "")
-        return ImportOutcome(firstId, total, skippedRows, problems, sets == 0, msg)
+    }
+
+    /** One POI file of a zip as its own set (§5): sniffed, parsed, given the zip's matching icon, and stored over the set an earlier import of the same zip and file made. */
+    private suspend fun importZipFile(zipName: String, entries: Map<String, ByteArray>, fileName: String, data: ByteArray, csvProfile: CsvProfile?): ImportOutcome {
+        val fmt = FormatSniffer.detect(fileName, data.copyOf(minOf(512, data.size))) ?: return fail("unknown format")
+        val result = parse(fmt, { data.inputStream() }, csvProfile) ?: return fail("CSV needs a column mapping")
+        val stem = fileName.substringBeforeLast('.')
+        val iconBytes = entries.entries.firstOrNull { (n, _) ->
+            n.substringBeforeLast('.').equals(stem, true) && n.lowercase().let { it.endsWith(".bmp") || it.endsWith(".png") }
+        }?.value
+        val icon = iconBytes?.let { icons.saveImportedIcon(stem, it) }
+        // Keyed by zip and file, so another zip with a file of the same name gets its own set.
+        // A set imported before 2026-10-13 has the old key without the zip: the first re-import claims it.
+        val key = "${fmt.name}:file:$zipName/$fileName"
+        val existing = db.poiSets().byFormat(key) ?: db.poiSets().byFormat("${fmt.name}:file:$fileName")
+        return storeImport(
+            result, setNameFor(fileName), PoiSourceType.FILE, key, existing?.id,
+            categoryNamer = { it }, defaultIcon = icon, fileIcon = icon != null,
+        )
+    }
+
+    /**
+     * The outcome of a zip of several files from each file's own, paired with the name a problem is listed under:
+     * the counts over the files that made a set, "<name>: <message>" for the rest, failed only when no set was
+     * made; [message] gets the POIs imported, the sets made, the rows skipped and the problems.
+     */
+    private fun combine(outs: List<Pair<String, ImportOutcome>>, message: (Int, Int, Int, List<String>) -> String): ImportOutcome {
+        val ok = outs.map { it.second }.filter { !it.failed }
+        val problems = outs.filter { it.second.failed }.map { (name, out) -> "$name: ${out.message}" }
+        val imported = ok.sumOf { it.imported }
+        val skipped = ok.sumOf { it.skipped }
+        return ImportOutcome(ok.firstOrNull()?.setId, imported, skipped, problems, ok.isEmpty(), message(imported, ok.size, skipped, problems))
     }
 
     // --- PGW import ----------------------------------------------------------------------------
@@ -280,28 +280,25 @@ class PoiRepository @Inject constructor(
     /** The body of [importPgwZip] over the zip's lazy entry map. */
     private suspend fun importPgwEntries(zip: File, entries: Map<String, ByteArray>, version: String): ImportOutcome {
         // Entry names only: no PGW data is logged (§6.4).
-        android.util.Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.keys}")
+        Log.i("PgwImport", "Zip ${zip.length()} bytes, entries: ${entries.keys}")
         // TomTom OV2 (PGW's own naming carries direction, type, id and speed) or iGO TXT, one set per family.
-        val ov2 = io.autonav.alerts.core.poi.importers.PgwOv2.files(entries)
+        val ov2 = PgwOv2.files(entries)
         val files: Map<String, () -> ImportResult> = if (ov2.isNotEmpty()) {
             // One set per file in the download (e.g. "PGW fixed cameras · 30 mph").
-            ov2.mapValues { (_, bytes) -> { io.autonav.alerts.core.poi.importers.PgwOv2.parse(bytes) } }
+            ov2.mapValues { (_, bytes) -> { PgwOv2.parse(bytes) } }
         } else {
             ZipEntries.pgwTypeFiles(entries).mapValues { (_, bytes) -> { IgoTxtImporter().parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1)) } }
         }
         val fileFormat = if (ov2.isNotEmpty()) PoiFormat.OV2.name else PoiFormat.IGO_TXT.name
         // The _X2 icons' licence text travels with the download and must be kept beside the icons (§5.2a).
-        entries.entries.firstOrNull { it.key.equals(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_LICENCE_FILE, true) }
+        entries.entries.firstOrNull { it.key.equals(PgwOv2.ICON_LICENCE_FILE, true) }
             ?.let { icons.savePgwIconLicence(it.value) }
         if (files.isEmpty()) return fail(
             "No camera files in the download. The zip contained: " +
                 entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" },
         )
         val keptFormats = HashSet<String>()
-        var total = 0
-        var firstId: Long? = null
-        val failures = ArrayList<String>()
-        for ((stem, load) in files) {
+        val outs = files.map { (stem, load) ->
             val info = PgwFile.of(stem, ov2 = ov2.isNotEmpty())
             // The import key that matches this file to its set on the next sync (§5.2a "matched by file stem").
             val format = "$fileFormat:$stem"
@@ -310,22 +307,22 @@ class PoiRepository @Inject constructor(
             val result = load()
             val existing = db.poiSets().byFormat(format)
             // The icon shipped with this file, if any (OV2 downloads include one per file).
-            val fileIcon = io.autonav.alerts.core.poi.importers.PgwOv2.iconFor(stem, entries)?.let { icons.savePgwIcon(stem, it) }
-            val out = storeImport(
+            val fileIcon = PgwOv2.iconFor(stem, entries)?.let { icons.savePgwIcon(stem, it) }
+            info.setName to storeImport(
                 result, info.setName, info.source, format, existing?.id,
                 categoryNamer = info.categoryName, version = version,
                 alertsDefault = existing?.alertsEnabled ?: info.alertsByDefault, defaultIcon = fileIcon ?: info.icon,
                 fileIcon = fileIcon != null,
             )
-            if (out.failed) failures += "${info.setName}: ${out.message}" else { total += out.imported; if (firstId == null) firstId = out.setId }
         }
         // Remove PGW sets from an older package layout (e.g. the single combined set), or the other package
         // when the user switched between OV2 and iGO (§5.2 "PGW sets from an older layout are removed").
         db.poiSets().pgwSets().filter { it.format !in keptFormats }.forEach { db.poiSets().delete(it.id) }
         notifyChanged()
-        return if (failures.size == files.size) ImportOutcome(null, 0, 0, failures, true, failures.joinToString("; "))
-        else ImportOutcome(firstId, total, 0, failures, false,
-            "Imported $total cameras in ${files.size - failures.size} sets" + if (failures.isNotEmpty()) " (${failures.size} failed)" else "")
+        return combine(outs) { imported, sets, _, problems ->
+            if (sets == 0) problems.joinToString("; ")
+            else "Imported $imported cameras in $sets sets" + if (problems.isNotEmpty()) " (${problems.size} failed)" else ""
+        }
     }
 
     // --- Shared storage ------------------------------------------------------------------------
@@ -380,7 +377,7 @@ class PoiRepository @Inject constructor(
                 val cat = (prev?.let { p -> if (fileIcon && p.iconId in IconRepository.BUILTIN) p.copy(iconId = null) else p } ?: PoiCategoryEntity(
                     setId = stagingId, sourceCode = code, name = categoryNamer(code),
                     iconId = if (isPgw && !fileIcon) IconRepository.pgwIconFor(code, source) else null,
-                    zoneRole = if (isPgw && (code in IgoTxtImporter.PGW_AVERAGE_SPEED_CODES || io.autonav.alerts.core.poi.importers.PgwOv2.isAverageSpeed(code))) ZoneRole.ZONE_POINT else ZoneRole.NONE,
+                    zoneRole = if (isPgw && (code in IgoTxtImporter.PGW_AVERAGE_SPEED_CODES || PgwOv2.isAverageSpeed(code))) ZoneRole.ZONE_POINT else ZoneRole.NONE,
                 )).copy(id = 0, setId = stagingId)
                 catIds[code] = db.categories().insert(cat)
             }
@@ -414,7 +411,7 @@ class PoiRepository @Inject constructor(
      * What each PGW file becomes (DESIGN.md §5.2 table, §5.2a): its set name, source (PGW or PGW_PENDING),
      * built-in icon when the download has none, whether alerts start on, and how its codes are named.
      */
-    private data class PgwFile(
+    internal data class PgwFile(
         val setName: String,
         val source: PoiSourceType,
         val icon: String,
@@ -425,12 +422,12 @@ class PoiRepository @Inject constructor(
             /** OV2 stems are "<family>_<speed>" ("gatso_30", "specs_var"): the family picks the base and the speed part names the set (§5.2a). */
             fun of(stem: String, ov2: Boolean = false): PgwFile {
                 if (!ov2) return of(stem)
-                val (family, part) = io.autonav.alerts.core.poi.importers.PgwOv2.splitStem(stem)
+                val (family, part) = PgwOv2.splitStem(stem)
                 val base = of(family)
-                val speed = io.autonav.alerts.core.poi.importers.PgwOv2.speedLabel(part)
+                val speed = PgwOv2.speedLabel(part)
                 return base.copy(
                     setName = if (speed != null) "${base.setName} · $speed" else base.setName,
-                    categoryName = io.autonav.alerts.core.poi.importers.PgwOv2::categoryName,
+                    categoryName = PgwOv2::categoryName,
                 )
             }
 
@@ -451,17 +448,7 @@ class PoiRepository @Inject constructor(
     }
 
     /** A new set with the design defaults: the §7.2 templates, the §11.1 stages, pin icon for a hand import and a camera for the rest. */
-    fun defaultSet(name: String, source: PoiSourceType, format: String, alerts: Boolean, now: Long) = PoiSetEntity(
-        name = name, source = source, format = format,
-        alertsEnabled = alerts,
-        defaultIconId = if (source == PoiSourceType.FILE) IconRepository.PIN else IconRepository.CAMERA_FIXED,
-        firstTemplate = AlertTemplateRenderer.DEFAULT_FIRST,
-        secondTemplate = AlertTemplateRenderer.DEFAULT_SECOND,
-        passingTemplate = AlertTemplateRenderer.DEFAULT_PASSING,
-        firstAlert = AlertStage.DEFAULT_FIRST.toCols(),
-        secondAlert = AlertStage.DEFAULT_SECOND.toCols(),
-        lastUpdated = now,
-    )
+    fun defaultSet(name: String, source: PoiSourceType, format: String, alerts: Boolean, now: Long) = Companion.defaultSet(name, source, format, alerts, now)
 
     // --- "My reports" set (DESIGN.md §8.5) -------------------------------------------------------
 
@@ -484,8 +471,32 @@ class PoiRepository @Inject constructor(
     /** Startup: drops reported mobile sites past their 24 h (§8.5). */
     suspend fun purgeExpired() = db.pois().deleteExpired(System.currentTimeMillis())
 
-    private companion object {
+    // Internal so the pure helpers below are JVM-tested (PoiRepositoryNamingTest); the instance forwarders keep the callers unchanged.
+    internal companion object {
         /** KML and GPX are read as a whole document; above this a phone could run out of memory (§1.3 Memory: refused above 50 MB). */
         const val MAX_XML_BYTES = 50_000_000L
+
+        /** Which zip entries count as POI files: a known extension, and not a licence, release or readme text file. */
+        fun isPoiFile(name: String): Boolean {
+            val lower = name.lowercase()
+            return listOf(".txt", ".csv", ".kml", ".gpx", ".ov2").any { lower.endsWith(it) } &&
+                listOf("licence", "license", "release", "readme").none { lower.contains(it) }
+        }
+
+        fun setNameFor(fileName: String): String =
+            fileName.substringBeforeLast('.').replace(Regex("(?i)[_ -]?pgpsw$"), "").replace('_', ' ').trim()
+                .ifEmpty { fileName }
+
+        fun defaultSet(name: String, source: PoiSourceType, format: String, alerts: Boolean, now: Long) = PoiSetEntity(
+            name = name, source = source, format = format,
+            alertsEnabled = alerts,
+            defaultIconId = if (source == PoiSourceType.FILE) IconRepository.PIN else IconRepository.CAMERA_FIXED,
+            firstTemplate = AlertTemplateRenderer.DEFAULT_FIRST,
+            secondTemplate = AlertTemplateRenderer.DEFAULT_SECOND,
+            passingTemplate = AlertTemplateRenderer.DEFAULT_PASSING,
+            firstAlert = AlertStage.DEFAULT_FIRST.toCols(),
+            secondAlert = AlertStage.DEFAULT_SECOND.toCols(),
+            lastUpdated = now,
+        )
     }
 }
