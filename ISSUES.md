@@ -53,6 +53,8 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-24 22
 | L4 | The cluster shows only the trip's turn card, never a map, and only on cars that support cluster navigation | DESIGN §16 row 26 |
 | L5 | Navigation SDK access needs Google's approval and is billed per trip; Places autocomplete is billed per session | DESIGN §16 rows 1, 12 |
 | L6 | Google Maps recents: no live API; our own recents and Maps shares are always current | DESIGN §16 rows 13, 14 |
+| L7 | Android Auto 18.0 often sends no visible/stable area on a new connection, so the car can't be centred from the host's report; Google [572988456](https://issuetracker.google.com/issues/572988456) (fixed in Android Auto 18.1; ours, [575926521](https://issuetracker.google.com/issues/575926521), is its duplicate). Watched weekly | DESIGN §8, §16 row 21 |
+| L8 | Navigation SDK 8.0.0 deprecated `followMyLocation(int, FollowMyLocationOptions)` with no replacement, so the follow zoom can't be set without a deprecated call; free drive then follows at 18, where the road map draws no traffic. Reported 2026-10-28: [578578614](https://issuetracker.google.com/issues/578578614). Watched weekly | DESIGN §8, §16 row 21 |
 
 ## 5. Not yet built
 

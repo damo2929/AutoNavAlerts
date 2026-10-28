@@ -22,7 +22,7 @@ echo "Navigation SDK $ver"
 curl -fsS -o "$work/nav.aar" "$repo/$ver/navigation-$ver.aar"
 unzip -q -o "$work/nav.aar" classes.jar -d "$work"
 
-javap=$(command -v javap || ls -d "$HOME"/.gradle/jdks/*/bin/javap 2>/dev/null | head -1)
+javap=$(command -v javap || ls -d "$HOME"/.gradle/jdks/*/bin/javap "$HOME"/.local/jdk/*/bin/javap 2>/dev/null | head -1 || true)
 [ -x "$javap" ] || { echo "javap not found (install a JDK, or build once so Gradle downloads one)"; exit 2; }
 
 auto=$("$javap" -cp "$work/classes.jar" com.google.android.libraries.navigation.NavigationViewForAuto)
@@ -34,6 +34,17 @@ for m in setReportIncidentButtonEnabled showReportIncidentsPanel isIncidentRepor
   printf '  %-34s phone: %-3s  Android Auto: %s\n' "$m" "$p" "$a"
   [ "$a" = yes ] && status=10
 done
+# Google issue 578578614: the follow zoom has no non-deprecated call (DESIGN.md §8 "Zooming keeps
+# your zoom", ISSUES.md L8). Flag a new followMyLocation overload or the end of FollowMyLocationOptions.
+map=$("$javap" -cp "$work/classes.jar" com.google.android.gms.maps.GoogleMap 2>/dev/null || true)
+follow=$(grep -E ' followMyLocation\(' <<<"$map" | sed -E 's/^ +//' || true)
+echo "  followMyLocation overloads:"; sed 's/^/    /' <<<"${follow:-    (GoogleMap not found)}"
+known='public void followMyLocation(int);
+public void followMyLocation(int, com.google.android.gms.maps.model.FollowMyLocationOptions);'
+if [ -n "$follow" ] && [ "$(sort <<<"$follow")" != "$(sort <<<"$known")" ]; then
+  echo "=> followMyLocation changed: a follow-zoom call may be back (Google issue 578578614). Check ISSUES.md L8."
+  status=10
+fi
 if [ $status -eq 10 ]; then
   echo "=> Android Auto now has incident reporting APIs. The app enables them automatically (IncidentReporting.kt);"
   echo "   update DESIGN.md §16 #21 and test on the DHU."

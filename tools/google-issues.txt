@@ -1,0 +1,7 @@
+# Google issues AutoNavAlerts waits on (DESIGN.md §16 #21, ISSUES.md L7/L8).
+# tools/check-google-issues.sh compares each with Google's public issue page and exits 10 on a change;
+# after reading the change, update the line here (tools/check-google-issues.sh --update rewrites them).
+# id         status      last-modified (UTC epoch)  what
+578578614    NEW         1793148381                 Nav SDK 8.0.0: no non-deprecated follow zoom; no traffic at 18 on the road map; TOP_DOWN_HEADING_UP north-up in free drive (ours)
+572988456    FIXED       1792804764                 Android Auto 18.0: no visible/stable area on a new connection; fixed in Gearhead 18.1 (L7)
+575926521    DUPLICATE   1792629586                 Our report of the same, duplicate of 572988456
