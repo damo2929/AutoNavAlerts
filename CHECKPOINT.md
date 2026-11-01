@@ -1,19 +1,19 @@
-# Checkpoint: session 10 (2026-10-25, PC `fedora`: the reduction pass and the test tier — code 10,971 → 10,385 lines, tests 3,120 → 11,823, uncommitted; read §4i first); earlier sessions below
+# Checkpoint: session 12 (2026-11-01, PC `fedora`: merged to main, 3 s passing alert, zoom cap 17.5, low bridges, follow fixes; branch `route-ready-follow-events` waits to be merged; read §4k first); earlier sessions below
 
 > Read this first when resuming. Then read [DESIGN.md](DESIGN.md) (the source of truth), [TESTING.md](TESTING.md) (the bench guide) and [docs/SETTINGS.md](docs/SETTINGS.md).
 > The code is AI-assisted (Claude). Commits are by `Damien Dye <damien@damiendye.uk>`. **Never use the croit email in this repo.**
 
 ## 1. Where things stand
 
-- **Repo:** `git@github.com:damo2929/AutoNavAlerts.git`, branch `main`. `a84061d` (car centred across the map panel, areas restored, one view path) is on origin; this checkpoint's commit holds session 7 (§4f) and is pushed on the owner's instruction (2026-10-24 01:05). The working tree was clean at checkpoint.
-- **Build:** `./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug` is green: **core 448 tests, 0 failures, 5 skipped** (the env-gated real-file tests), **app 543 tests** including the Robolectric tier (2026-10-25, session 10; was 217/34 after the reuse pass). A one-off `[Hilt] Processing did not complete` on `assembleDebug` went away on a plain re-run (2026-10-13): retry before digging.
-- **Version:** v0.1.0 debug.
+- **Repo:** `git@github.com:damo2929/AutoNavAlerts.git`. `main` = `46a2e30` (2026-11-01: code_shrink rebased, version 0.1.0-2026-11-01). **Everything since is on `route-ready-follow-events`** (11 commits to `004b9f5`, pushed): the owner merges it with `git push origin origin/route-ready-follow-events:main` (fast-forward; the agent's push to main is blocked by the permission system). The local checkout `/home/damien/sources/AutoNavAlerts` is still on `code_shrink` with old uncommitted work (now all committed on the branch); the session worked in the worktree `$SCRATCHPAD/rebase-wt`.
+- **Build:** `./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug` is green at `004b9f5` (core 476 with 6 env-gated skips, app 570; `ListScreensTest`/`MoreScreenTest` flake under load, ISSUES B14).
+- **Version:** 0.1.0-2026-11-01, versionCode 3 (not yet uploaded to Play; the release APK/bundle at this version were not rebuilt).
 
 **Test bench on this PC:**
 - Android SDK in `~/Android/Sdk`.
 - `auto-bench` emulator: Android 16 Google Play image, 3 vCPUs (2 until 2026-11-01), `-gpu host -feature -Vulkan`.
 - The DHU is installed, and its `libcxx`/`libcxxabi` libraries are installed.
-- **The emulator and the DHU were left running** (`emulator-5554`, DHU `bench` profile) with the debug build of `99721af` installed (package `io.autonav.alerts`; no `.debug` suffix).
+- **Emulator stopped** at about 16:15 on 2026-11-01 (its log ends in gfxstream `null ctx` errors: closed or crashed); a DHU process was left. The app on it is build `842ffb1`+bridges (16:07), Maps key and terms saved, **PocketGPSWorld login saved by the owner at the end of the session** (the 25 Oct install never had one), no camera sync record, no bridges downloaded yet; `004b9f5` (Save feedback) not installed.
 - Restart with `tools/bench.sh phone`, the head-unit-server taps (§4d), `tools/bench.sh car`, then `tools/bench.sh install`.
 
 ## 2. What the user has tested and confirmed (on the emulator)
@@ -311,6 +311,26 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 - **Google issue 578578614** (follow zoom, traffic at 18, heading-up): Google asked (29 Oct) for a repro in a fork of their sample. Fork `damo2929/android-navigation-samples`, branch `issue-578578614` (`12b6cc8`): `NavViewActivity.startZoomRepro` + `ISSUE-578578614.md`; builds against 8.0.0, **not yet run in the sample** (needs a key allowing `com.example.navigationapidemo` with this PC's debug SHA-1 `49:92:44:19:…:BE:3E`; the app's key is restricted to `uk.damiendye.autonav`). Owner posted the link on the issue, 2026-11-01 (comment #3). Next: run it with a key and add the sample's logcat to the issue.
 - **Google's navigation sample compared with ours** (2026-11-01): it uses `setOnFollowMyLocationCallback` (`onCameraStoppedFollowingLocation`) and `addOnNavigationUiChangedListener`, starts guidance only on `RouteStatus.OK`, and notes "moving the camera always exits follow mode" (our zoom lock and padding may be what drops the follow). Proposed, not yet designed: log both callbacks, guard guidance start on `RouteStatus.OK`, then replace the polling watchdog. Owner's call.
 - **Drive along the app's route** (Banbury → Stansted, 3 vCPUs, `--route app --limits`): 75 km in by 14:21, car in its spot on every readable frame (89 of 122; the rest were the monitor missing the arrow), watchdog re-follows only 35–37 m off, no rebuild, no guidance stop.
+- **Later the same day** (commits `edd1754` … `004b9f5` on `route-ready-follow-events`):
+  - **Guidance starts only on `RouteStatus.OK`** for the current destination (`RouteReadiness`, §9.3); the preview stays with a car toast otherwise.
+  - **The SDK's follow and navigation-UI events are logged** (`Map sdkFollow started|stopped after=<our last camera call> <n>ms`, `sdkNavUi on|off`); logging only.
+  - **Padding and the zoom lock are sent only when they change** (owner): Google's sample says any camera move ends follow. After this the bench showed no `sdkFollow stopped`; a long drive to confirm the follow drops are gone is still to do.
+  - **Zoom cap 17.5, start 17** (owner): road map has traffic at 17.5/17.75 (M25, central London), none from 18; satellite 17–21. Banbury town centre at 17.5 to recheck on a real drive.
+  - **Car map buttons** answer a tap anywhere on them or within 16 dp (`TapTargets`, §8).
+  - **Passing alert 3 s ahead, ≥ 50 yd; 1st and 2nd counted out from it** (owner; §11.1). Bench `bend-camera` at 50 mph: speech finished ~9 m before the camera; every stage fires about one 1 Hz fix (≈18 m at 50 mph) after its distance (a one-fix look-ahead is the owner's call). Zones still open/close at the camera (old 1 s / 20 yd mark).
+  - **`tools/scenario.sh` broadcast the wrong action since 24 Oct**; fixed (`c567995`).
+  - **Low bridges** (§6.5; owner approved and steered: Bridges tab, Vehicle height + safety height slider 0–1 m, force re-download in Settings, same alerting code as cameras, one `if` in `AlertCoordinator.resolve`). Built and unit-tested (made-up POI page); **not yet downloaded from the site** (TESTING §6.8a LB1–LB5).
+  - **Vehicle height Save** gave no feedback once saved (owner: "why can't I save the height?"): now always pressable with "Saved: …" (`004b9f5`).
+  - **Debug bench hooks added**: `--ez route true`, `--ef zoomcap`, `--ez satellite`, `--es viewport l,t,r,b|off` (layout-delegate experiment, **not yet tried**).
+- **Google issue 578578614**: repro branch `damo2929/android-navigation-samples@issue-578578614` (`12b6cc8`); the owner posted the link on the issue (comment #3, accepting Issue Tracker's terms in the browser). Running the sample needs a key that allows `com.example.navigationapidemo` + this PC's debug SHA-1 (`49:92:44:19:45:38:7A:F0:E5:69:A0:C4:8F:71:35:08:16:30:BE:3E`); the Cloud Console page wouldn't render in the agent's browser.
+
+**Next (in order):**
+1. Owner: merge `route-ready-follow-events` to `main` (command above).
+2. `tools/bench.sh phone`, Android Auto ⋮ → Start head unit server, `tools/bench.sh car`, `tools/bench.sh reload` (installs `004b9f5`).
+3. Bridges tab → Download low bridges; TESTING LB1–LB5; set Vehicle height (6 ft was the owner's entry).
+4. A long drive along the app's route (`drive.py --route app --limits`) to confirm no `sdkFollow stopped` / watchdog refollows now padding is sent only on change.
+5. Owner decisions waiting: one-fix look-ahead for stage timing; markers at low zoom (hide below 13 or scale the 3 km radius); dim + / − at the zoom limits; hold the watchdog briefly after our own zoom (false miss during the zoom animation); a distinct Bridges tab icon; try the viewport experiment.
+6. Release APK/bundle at versionCode 3 when the owner wants a Play upload.
 
 ## 5. Decisions and rules the user has set (don't undo these)
 
