@@ -38,6 +38,7 @@ import com.google.android.gms.maps.model.FollowMyLocationOptions
 import com.google.android.libraries.navigation.ForceNightMode
 import com.google.android.libraries.navigation.NavigationView
 import com.google.android.libraries.navigation.NavigationViewForAuto
+import com.google.android.libraries.navigation.OnNavigationUiChangedListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -260,6 +261,11 @@ class MapSurface(
             // The road map stops drawing traffic above zoom 17 in towns (satellite keeps it), and the follow
             // camera sits at 18. Capping the zoom keeps traffic on screen on both (DESIGN.md §8).
             m.setMaxZoomPreference(MAX_ZOOM)
+            // The SDK's own follow events, logged with our last camera call (DESIGN.md §8 "Follow watchdog", 2026-11-01).
+            m.setOnFollowMyLocationCallback(object : GoogleMap.OnCameraFollowLocationCallback {
+                override fun onCameraStartedFollowingLocation() = logSdkCamera("sdkFollow started")
+                override fun onCameraStoppedFollowingLocation() = logSdkCamera("sdkFollow stopped")
+            })
             log("ready type=${m.mapType} traffic=${m.isTrafficEnabled} maxZoom=$MAX_ZOOM followZoom=$followZoom")
             // Again now the map exists: the SDK builds its ETA card and the rest lazily, and a setter
             // called before that had no effect on the bench (the card was still drawn, 2026-10-13).
@@ -550,6 +556,11 @@ class MapSurface(
         )
         // The navigation camera (tilted, our padding) only works with the navigation UI on; a fresh start
         // had it off until the first route, so free drive showed a flat map with the car centred (DESIGN.md §8).
+        if (navUiWatched !== inner) {
+            navUiWatched?.let { runCatching { it.removeOnNavigationUiChangedListener(navUiListener) } }
+            runCatching { inner.addOnNavigationUiChangedListener(navUiListener) }
+            navUiWatched = inner
+        }
         val navUiWas = runCatching { inner.isNavigationUiEnabled }.getOrNull()
         if (navUiWas == false) {
             runCatching { inner.setNavigationUiEnabled(true) }
@@ -621,6 +632,8 @@ class MapSurface(
         val refollow = following && (changed || settle || reason in FOLLOW_REASONS)
         if (refollow) follow(m)
         if (changed) { lastFrame = frame; log("view $reason padding=$padding zoom=$followZoom following=$following") }
+        lastCameraCall = reason
+        lastCameraCallMs = SystemClock.elapsedRealtime()
         if (settle && following) {
             main.removeCallbacks(settleFollow)
             for (ms in REFOLLOW_MS) main.postDelayed(settleFollow, ms)
@@ -742,6 +755,8 @@ class MapSurface(
      * [attach] on the same surface. Safe to call more than once.
      */
     fun release() {
+        navUiWatched?.let { runCatching { it.removeOnNavigationUiChangedListener(navUiListener) } }
+        navUiWatched = null
         _map.value = null
         lastOverlayKey = null
         lastFrame = null
@@ -757,6 +772,24 @@ class MapSurface(
     }
 
     private fun log(msg: String) = eventLog.record(EventLog.Channel.NAV, "Map", msg)
+
+    /** Our last camera call ([applyView]'s reason) and when, for the SDK event lines (DESIGN.md §8 "Follow watchdog", 2026-11-01). */
+    private var lastCameraCall: String? = null
+    private var lastCameraCallMs = 0L
+    /** The inner `NavigationView` [navUiListener] is registered on, so it is added once and removed on [release]. */
+    private var navUiWatched: NavigationView? = null
+    /** The SDK switching its navigation UI on or off, which Google says also starts or stops following (§8). Logging only. */
+    private val navUiListener = OnNavigationUiChangedListener { on -> logSdkCamera("sdkNavUi ${if (on) "on" else "off"}") }
+
+    /**
+     * One SDK camera event to `debug-nav`, with our own last camera call and how long before it came, and
+     * whether we think we are following: so a drive's log shows whether our zoom lock, padding or follow calls
+     * end the SDK's follow ("moving the camera always exits follow mode", Google's sample). Logging only.
+     */
+    private fun logSdkCamera(event: String) {
+        val ago = if (lastCameraCall == null) "-" else "${SystemClock.elapsedRealtime() - lastCameraCallMs}ms"
+        log("$event after=${lastCameraCall ?: "-"} $ago following=$following guiding=${guidingProvider()}")
+    }
 
     companion object {
         private const val TAG = "MapSurface"

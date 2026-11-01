@@ -24,6 +24,7 @@ import io.autonav.alerts.core.geo.LatLngLike
 import io.autonav.alerts.core.geo.LatLngPoint
 import io.autonav.alerts.core.nav.EcoReaskPolicy
 import io.autonav.alerts.core.nav.GuidanceState
+import io.autonav.alerts.core.nav.RouteReadiness
 import io.autonav.alerts.core.nav.RoutePolyline
 import io.autonav.alerts.diag.EventLog
 import io.autonav.alerts.util.view
@@ -133,6 +134,8 @@ class GuidanceController @Inject constructor(
 
     /** The destination as the SDK has it; null with no route. Identity is compared to detect a route swap. */
     @Volatile private var waypoint: Waypoint? = null
+    /** Which destination the SDK last confirmed a route for (`RouteStatus.OK`); guidance starts only on it (DESIGN.md §9.3, 2026-11-01). */
+    private val ready = RouteReadiness<Waypoint>()
 
     /** The one source of truth for the route state (core, pure); [route] mirrors it. */
     @Volatile private var state = GuidanceState()
@@ -351,6 +354,7 @@ class GuidanceController @Inject constructor(
             request(listOf(waypoint)) { desc -> if (cont.isActive) cont.resume(desc.routeStatus) }
         }
         logRouteStatus(nav, status, t0, why)
+        ready.onResult(waypoint, ok = status == Navigator.RouteStatus.OK)
         if (status == Navigator.RouteStatus.OK) refreshRoutePoints(nav)
         return status
     }
@@ -418,13 +422,15 @@ class GuidanceController @Inject constructor(
         holder.navigator.value?.currentTimeAndDistance?.let { RouteOption(it.seconds, it.meters, it.delaySeverity) }
 
     /**
-     * Starts guidance along the set route. False, and nothing starts, with no route (DESIGN.md §9.3).
+     * Starts guidance along the set route. False, and nothing starts, with no route or one the SDK hasn't
+     * confirmed for this destination yet (DESIGN.md §9.3, "Guidance starts only on a route the SDK confirmed").
      *
      * [simulate] is honoured in debug builds only (the Navigation SDK simulator, TESTING.md). Main thread.
      */
     fun startGuidance(simulate: Boolean = false): Boolean {
         val nav = holder.navigator.value ?: return false
         val wp = waypoint ?: run { log("start skipped: no route simulate=$simulate"); return false }
+        if (!ready.isReadyFor(wp)) { log("start skipped: route not ready simulate=$simulate"); return false }
         log("start simulate=$simulate")
         // We speak the directions in the alerts' voice; Google's voice only if our speech isn't working (§12.3).
         val ours = tts.healthy.value
@@ -526,6 +532,7 @@ class GuidanceController @Inject constructor(
     /** Everything about the route, after a stop or an abandoned preview; mirrors [state]. */
     private fun clearRoute() {
         waypoint = null
+        ready.clear()
         routePoints = emptyList()
         polyline = null
         carOffRoute = false

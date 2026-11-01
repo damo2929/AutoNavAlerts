@@ -4,6 +4,7 @@
 package io.autonav.alerts.car.screens
 
 import androidx.car.app.CarContext
+import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
@@ -238,7 +239,12 @@ class RoutePreviewScreen(
             withContext(NonCancellable) {
                 App.appScope.async { runCatching { deps.places().remember(destination, destination.address) } }.await()
                 deps.eventLog().record(EventLog.Channel.NAV, "Guidance", "Places remember \"${destination.title}\"")
-                deps.guidance().startGuidance(simulate)
+            }
+            // Only on a route the SDK confirmed (DESIGN.md §9.3); otherwise say so and stay on the preview (hard rule 2).
+            if (!deps.guidance().startGuidance(simulate)) {
+                started = false
+                CarToast.makeText(carContext, carContext.getString(R.string.car_route_not_ready), CarToast.LENGTH_LONG).show()
+                return@launch
             }
             screenManager.popToRoot()
         }

@@ -186,13 +186,18 @@ class RoutePreviewScreenTest {
         assertNull("the preview's route is cleared (§8)", rig.deps.guide.destination.value)
     }
 
-    @Test fun goRemembersThePlaceInRecentsThenPopsToTheMapAndKeepsTheRoute() {
+    @Test fun goRemembersThePlaceInRecentsAndWithNoConfirmedRouteStaysOnThePreview() {
+        // The rig has no Navigator, so no route was confirmed: guidance must not start, and the preview
+        // stays with its destination instead of closing on nothing (DESIGN.md §9.3, 2026-11-01).
         val s = preview(RouteOption(0, 0, 0))
         s.template().navigateAction!!.tap()
-        rig.awaitUntil { rig.screens.screensRemoved.contains(s) }
+        rig.awaitUntil { runBlocking { rig.db.places().list() }.isNotEmpty() }
+        rig.idle()
         val recent = runBlocking { rig.db.places().list() }.single()
         assertEquals("Tesco", recent.name)
         assertEquals("Tesco, Banbury", recent.address)
+        assertFalse("not popped without a confirmed route", rig.screens.screensRemoved.contains(s))
+        assertFalse(rig.deps.guide.guiding.value)
         assertNotNull("Go is not an abandon", rig.deps.guide.destination.value)
     }
 }

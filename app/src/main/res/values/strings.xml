@@ -18,5 +18,6 @@
     <string name="car_no_contacts">No contacts with a postal address</string>
     <string name="car_which_address">Which address for %1$s?</string>
     <string name="car_contact_not_found">Couldn\'t find %1$s\'s address</string>
+    <string name="car_route_not_ready">The route isn\'t ready yet</string>
     <string name="car_place_not_found">Couldn\'t find that place</string>
 </resources>
