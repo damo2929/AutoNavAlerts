@@ -11,7 +11,7 @@
 
 **Test bench on this PC:**
 - Android SDK in `~/Android/Sdk`.
-- `auto-bench` emulator: Android 16 Google Play image, 2 vCPUs, `-gpu host -feature -Vulkan`.
+- `auto-bench` emulator: Android 16 Google Play image, 3 vCPUs (2 until 2026-11-01), `-gpu host -feature -Vulkan`.
 - The DHU is installed, and its `libcxx`/`libcxxabi` libraries are installed.
 - **The emulator and the DHU were left running** (`emulator-5554`, DHU `bench` profile) with the debug build of `99721af` installed (package `io.autonav.alerts`; no `.debug` suffix).
 - Restart with `tools/bench.sh phone`, the head-unit-server taps (§4d), `tools/bench.sh car`, then `tools/bench.sh install`.
@@ -307,6 +307,10 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 - **Bench Go before the route** (13:14): a `--ez go true` 0.2 s after the destination started guidance with no route, so no turn card and the car mid-screen. Not reachable by a tap (the preview shows Go only with a route); the hook now refuses until the route is there.
 - **The SDK dropped its guidance camera** (13:18:40 → 13:20:44): the car drove from its spot up to y≈228 while the watchdog said "in place" (anything on screen counted); it re-followed only after the car left the top, 2.3 km on. Fixed on branch `bench-route-watchdog`: in place = within a tenth of the surface of the car's spot; a route change while guiding re-follows (DESIGN §8 "Follow watchdog", 2026-11-01).
 - **OSRM vs Google routes differ** (OSRM 136 km by the A422, Google 182 km by the M40): `drive.py --route app` now drives the app's own route, from the debug hook `--ez route true` (DESIGN §15, TESTING §3).
+- **Emulator raised to 3 vCPUs** (owner, 2026-11-01): `bench.sh` default, AGENTS §3.2, §5 below. With 2 the DHU saturated it and Robolectric tests timed out beside a build.
+- **Google issue 578578614** (follow zoom, traffic at 18, heading-up): Google asked (29 Oct) for a repro in a fork of their sample. Fork `damo2929/android-navigation-samples`, branch `issue-578578614` (`12b6cc8`): `NavViewActivity.startZoomRepro` + `ISSUE-578578614.md`; builds against 8.0.0, **not yet run in the sample** (needs a key allowing `com.example.navigationapidemo` with this PC's debug SHA-1 `49:92:44:19:…:BE:3E`; the app's key is restricted to `uk.damiendye.autonav`). Owner posted the link on the issue, 2026-11-01 (comment #3). Next: run it with a key and add the sample's logcat to the issue.
+- **Google's navigation sample compared with ours** (2026-11-01): it uses `setOnFollowMyLocationCallback` (`onCameraStoppedFollowingLocation`) and `addOnNavigationUiChangedListener`, starts guidance only on `RouteStatus.OK`, and notes "moving the camera always exits follow mode" (our zoom lock and padding may be what drops the follow). Proposed, not yet designed: log both callbacks, guard guidance start on `RouteStatus.OK`, then replace the polling watchdog. Owner's call.
+- **Drive along the app's route** (Banbury → Stansted, 3 vCPUs, `--route app --limits`): 75 km in by 14:21, car in its spot on every readable frame (89 of 122; the rest were the monitor missing the arrow), watchdog re-follows only 35–37 m off, no rebuild, no guidance stop.
 
 ## 5. Decisions and rules the user has set (don't undo these)
 
@@ -338,7 +342,7 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 - **HARD RULE: every on-screen button on the car map is on the right-hand side only** (user, 2026-10-12): the Satellite/Map pill, zoom +/−, recenter, and anything added later go down the right edge, below the action strip; the speed panel is bottom-right. Nothing of ours on the left. Check every layout change on the bench with a screenshot.
 - **Alert templates:** only `{category} {speed} {units} {distance} {direction}`. There's no name, set or road.
 - **Navigation terms:** accept once and they're remembered.
-- **Emulator:** **2 vCPUs**. **`selinuxuser_execheap` is on** (owner, 2026-10-25: "fix selinux so any graphics mode can be used"; it was kept off until then because it lets every user process execute heap memory). Don't change any other SELinux boolean.
+- **Emulator:** **3 vCPUs** (owner, 2026-11-01: "raise the emulator to have 3 cores"; it was 2, and with the DHU up those were saturated and Robolectric tests timed out when a build ran beside it). **`selinuxuser_execheap` is on** (owner, 2026-10-25: "fix selinux so any graphics mode can be used"; it was kept off until then because it lets every user process execute heap memory). Don't change any other SELinux boolean.
 - **The quarterly SDK check must stay free:** public repo, standard Linux runner, 10-minute cap.
 
 ## 6. Known issues and notes
@@ -360,7 +364,7 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 cd ~/sources/AutoNavAlerts
 git pull
 ./gradlew :core:test :app:assembleDebug       # build + unit tests
-tools/bench.sh phone                           # start emulator (2 vCPUs, safe GPU mode) if not running
+tools/bench.sh phone                           # start emulator (3 vCPUs, safe GPU mode) if not running
 tools/bench.sh install                         # install the debug APK
 tools/check-nav-sdk-features.sh --latest       # optional: Navigation SDK feature watch
 ```

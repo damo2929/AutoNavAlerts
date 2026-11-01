@@ -87,7 +87,7 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 - Big data streamed from disk, never held whole in RAM (§1.3 Memory).
 - The quarterly SDK feature-watch workflow stays free: public repo, standard runner, 10-minute cap.
 - Google Play (§13.3 "Google Play"): Play App Signing stays on the shared key (never let Google generate or rotate it); automatic protection stays off; every Play upload bumps `versionCode`; release bundles carry native debug symbols; the tester opt-in link is the only Play detail that belongs in the public docs.
-- Emulator: 2 vCPUs, `-gpu host -feature -Vulkan` by default. `selinuxuser_execheap` is on (owner, 2026-10-25) so the software modes (`swiftshader_indirect`, `guest`) can be used too; change no other SELinux boolean.
+- Emulator: 3 vCPUs (owner, 2026-11-01), `-gpu host -feature -Vulkan` by default. `selinuxuser_execheap` is on (owner, 2026-10-25) so the software modes (`swiftshader_indirect`, `guest`) can be used too; change no other SELinux boolean.
 
 ### 3.3 The cross-check procedure
 

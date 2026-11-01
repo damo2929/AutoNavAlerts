@@ -21,7 +21,7 @@ EMU=$ANDROID_HOME/emulator/emulator
 ADB=$ANDROID_HOME/platform-tools/adb
 DHU_DIR=$ANDROID_HOME/extras/google/auto
 IMAGE="system-images;android-36;google_apis_playstore;x86_64"
-CORES=${BENCH_CORES:-2}   # vCPUs for the emulator (override with BENCH_CORES=n)
+CORES=${BENCH_CORES:-3}   # vCPUs for the emulator (owner, 2026-11-01: 3; override with BENCH_CORES=n)
 # GPU mode. Default: host GPU with guest Vulkan disabled. Why:
 #  - "-gpu host" with Vulkan on crashes on AMD Raven + Mesa 26.2: SIGSEGV in radeonsi
 #    si_resource_from_memobj, via gfxstream ColorBufferGl::importMemory (Vulkan→GL memory import).
