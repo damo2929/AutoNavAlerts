@@ -20,7 +20,7 @@ class StageRulesTest {
         StageCols(enabled, mode, metres, seconds)
 
     private val firstOff = "The 1st alert can't be turned off."
-    private val secondTooClose = "The 2nd alert must be at least 155 yd (142 m), well before the 20 yd passing alert."
+    private val secondTooClose = "The 2nd alert must be at least 155 yd (142 m), well before the passing alert (at least 50 yd)."
     private val gapTooSmall = "The 1st alert must be at least 110 yd (100 m) before the 2nd."
 
     @Test fun theDefaultsPass() {

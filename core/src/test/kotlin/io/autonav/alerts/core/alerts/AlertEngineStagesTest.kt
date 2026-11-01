@@ -19,7 +19,7 @@ import org.junit.Test
 /**
  * The three stages and their state (DESIGN.md §11 steps 5–7, §11.1, §12.3): the trigger maths of
  * [AlertStage], the ratchet rising with speed, the 2nd stage held 100 m inside the 1st and never
- * under 142 m, the passing alert at 1 s / 20 yd, the missed-passing net's limits, which stage is
+ * under 142 m, the passing alert at 3 s / 50 yd, the missed-passing net's limits, which stage is
  * spoken when several are crossed at once, the stale-fired rule, the 2 km clear, candidate order and
  * [AlertEngine.reset].
  */
@@ -35,11 +35,15 @@ class AlertEngineStagesTest {
 
     @Test
     fun stageTriggerIsTheFloorOrSecondsAtSpeed() {
-        // §11.1 "Trigger distance": FIXED is the distance; TIME is max(floor, v × seconds) on every fix.
-        assertEquals(469.39, AlertStage.DEFAULT_FIRST.triggerMetres(mps70), 0.01)
-        assertEquals(234.70, AlertStage.DEFAULT_SECOND.triggerMetres(mps70), 0.01)
-        assertEquals(242.0, AlertStage.DEFAULT_FIRST.triggerMetres(MPS_30), 0.0) // 201 m lifted to the floor
-        assertEquals(142.0, AlertStage.DEFAULT_SECOND.triggerMetres(MPS_30), 0.0)
+        // §11.1: FIXED is the distance; TIME is max(floor, passing + v × seconds) on every fix, counted out from the
+        // passing alert (owner, 2026-11-01). 70 mph: passing 3 s = 93.88 m, + 469.39 m and + 234.70 m.
+        assertEquals(563.27, AlertStage.DEFAULT_FIRST.triggerMetres(mps70), 0.01)
+        assertEquals(328.57, AlertStage.DEFAULT_SECOND.triggerMetres(mps70), 0.01)
+        // 30 mph: passing is the 50 yd floor (45.72 m), + 201.17 m and + 100.58 m, both above their floors.
+        assertEquals(246.89, AlertStage.DEFAULT_FIRST.triggerMetres(MPS_30), 0.01)
+        assertEquals(146.30, AlertStage.DEFAULT_SECOND.triggerMetres(MPS_30), 0.01)
+        // 20 mph: 45.72 + 134.1 = 179.8 m is lifted to the 1st's 242 m floor.
+        assertEquals(242.0, AlertStage.DEFAULT_FIRST.triggerMetres(20.0 * Geo.MPS_PER_MPH), 0.0)
         assertEquals(15.0, AlertStage.DEFAULT_FIRST.seconds)
         assertEquals(7.5, AlertStage.DEFAULT_SECOND.seconds)
         assertEquals(800.0, AlertStage(true, DistanceMode.FIXED, 800, 60.0).triggerMetres(mps70), 0.0)
@@ -52,17 +56,17 @@ class AlertEngineStagesTest {
     fun ratchetRisesWithSpeedAndNeverFalls() {
         val engine = AlertEngine()
         val cam = camera(northM = 400.0, first = AlertStage.DEFAULT_FIRST, second = AlertStage.DEFAULT_SECOND)
-        // 30 mph, 400 m out: inside the 442 m lookahead, the 1st trigger is the 242 m floor: nothing yet.
+        // 30 mph, 400 m out: inside the 447 m lookahead, the 1st trigger is 247 m: nothing yet.
         assertTrue(engine.onFix(fix(0.0, MPS_30, t = 0), listOf(cam)).isEmpty())
-        // Accelerating to 70 mph lifts the 1st to 469 m, and the car at 380 m is already inside it.
+        // Accelerating to 70 mph lifts the 1st to 563 m, and the car at 380 m is already inside it.
         val first = engine.onFix(fix(20.0, mps70, t = 1_000), listOf(cam)).single()
         assertEquals(AlertKind.FIRST, first.kind)
-        assertEquals(469.39, first.triggerM, 0.01)
-        assertEquals(234.70, first.staleBelowM!!, 0.01)
+        assertEquals(563.27, first.triggerM, 0.01)
+        assertEquals(328.57, first.staleBelowM!!, 0.01)
         // Braking back to 30 mph: the 2nd stays at its 70 mph distance, not the 142 m floor.
         val second = engine.onFix(fix(170.0, MPS_30, t = 2_000), listOf(cam)).single()
         assertEquals(AlertKind.SECOND, second.kind)
-        assertEquals(234.70, second.triggerM, 0.01)
+        assertEquals(328.57, second.triggerM, 0.01)
         assertEquals(230.0, second.distanceM, 0.5)
     }
 
@@ -87,21 +91,21 @@ class AlertEngineStagesTest {
     }
 
     @Test
-    fun passingIsOneSecondAheadNeverUnderTwentyYards() {
+    fun passingIsThreeSecondsAheadNeverUnderFiftyYards() {
         fun passingAt(dM: Double, mps: Double): AlertEvent = AlertEngine().onFix(fix(500.0 - dM, mps), listOf(camera())).single()
-        // 55 mph: 24.6 m a second, so 20 m out is already "now".
-        val at55 = passingAt(20.0, 55.0 * Geo.MPS_PER_MPH)
+        // 55 mph: 3 s is 73.8 m (1 s plus about 2 s to say it, owner 2026-11-01), so 70 m out is already "now".
+        val at55 = passingAt(70.0, 55.0 * Geo.MPS_PER_MPH)
         assertEquals(AlertKind.PASSING, at55.kind)
-        assertEquals(55.0 * Geo.MPS_PER_MPH, at55.triggerM, 1e-9)
+        assertEquals(3 * 55.0 * Geo.MPS_PER_MPH, at55.triggerM, 1e-9)
         assertEquals(100, at55.priority)
         assertNull(at55.staleBelowM)
-        // 30 mph: 1 s is 13.4 m, under the floor, so 20 m out is still the 2nd stage.
-        assertEquals(AlertKind.SECOND, passingAt(20.0, MPS_30).kind)
-        // 41 mph is the first speed whose second beats the floor: 18.30 m out passes at 41, not at 40.
-        assertEquals(AlertKind.PASSING, passingAt(18.3, 41.0 * Geo.MPS_PER_MPH).kind)
-        assertEquals(41.0 * Geo.MPS_PER_MPH, passingAt(18.3, 41.0 * Geo.MPS_PER_MPH).triggerM, 1e-9)
-        assertEquals(AlertKind.SECOND, passingAt(18.3, 40.0 * Geo.MPS_PER_MPH).kind)
-        assertEquals(AlertEngine.PASSING_METRES, passingAt(18.0, 40.0 * Geo.MPS_PER_MPH).triggerM, 0.0)
+        // 30 mph: 3 s is 40.2 m, under the 50 yd floor, so 50 m out is still the 2nd stage.
+        assertEquals(AlertKind.SECOND, passingAt(50.0, MPS_30).kind)
+        // 35 mph is the first whole speed whose 3 s beats the floor (46.9 m): 46 m out passes at 35, not at 34.
+        assertEquals(AlertKind.PASSING, passingAt(46.0, 35.0 * Geo.MPS_PER_MPH).kind)
+        assertEquals(3 * 35.0 * Geo.MPS_PER_MPH, passingAt(46.0, 35.0 * Geo.MPS_PER_MPH).triggerM, 1e-9)
+        assertEquals(AlertKind.SECOND, passingAt(46.0, 34.0 * Geo.MPS_PER_MPH).kind)
+        assertEquals(AlertEngine.PASSING_METRES, passingAt(45.0, 34.0 * Geo.MPS_PER_MPH).triggerM, 0.0)
     }
 
     @Test
@@ -161,12 +165,12 @@ class AlertEngineStagesTest {
         val noSecond = camera(second = AlertStage(false, DistanceMode.FIXED, 300))
         val first = AlertEngine().onFix(fix(100.0, mps70), listOf(noSecond)).single()
         assertEquals(AlertKind.FIRST, first.kind)
-        assertEquals(mps70, first.staleBelowM!!, 1e-9) // 1 s at 70 mph, not the 20 yd floor
+        assertEquals(3 * mps70, first.staleBelowM!!, 1e-9) // 3 s at 70 mph, not the 50 yd floor
         assertEquals(10, first.priority)
         // A SECOND is stale at the passing distance too.
         val second = AlertEngine().onFix(fix(250.0, mps70), listOf(camera())).single()
         assertEquals(AlertKind.SECOND, second.kind)
-        assertEquals(mps70, second.staleBelowM!!, 1e-9)
+        assertEquals(3 * mps70, second.staleBelowM!!, 1e-9)
         assertEquals(50, second.priority)
     }
 

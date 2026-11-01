@@ -289,7 +289,7 @@ Work through these and tick off each expected result. "DHU" means the car screen
 ### 6.3 POI alerts (simulate past test POIs from §4)
 | # | Steps | Expected |
 |---|---|---|
-| A1 | Drive towards a camera facing your direction | **1st alert** 15 s ahead at your current speed (at least 242 m / 265 yd; e.g. ~470 m at 70 mph), **2nd alert** 7.5 s ahead (at least 142 m / 155 yd; ~235 m at 70 mph), **passing alert** at 20 yd (18 m; 100 yd before 2026-10-23). `alert-debug`: `stage FIRST poi=… d=… spd=… expectedD=…` with `d` matching speed × seconds, then `Tts … spoken`. Each is a card on the DHU and a spoken alert. |
+| A1 | Drive towards a camera facing your direction | **Passing alert** 3 s ahead at your current speed, at least 50 yd (46 m; 94 m at 70 mph; owner 2026-11-01, it was 1 s / 20 yd), its words finished before the camera; **2nd alert** passing + 7.5 s (at least 142 m / 155 yd; ~329 m at 70 mph), **1st alert** passing + 15 s (at least 242 m / 265 yd; ~563 m at 70 mph). An average-speed zone still opens and closes at its cameras. `alert-debug`: `stage FIRST poi=… d=… spd=… expectedD=…` with `d` matching speed × seconds, then `Tts … spoken`. Each is a card on the DHU and a spoken alert. |
 | A2 | Look at the alert | A banner at the **bottom centre** of the map, clear of the speed panel, that fades in without sliding: the POI icon, the text from the set's template, the distance and the limit, and a progress bar |
 | A2a | Let the 2nd and passing alerts fire for the same camera | The same banner updates in place; it goes after 8 s (5 s for passing) |
 | A2b | Tap the banner | It's dismissed |

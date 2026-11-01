@@ -187,11 +187,18 @@ class AlertEngineZoneTest {
     }
 
     @Test
-    fun zoneEventsComeAfterTheStagesOfTheSameFix() {
+    fun theZoneOpensAtTheCameraAfterItsPassingAlert() {
+        // The passing alert comes 3 s out (owner, 2026-11-01); the zone still opens when the car reaches the
+        // camera (§11.1, AGENTS §3.2), so the two come in that order, in different fixes.
         val pois = listOf(point(10, 1_000.0), point(11, 3_000.0))
-        val fixEvents = ArrayList<List<AlertEvent>>()
-        drive(AlertEngine(), pois, 0.0, 1_200.0, mps45, stepMs = 500) { _, events -> if (events.size > 1) fixEvents += events }
-        val enterFix = fixEvents.single { e -> e.any { it.kind == AlertKind.ZONE_ENTER } }
-        assertEquals(listOf(AlertKind.PASSING, AlertKind.ZONE_ENTER), enterFix.kinds())
+        val fixEvents = ArrayList<Pair<Double, List<AlertEvent>>>()
+        drive(AlertEngine(), pois, 0.0, 1_200.0, mps45, stepMs = 500) { f, events ->
+            if (events.isNotEmpty()) fixEvents += ((f.lat - StraightRoad.BASE_LAT) * StraightRoad.METRES_PER_DEG_LAT) to events
+        }
+        val passingAt = fixEvents.first { (_, e) -> e.any { it.kind == AlertKind.PASSING && it.poiId == 10L } }
+        val enterAt = fixEvents.single { (_, e) -> e.any { it.kind == AlertKind.ZONE_ENTER } }
+        assertTrue("passing at ${passingAt.first}, zone at ${enterAt.first}", passingAt.first < enterAt.first)
+        assertTrue("zone opened at ${enterAt.first}", enterAt.first in 975.0..1_000.0)
+        assertFalse(enterAt.second.any { it.kind == AlertKind.PASSING })
     }
 }

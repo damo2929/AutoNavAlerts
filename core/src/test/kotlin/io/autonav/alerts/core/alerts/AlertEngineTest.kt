@@ -109,15 +109,15 @@ class AlertEngineTest {
     }
 
     @Test
-    fun passingComesOneSecondAheadAtSpeed() {
-        // 70 mph: 31.3 m a second, so the trigger is 1 s ahead, well outside the 20 yd floor (§11.1).
+    fun passingComesThreeSecondsAheadAtSpeed() {
+        // 70 mph: 31.3 m a second, so the trigger is 3 s (93.9 m) ahead, well outside the 50 yd floor (§11.1, owner 2026-11-01).
         val engine = AlertEngine()
         val events = drive(engine, listOf(camera()), mph = 70.0, stepMs = 100)
         val passing = events.first(AlertKind.PASSING)
-        val lead = 70.0 * Geo.MPS_PER_MPH
+        val lead = 3 * 70.0 * Geo.MPS_PER_MPH
         assertTrue("fired at ${passing.distanceM} m", passing.distanceM <= lead + 0.01 && passing.distanceM > lead - 4.0)
         assertEquals(lead, passing.triggerM, 0.01)
-        // At 30 mph the floor rules: 1 s is 13.4 m, under 20 yd.
+        // At 30 mph the floor rules: 3 s is 40.2 m, under 50 yd.
         val slow = drive(AlertEngine(), listOf(camera()))
         assertEquals(AlertEngine.PASSING_METRES, slow.first(AlertKind.PASSING).triggerM, 0.01)
     }
@@ -329,17 +329,17 @@ class AlertEngineTest {
 
     @Test
     fun defaultsAt70And30Mph() {
-        // 15 s and 7.5 s at the current speed, floors 242 m / 142 m (§11.1).
+        // The passing distance plus 15 s and 7.5 s at the current speed, floors 242 m / 142 m (§11.1, 2026-11-01).
         val fast = straight(70.0)
         val at70 = fast.drive(AlertEngine(), listOf(fast.camera(1, 2_000.0)), 0.0, 2_300.0)
         assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND, AlertKind.PASSING), at70.kinds())
-        assertEquals(469.0, at70[0].distanceM, 8.0)
-        assertEquals(235.0, at70[1].distanceM, 8.0)
+        assertEquals(563.0, at70[0].distanceM, 8.0)
+        assertEquals(329.0, at70[1].distanceM, 8.0)
         val slow = straight(30.0)
         val at30 = slow.drive(AlertEngine(), listOf(slow.camera(1, 2_000.0)), 0.0, 2_300.0)
         assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND, AlertKind.PASSING), at30.kinds())
-        assertEquals(242.0, at30[0].distanceM, 4.0) // 201 m lifted to the floor
-        assertEquals(142.0, at30[1].distanceM, 4.0)
+        assertEquals(247.0, at30[0].distanceM, 4.0) // 45.7 + 201.2 m, just above the 242 m floor
+        assertEquals(146.0, at30[1].distanceM, 4.0) // 45.7 + 100.6 m
     }
 
     @Test
@@ -507,10 +507,10 @@ class AlertEngineTest {
         val track = NoisyTrack { s -> when { s < 1_400.0 -> NoisyTrack.mph(70.0); s < 1_520.0 -> NoisyTrack.mph(70.0 - (s - 1_400.0) / 3.0); else -> NoisyTrack.mph(30.0) } }
         val events = track.drive(AlertEngine(), listOf(track.camera(1, 2_000.0)), 0.0, 2_200.0)
         assertEquals(listOf(AlertKind.FIRST, AlertKind.SECOND, AlertKind.PASSING), events.kinds())
-        assertTrue("FIRST at ${events[0].distanceM}", events[0].distanceM >= 0.9 * 469.0)
-        assertEquals(469.0, events[0].triggerM, 2.0)
-        // The 2nd keeps its ratcheted distance too (7.5 s at 70 mph), not the 142 m floor of 30 mph.
-        assertEquals(235.0, events[1].distanceM, 8.0)
+        assertTrue("FIRST at ${events[0].distanceM}", events[0].distanceM >= 0.9 * 563.0)
+        assertEquals(563.0, events[0].triggerM, 2.0)
+        // The 2nd keeps its ratcheted distance too (passing + 7.5 s at 70 mph), not its 30 mph distance.
+        assertEquals(329.0, events[1].distanceM, 8.0)
     }
 
     @Test

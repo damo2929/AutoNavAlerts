@@ -31,12 +31,14 @@ data class AlertStage(
         this(enabled, mode, metres, seconds?.toDouble())
 
     /**
-     * The trigger distance in metres at [speedMps] (m/s): the fixed distance, or for TIME the larger
-     * of the floor and speed × seconds (DESIGN.md §11.1 "Trigger distance"). Before the ratchet.
+     * The trigger distance in metres at [speedMps] (m/s): the fixed distance, or for TIME the larger of the
+     * floor and the passing alert's distance [passingM] plus speed × seconds, so the warning time is counted
+     * out from the passing alert (DESIGN.md §11.1 "Measured out from the passing alert", owner 2026-11-01).
+     * Before the ratchet.
      */
-    fun triggerMetres(speedMps: Double): Double = when (mode) {
+    fun triggerMetres(speedMps: Double, passingM: Double = AlertEngine.passingTriggerM(speedMps)): Double = when (mode) {
         DistanceMode.FIXED -> metres.toDouble()
-        DistanceMode.TIME -> max(metres.toDouble(), speedMps * (seconds ?: 0.0))
+        DistanceMode.TIME -> max(metres.toDouble(), passingM + speedMps * (seconds ?: 0.0))
     }
 
     companion object {
@@ -64,7 +66,7 @@ data class AlertPoi(
     /** The resolved 1st and 2nd stages (category over set, the global lead-time slider applied, §4.2, §11.1). */
     val first: AlertStage,
     val second: AlertStage,
-    /** Sound on for this POI: makes the passing alert (1 s ahead, ≥ 20 yd) compulsory. */
+    /** Sound on for this POI: makes the passing alert (3 s ahead, ≥ 50 yd) compulsory. */
     val soundOn: Boolean,
     /**
      * How far to the side of the road it may be (route and lateral checks), when more than the
@@ -194,8 +196,8 @@ fun interface RouteMatcher {
  * `oppositeCameraStillRejectedOnABend` (plus the wrong-way bench scenario) must keep passing after
  * any change here, in the importers, in the heading maths or in the markers.
  *
- * Other fixed behaviour (§11): the passing alert is compulsory whenever sound is on, 1 s ahead at
- * the current speed and never under 20 yd; triggers ratchet and never shrink on an approach;
+ * Other fixed behaviour (§11): the passing alert is compulsory whenever sound is on, 3 s ahead at
+ * the current speed and never under 50 yd, and the 1st and 2nd are measured out from it; triggers ratchet and never shrink on an approach;
  * average-speed zones start only with a same-limit camera ahead and end at the last camera.
  */
 class AlertEngine(
@@ -252,6 +254,8 @@ class AlertEngine(
         var firstFired = false
         var secondFired = false
         var passingFired = false
+        /** The car has reached the camera for the zone chain (§11 step 8), judged apart from the earlier passing alert. */
+        var zonePassed = false
         var closestM = Double.MAX_VALUE
         /** Passed ahead + direction + corridor once this approach: stays valid until clearly lost (§11 step 4). */
         var tracked = false
@@ -362,13 +366,15 @@ class AlertEngine(
             if (heading != null && offAxis > 90.0 && d > config.behindClearM) { resetApproach(poi.id, state, d, ClearReason.BEHIND); continue }
             if (d > config.maxLookaheadM) { setVerdict(state, poi, Verdict.OUT_OF_RANGE, false, d, offAxis, heading, Double.NaN, Double.NaN); continue }
 
+            // 3 s ahead at the current speed, never under 50 yd (§11.1, owner 2026-11-01); the stages count out from it.
+            val passingTrigger = max(config.passingM, fix.speedMps * config.passingLeadS)
             // The ratchet (§11 step 5): the trigger never shrinks while the POI is in its lookahead.
-            val firstNow = poi.first.triggerMetres(fix.speedMps)
+            val firstNow = poi.first.triggerMetres(fix.speedMps, passingTrigger)
             val lookahead = minOf(config.maxLookaheadM, max(state.firstTriggerM, firstNow) + 200.0)
             val inLookahead = d <= lookahead
             if (inLookahead) {
                 state.firstTriggerM = max(state.firstTriggerM, firstNow)
-                if (poi.second.enabled) state.secondTriggerM = max(state.secondTriggerM, poi.second.triggerMetres(fix.speedMps))
+                if (poi.second.enabled) state.secondTriggerM = max(state.secondTriggerM, poi.second.triggerMetres(fix.speedMps, passingTrigger))
             }
             if (heading == null) { setVerdict(state, poi, Verdict.NO_HEADING, inLookahead, d, offAxis, null, Double.NaN, Double.NaN); continue }
 
@@ -398,10 +404,11 @@ class AlertEngine(
 
             // Missed-passing safety net (§11 step 6): tracked, now behind within 150 m.
             // Step 6: a tracked camera that went from ahead to behind within 150 m without a PASSING (a GPS
-            // jump, or slow fixes that skipped the 20 yd mark) gets its PASSING now. Sound on means it can't be missed.
+            // jump, or slow fixes that skipped the passing mark) gets its PASSING now. Sound on means it can't be missed.
             if (state.tracked && behind && d <= 150.0 && poi.soundOn && !state.passingFired) {
                 state.tracked = false
                 fire(poi, state, AlertKind.PASSING, d, fix, config.passingM, null, out)
+                passZone(poi, state, fix, out)
                 setVerdict(state, poi, Verdict.BEHIND, inLookahead, d, offAxis, heading, lateral, allowed)
                 continue
             }
@@ -431,8 +438,6 @@ class AlertEngine(
             // Passing is measured along the track (§11.1): a camera beside the carriageway is announced
             // as the car draws level with it; straight ahead, along equals d.
             val along = if (offAxis <= 90.0) d * cos(Math.toRadians(offAxis)) else d
-            // One second ahead at the current speed, never less than 20 yd (§11.1, owner 2026-10-24).
-            val passingTrigger = max(config.passingM, fix.speedMps * config.passingLeadS)
             val crossedPassing = canPass && poi.soundOn && !state.passingFired && along <= passingTrigger
             val secondTrigger = effectiveSecondTrigger(poi, state)
             val crossedSecond = canStage && secondTrigger != null && !state.secondFired && d <= secondTrigger
@@ -442,11 +447,12 @@ class AlertEngine(
                 crossedSecond -> fire(poi, state, AlertKind.SECOND, d, fix, secondTrigger!!, passingTrigger, out)
                 crossedFirst -> fire(poi, state, AlertKind.FIRST, d, fix, state.firstTriggerM, secondTrigger ?: passingTrigger, out)
             }
-            // Without sound, a zone point still counts as passed once we're very close.
-            // Sound off: no PASSING is spoken or shown, but the zone chain still needs to know we passed it.
-            if (!poi.soundOn && canPass && along <= passingTrigger && !state.passingFired) {
-                state.passingFired = true
-                handleZonePass(poi, fix, out)
+            // The zone chain (§11 step 8) counts a camera as passed when the car reaches it: 1 s ahead, never under
+            // 20 yd, as before. The spoken passing alert now comes 3 s out (owner, 2026-11-01), and a zone still
+            // starts and ends at its cameras (AGENTS §3.2). Sound off: no PASSING, but the zone still needs it.
+            if (canPass && along <= max(ZONE_PASS_M, fix.speedMps * ZONE_PASS_LEAD_S)) {
+                if (!poi.soundOn) state.passingFired = true
+                passZone(poi, state, fix, out)
             }
         }
 
@@ -493,7 +499,7 @@ class AlertEngine(
      */
     private fun resetApproach(id: Long, state: PoiState, d: Double, reason: ClearReason) {
         if (state.entered) trace?.cleared(id, reason)
-        state.firstFired = false; state.secondFired = false; state.passingFired = false
+        state.firstFired = false; state.secondFired = false; state.passingFired = false; state.zonePassed = false
         state.tracked = false
         state.closestM = d
         state.firedAtMs = 0L; state.firedAtD = 0.0
@@ -532,7 +538,8 @@ class AlertEngine(
 
     /**
      * A stage crossed: it and every earlier stage count as fired (a skipped stage is never spoken
-     * late, §11 step 7), the event is emitted, and a PASSING tells the zone chain (§11 step 8).
+     * late, §11 step 7), and the event is emitted. The zone chain is told separately, when the car
+     * reaches the camera ([passZone]), since the passing alert now comes 3 s before it.
      */
     private fun fire(poi: AlertPoi, state: PoiState, kind: AlertKind, d: Double, fix: Fix, triggerM: Double, staleBelowM: Double?, out: MutableList<AlertEvent>) {
         state.firstFired = true
@@ -541,7 +548,13 @@ class AlertEngine(
         state.firedAtMs = fix.timeMs
         state.firedAtD = d
         out += emit(poi, kind, d, fix, triggerM, staleBelowM)
-        if (kind == AlertKind.PASSING) handleZonePass(poi, fix, out)
+    }
+
+    /** The car has reached [poi]'s camera: the zone chain hears it once per approach (§11 step 8). */
+    private fun passZone(poi: AlertPoi, state: PoiState, fix: Fix, out: MutableList<AlertEvent>) {
+        if (state.zonePassed) return
+        state.zonePassed = true
+        handleZonePass(poi, fix, out)
     }
 
     /** The 2nd stage, held at least 100 m inside the 1st (§11.1 validation, applied at runtime). */
@@ -644,9 +657,17 @@ class AlertEngine(
     }
 
     companion object {
-        /** 20 yards: the compulsory passing alert (DESIGN.md §11.1; owner, 2026-10-23, was 100 yd). */
-        const val PASSING_METRES = 18.288
-        const val PASSING_LEAD_S = 1.0
+        /** 50 yards: the passing alert's floor (DESIGN.md §11.1; owner, 2026-11-01; 20 yd before, 100 yd before that). */
+        const val PASSING_METRES = 45.72
+        /** The passing alert comes this long before the camera: 1 s plus about 2 s to say it (owner, 2026-11-01; was 1 s). */
+        const val PASSING_LEAD_S = 3.0
+
+        /** The car counts as at the camera for the zone chain (§11 step 8): 20 yd, or 1 s at speed (the old passing rule). */
+        const val ZONE_PASS_M = 18.288
+        const val ZONE_PASS_LEAD_S = 1.0
+
+        /** The passing alert's distance at [speedMps] with the built-in rule (§11.1): 3 s ahead, never under 50 yd. */
+        fun passingTriggerM(speedMps: Double): Double = max(PASSING_METRES, speedMps * PASSING_LEAD_S)
         /** The 2nd alert is never closer than this (§11.1); fixed, not tied to the passing distance. */
         const val SECOND_FLOOR_M = 142.0
     }

@@ -23,11 +23,14 @@ class SettingsLabelsTest {
     }
 
     @Test fun firstAlertDistanceAtEachSpeed() {
-        // 30 mph × 15 s = 201 m, under the 242 m floor; 70 mph × 15 s = 469 m.
-        assertEquals("265 yd (minimum)", leadDistanceText(30, 15, Units.IMPERIAL))
-        assertEquals("242 m (minimum)", leadDistanceText(30, 15, Units.METRIC))
-        assertEquals("513 yd", leadDistanceText(70, 15, Units.IMPERIAL))
-        assertEquals("469 m", leadDistanceText(70, 15, Units.METRIC))
-        assertEquals("1.07 mi", leadDistanceText(70, 55, Units.IMPERIAL))
+        // Counted out from the passing alert (§11.1, 2026-11-01): 30 mph, 45.7 m + 201 m = 247 m, just over the
+        // 242 m floor; 70 mph, 93.9 m + 469 m = 563 m; 20 mph, 45.7 m + 134 m = 180 m, lifted to the floor.
+        assertEquals("270 yd", leadDistanceText(30, 15, Units.IMPERIAL))
+        assertEquals("247 m", leadDistanceText(30, 15, Units.METRIC))
+        assertEquals("616 yd", leadDistanceText(70, 15, Units.IMPERIAL))
+        assertEquals("563 m", leadDistanceText(70, 15, Units.METRIC))
+        assertEquals("1.13 mi", leadDistanceText(70, 55, Units.IMPERIAL))
+        assertEquals("265 yd (minimum)", leadDistanceText(20, 15, Units.IMPERIAL))
+        assertEquals("242 m (minimum)", leadDistanceText(20, 15, Units.METRIC))
     }
 }

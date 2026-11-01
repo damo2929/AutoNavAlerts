@@ -323,13 +323,13 @@ Importing a file creates a new set. Each new set starts with the defaults in sec
 |---|---|---|---|
 | Show and alert | **Show on map** | On | Draws this set's markers on the car map (at zoom 11 or closer, up to 200 markers, nearest first). A camera with a bearing in its data gets a small direction arrow beside its icon, pointing the way the camera faces (one head for one-way cameras, two for both ways, none when the data has no bearing). Cameras facing the other way on your road are drawn dimmed with their arrow, so you can see why they do not alert. They never alert |
 | | **Alerts** | On | Whether this set's POIs trigger alerts at all |
-| | **Sound** | On | Spoken alerts for this set. While on, the passing alert (1 second ahead, at least 20 yards) is compulsory. Off gives cards and notifications only |
+| | **Sound** | On | Spoken alerts for this set. While on, the passing alert (3 seconds ahead, at least 50 yards) is compulsory. Off gives cards and notifications only |
 | Icon | (from the download) | PocketGPSWorld sets | Each PocketGPSWorld set keeps the icon supplied for its file (for example a Gatso "30" sign); it is shown when **Camera icons** is set to **From the download** (section 1.4), otherwise the AutoNavAlerts camera icon is drawn. A sync updates it unless you have chosen your own |
 | Icon | **Choose** | A camera icon for PGW, a pin for files | Picks from the built-in icons (camera types, red light, pending site, pin, hazard, school, fuel, EV charger, star) or icons you have added |
 | | **From file** | | Adds your own image (scaled to 256 px wide) and uses it for this set |
-| **1st alert** | **Distance / Seconds ahead**, minimum distance | Seconds ahead, minimum 265 yd (242 m) | When the first warning fires. "Seconds ahead" uses your current speed each moment, with the seconds from the Alerts slider (section 1.2; 15 seconds by default, which is about 470 m at 70 mph and 335 m at 50 mph), and never fires closer than the minimum. There is no seconds field here. The card says "from the Alerts slider". **Distance** fires at a fixed distance instead. The 1st alert cannot be switched off. Turn off the set's Alerts instead |
-| **2nd alert** | **On**, Distance / Seconds ahead, minimum distance | On, seconds ahead, minimum 155 yd (142 m) | A second, closer warning at half the slider's seconds (7.5 seconds by default, about 235 m at 70 mph). The minimum keeps it outside the passing alert. It can be switched off |
-| **Passing alert** | none | 1 second ahead at the current speed, at least 20 yd | Fixed and compulsory while Sound is on. It also fires if a GPS jump skips past the 20 yard mark. It is never dropped, and it plays at most 1 second after Google's voice |
+| **1st alert** | **Distance / Seconds ahead**, minimum distance | Seconds ahead, minimum 265 yd (242 m) | When the first warning fires. "Seconds ahead" uses your current speed each moment, with the seconds from the Alerts slider (section 1.2; 15 seconds by default), counted out from the passing alert: about 563 m at 70 mph (94 m + 469 m) and 335 m at 50 mph), and never fires closer than the minimum. There is no seconds field here. The card says "from the Alerts slider". **Distance** fires at a fixed distance instead. The 1st alert cannot be switched off. Turn off the set's Alerts instead |
+| **2nd alert** | **On**, Distance / Seconds ahead, minimum distance | On, seconds ahead, minimum 155 yd (142 m) | A second, closer warning at half the slider's seconds, counted out from the passing alert (7.5 seconds by default, about 329 m at 70 mph: 94 m + 235 m). The minimum keeps it outside the passing alert. It can be switched off |
+| **Passing alert** | none | 3 seconds ahead at the current speed, at least 50 yd | Fixed and compulsory while Sound is on. 3 seconds is 1 second plus about 2 to say it, so the words end before the camera (46 m up to 34 mph, 67 m at 50 mph, 94 m at 70 mph). It also fires if a GPS jump skips past the mark. It is never dropped, and it plays at most 1 second after Google's voice |
 | **Spoken text** | **1st alert**, **2nd alert**, **Passing** templates | `{category} ahead, {speed} limit` · `{category}, {distance}` · `{category} now` | What is said and shown. Each field has a live preview and a **Test speak** button. **Test speak** (and the preview line) says what that alert would really say for one of this set's own cameras: its type and limit, at the distance that stage is spoken at |
 | | **Save** | | Saves the set. It is disabled while a distance check fails (below) |
 | | **Delete set** | | Removes the set and its POIs from the phone, after asking you to confirm |
@@ -511,7 +511,7 @@ You see "Searching…" and then results or "No results for …", never a silent 
 | Drive recording | Off |
 | PocketGPSWorld download format | TomTom OV2 |
 | PocketGPSWorld auto-update / Wi-Fi only | On / Off |
-| New set: 1st / 2nd / passing alert | Seconds ahead from the slider (minimum 265 yd) / on, half the slider (minimum 155 yd) / 20 yd |
+| New set: 1st / 2nd / passing alert | Passing + the slider's seconds (minimum 265 yd) / on, passing + half the slider (minimum 155 yd) / 3 s ahead, at least 50 yd |
 | New set: Show on map / Alerts / Sound | On / On / On |
 
 ---

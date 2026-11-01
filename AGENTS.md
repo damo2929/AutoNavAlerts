@@ -76,7 +76,7 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 ### 3.2 Other fixed behaviours to preserve
 
 - Phone GPS taken at the rate the phone offers, never forced faster (asked at 1 Hz, any faster fix accepted; owner, 2026-10-24); car GPS at `UPDATE_RATE_FASTEST` and car speed as fast as the host sends it (the speed listener has no rate parameter) when the car provides them (§10).
-- Three alert stages: 1st and 2nd from the global lead-time slider (N s and N/2 s at current speed, floors 242 m and 142 m), and the **compulsory passing alert 1 s before the camera at the current speed, never less than 20 yd, whenever sound is on**; the trigger ratchets and never shrinks on an approach; events are never dropped, PASSING is never dropped (§11, §11.1, §12.3).
+- Three alert stages: the **compulsory passing alert 3 s before the camera at the current speed, never less than 50 yd, whenever sound is on** (owner, 2026-11-01), and the 1st and 2nd measured out from it by the global lead-time slider (passing + N s and passing + N/2 s at current speed, floors 242 m and 142 m); the trigger ratchets and never shrinks on an approach; events are never dropped, PASSING is never dropped (§11, §11.1, §12.3).
 - Average-speed zones only start with a same-limit camera ahead and end at the last camera (§11 step 8).
 - Over-limit slider −5% to +20%, default −0.1% (§11 step 9).
 - Alert templates use only `{category} {speed} {units} {distance} {direction}` (§7.2).

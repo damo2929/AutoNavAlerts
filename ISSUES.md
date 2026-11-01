@@ -42,7 +42,7 @@ What is known to be wrong, undecided, unverified or unbuilt, as of 2026-10-25. E
 
 | # | What | Detail |
 |---|---|---|
-| V1 | **Passing alert at 1 s ahead** on a real pass: the next `Trace stage PASSING … expectedD=` line in `alert-debug` should show ~25 m at 55 mph (unit test passes) | CHECKPOINT §4f; TESTING A3 |
+| V1 | **Passing alert at 3 s ahead, ≥ 50 yd** (owner, 2026-11-01; was 1 s, which at 67 mph ended its speech about 20 m past the camera) on a real pass: the next `Trace stage PASSING … expectedD=` line in `alert-debug` should show ~74 m at 55 mph, and the `spoken` line should end before the camera (unit tests pass) | CHECKPOINT §4f; TESTING A3 |
 | V2 | No-shake burst (U2) after tonight's view changes, on the road map while parked | TESTING U2 |
 | V3 | The in-car checklist rows not yet ticked: media ducking and split screen, one-tap Report with a voice comment, car speed and car GPS from the DHU sensors, recents delete, swipe-to-delete and the set editor rename | CHECKPOINT §4; TESTING §6 |
 | V4 | A fresh install with no key: the car screen asks for the key, no crash; terms accepted once survive an update | TESTING S5, S6; CHECKPOINT §4 items 1–2 |

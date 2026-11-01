@@ -82,9 +82,9 @@ Its Appendix B lists what is built and what is not.
   (CSV is a plain text table. OV2 is TomTom's POI file format.)
 - Each set gets its own icon and its own spoken text. You can preview it and press **Test speak**.
 - Three alert stages for each camera:
-  - a 1st alert, some seconds ahead of the camera at your current speed
-  - a 2nd alert, at half that time
-  - a passing alert 1 second before the camera, never less than 20 yards away. This one always plays while sound is on.
+  - a passing alert 3 seconds before the camera, never less than 50 yards away, so it has finished speaking by the time you reach the camera. This one always plays while sound is on.
+  - a 2nd alert, half the slider's seconds further out than the passing alert
+  - a 1st alert, the slider's full seconds further out than the passing alert
 
 *[Image: three markers on a road ahead of a car, labelled 1st, 2nd, passing]*
 

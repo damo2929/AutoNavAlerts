@@ -21,7 +21,7 @@ import kotlin.math.sqrt
 object Geo {
     /** Mean earth radius, metres (IUGG). */
     const val EARTH_RADIUS_M = 6_371_008.8
-    /** Exact: the 20 yd passing floor is 18.288 m (§11.1). */
+    /** Exact: the 50 yd passing floor is 45.72 m (§11.1). */
     const val METRES_PER_YARD = 0.9144
     /** Exact: 70 mph is 31.29 m/s. */
     const val MPS_PER_MPH = 0.44704

@@ -30,9 +30,9 @@ class LeadSliderResolveTest {
         val (f, s) = AlertCoordinator.leadStages(first, second, 60)
         assertEquals(60.0, f.seconds!!, 0.0)
         assertEquals(30.0, s.seconds!!, 0.0)
-        // Worked numbers: 70 mph (31.3 m/s) → 1877 m and 938 m.
-        assertEquals(1878.0, f.triggerMetres(31.3), 1.0)
-        assertEquals(939.0, s.triggerMetres(31.3), 1.0)
+        // Worked numbers at 70 mph (31.3 m/s): the passing alert's 3 s (93.9 m) plus 1878 m and 939 m (§11.1, 2026-11-01).
+        assertEquals(1972.0, f.triggerMetres(31.3), 1.0)
+        assertEquals(1033.0, s.triggerMetres(31.3), 1.0)
     }
 
     @Test fun fixedStagesAreLeftAlone() {
@@ -56,8 +56,9 @@ class LeadSliderResolveTest {
         assertEquals(160, s.metres)
         assertEquals(false, s.enabled)
         assertEquals(10.0, s.seconds!!, 0.0)
-        // At 30 mph (13.4 m/s) 20 s is 268 m: over the floor; the floor still applies at a crawl.
-        assertEquals(268.0, f.triggerMetres(13.4), 0.5)
+        // At 30 mph (13.4 m/s): the 50 yd passing floor (45.7 m) + 20 s (268 m) = 313.7 m, over the floor;
+        // the floor still applies at a crawl.
+        assertEquals(313.7, f.triggerMetres(13.4), 0.5)
         assertEquals(242.0, f.triggerMetres(2.0), 0.0)
     }
 

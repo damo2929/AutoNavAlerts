@@ -794,7 +794,7 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         StageEditor("1st alert", set.firstAlert, canDisable = false, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(firstAlert = it) }
         StageEditor("2nd alert", set.secondAlert, canDisable = true, unitLabel, ::toUser, ::fromUser, sliderNote) { set = set.copy(secondAlert = it) }
         // Compulsory and fixed (DESIGN.md §11.1; AGENTS.md §3.2): shown so the user knows it exists, with nothing to change.
-        Section("Passing alert (1 s ahead, at least 20 yd)") {
+        Section("Passing alert (3 s ahead, at least 50 yd)") {
             Help("Always on while sound is enabled for this set.")
         }
         // Only these five placeholders exist (DESIGN.md §7.2; AGENTS.md §3.2).
@@ -1385,11 +1385,13 @@ private fun AlertLeadSlider(current: Int, units: Units, onChange: (Int) -> Unit)
 internal fun halfSecondsLabel(seconds: Int): String = if (seconds % 2 == 0) "${seconds / 2} s" else "${seconds / 2}.5 s"
 
 /**
- * The 1st alert's distance at [mph] with [seconds] of lead: max(242 m floor, speed × seconds),
- * in the user's units, marked "(minimum)" when the floor applies.
+ * The 1st alert's distance at [mph] with [seconds] of lead, by the engine's rule: max(242 m floor, the passing
+ * alert's distance + speed × seconds) (DESIGN.md §11.1, owner 2026-11-01), in the user's units, marked
+ * "(minimum)" when the floor applies.
  */
 internal fun leadDistanceText(mph: Int, seconds: Int, units: Units): String {
-    val bySpeed = (mph * Geo.MPS_PER_MPH * seconds).roundToInt()
+    val v = mph * Geo.MPS_PER_MPH
+    val bySpeed = (io.autonav.alerts.core.alerts.AlertEngine.passingTriggerM(v) + v * seconds).roundToInt()
     val metres = bySpeed.coerceAtLeast(FIRST_ALERT_FLOOR_M)
     val yards = metres / Geo.METRES_PER_YARD
     val text = if (units != Units.IMPERIAL) "$metres m" else if (yards < 1000) "${yards.roundToInt()} yd" else "%.2f mi".format(yards / 1760)

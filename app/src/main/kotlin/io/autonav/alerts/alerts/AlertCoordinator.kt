@@ -504,14 +504,14 @@ class AlertCoordinator @Inject constructor(
         /**
          * Where [kind]'s alert is said for [r] at [speedMps], by the engine's rules (§11.1): the 1st stage's
          * trigger; the 2nd's, at least 100 m inside the 1st and never under [AlertEngine.SECOND_FLOOR_M] (as
-         * `AlertEngine.effectiveSecondTrigger`); passing 1 s ahead, never under 20 yd.
+         * `AlertEngine.effectiveSecondTrigger`); passing 3 s ahead, never under 50 yd, the stages counted out from it.
          * Before the ratchet, so it's the distance a steady approach hears. For Test speak (§13 item 7).
          */
         fun stageDistanceM(kind: AlertKind, r: ResolvedPoi, speedMps: Double): Double = when (kind) {
             AlertKind.FIRST -> r.alert.first.triggerMetres(speedMps)
             AlertKind.SECOND -> minOf(r.alert.second.triggerMetres(speedMps), r.alert.first.triggerMetres(speedMps) - 100.0)
                 .coerceAtLeast(AlertEngine.SECOND_FLOOR_M)
-            else -> maxOf(AlertEngine.PASSING_METRES, speedMps * AlertEngine.PASSING_LEAD_S)
+            else -> AlertEngine.passingTriggerM(speedMps)
         }
 
         /**
