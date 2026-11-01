@@ -33,9 +33,9 @@ android {
         minSdk = 26
         targetSdk = 36
         // Google Play refuses a bundle whose versionCode it has already seen: bump this for every Play upload (DESIGN.md §13.3).
-        versionCode = 2
-        // -PversionName=… stamps a build (e.g. 0.0.1-2026-10-24); the default is the development version.
-        versionName = (project.findProperty("versionName") as String?) ?: "0.1.0"
+        versionCode = 3
+        // The default carries the date of the last version bump (DESIGN.md §13.3); -PversionName=… still stamps a one-off build.
+        versionName = (project.findProperty("versionName") as String?) ?: "0.1.0-2026-11-01"
         // The git commit the build came from, shown in Settings → About; "-dirty" when the tree had changes.
         val commit = providers.exec { commandLine("git", "rev-parse", "--short=9", "HEAD"); isIgnoreExitValue = true }
             .standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }

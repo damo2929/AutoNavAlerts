@@ -2,6 +2,10 @@
 
 What changed for the person using the app, by day. Each entry names the DESIGN.md section that holds the rule, where there is one; the commit history has the rest. Newest first.
 
+## 2026-11-01 — version 0.1.0-2026-11-01
+
+- **The version shows the date**: Settings → About now says 0.1.0-2026-11-01 (version code 3, ready for the next Play upload). Everything below dated 2026-10-25 ships in this version (DESIGN §13.3).
+
 ## 2026-10-25 — OV2 skippers; the car screen follows the phone's set-up (uncommitted at the time of writing)
 
 - **New camera icons for fixed, average speed and red light**: a fixed camera's corner badge is the UK speed-camera road sign; an average speed (SPECS) camera has the same sign on yellow; a red light camera shows a traffic light with red, amber and green lamps (red light and speed too). Every camera icon now always shows a speed: when the limit isn't known, "*" takes the number's place (DESIGN §7.1).
