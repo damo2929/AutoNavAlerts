@@ -45,7 +45,31 @@ object PgwConfig {
 
     /** The file in each download that states the version, the installed-version source of truth (§5.2). */
     const val RELEASE_FILE = "Release.txt"
+
+    /** The POI database page and its download form's target (DESIGN.md §6.5, found 2026-11-01). */
+    const val POIS_PATH = "modules.php?name=POIs"
+    const val POIS_DOWNLOAD_PATH = "modules.php?name=POIs&Download"
+
+    /** The POI download's temp file: per member, no version in the name (§6.5 step 3). */
+    val POI_ZIP_LINK = Regex("""(?:https?://www\.pocketgpsworld\.com)?/?temp/users/\d+_POIs\.zip""")
+
+    /**
+     * The POI form for the low bridges (§6.5 step 2): TomTom OV2, one file per subcategory, the link page instead of
+     * the file, the member's [BridgeSelection.uid] and ticked countries, and the category and every subcategory in
+     * its branch ticked (`2` in the site's tree checkbox), all as read from the page.
+     */
+    fun bridgeDownloadForm(sel: BridgeSelection): List<Pair<String, String>> =
+        listOf("uid" to sel.uid) + sel.countries +
+            listOf("System" to "TomTom (OV2)", "FileType" to "Separate", "Link" to "Link", sel.version to "2") +
+            sel.labels.map { it to "2" }
 }
+
+/**
+ * What the POI page offers for the low bridges (DESIGN.md §6.5 step 1): the member's [uid] (sent back, never logged
+ * or stored), the ticked country boxes, the category's label [version] ("Low Bridges {2026-11-01 : 3927}", which is
+ * also how the app tells whether there is anything new) and the [labels] of its subcategories, one per height.
+ */
+data class BridgeSelection(val uid: String, val countries: List<Pair<String, String>>, val version: String, val labels: List<String>)
 
 /**
  * The download the user picks on the Cameras tab (DESIGN.md §5.2 / §5.2a). Both carry direction:
@@ -87,6 +111,33 @@ object PgwPages {
     /** Absolute URL of the generated zip, or null if the page has none (e.g. subscription expired). */
     fun findZipLink(html: String): String? =
         PgwConfig.ZIP_LINK.find(html)?.let { PgwConfig.BASE + it.value.substringAfter("pocketgpsworld.com").trimStart('/') }
+
+    /** Absolute URL of the POI download's temp zip on its link page (§6.5 step 3), or null when there is none. */
+    fun findPoiZipLink(html: String): String? =
+        PgwConfig.POI_ZIP_LINK.find(html)?.let { PgwConfig.BASE + it.value.substringAfter("pocketgpsworld.com").trimStart('/') }
+
+    /**
+     * The low bridges on the POI page (DESIGN.md §6.5 step 1), or null when the page has no download form or no Low
+     * Bridges category (logged out, or the site changed). The form's tree checkboxes come in page order, each named
+     * by its label; a category's label ends `{date : count}`, a subcategory's `(date : count)`, so the branch is
+     * every checkbox after "Low Bridges {" up to the next category. Country boxes are named `C_<country>`.
+     */
+    fun lowBridges(html: String): BridgeSelection? {
+        val form = Jsoup.parse(html).select("form").firstOrNull { it.attr("name") == "fDownload1" } ?: return null
+        val uid = form.select("input[name=uid]").firstOrNull()?.attr("value")?.takeIf { it.isNotBlank() } ?: return null
+        val boxes = form.select("input[type=checkbox]").map { it.attr("name") to it.hasAttr("checked") }
+        val countries = boxes.filter { (n, ticked) -> n.startsWith("C_") && ticked }
+            .map { (n, _) -> n to form.select("input").first { it.attr("name") == n }.attr("value") }
+        val tree = boxes.map { it.first }.filter { it.isNotBlank() && !it.startsWith("C_") }
+        val start = tree.indexOfFirst { it.startsWith(LOW_BRIDGES) }
+        if (start < 0) return null
+        val labels = tree.drop(start + 1).takeWhile { !CATEGORY_LABEL.containsMatchIn(it) }
+        return BridgeSelection(uid, countries, tree[start], labels).takeIf { labels.isNotEmpty() }
+    }
+
+    private const val LOW_BRIDGES = "Low Bridges {"
+    /** A category's label ends with "{yyyy-mm-dd : n}"; a subcategory's uses round brackets. */
+    private val CATEGORY_LABEL = Regex("""\{\d{4}-\d{2}-\d{2} : \d+}""")
 
     /** Per-user hidden fields of the submission form (never logged or stored). */
     fun submitHiddenFields(html: String): Map<String, String> {

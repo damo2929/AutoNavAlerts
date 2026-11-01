@@ -46,6 +46,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.roundToInt
 
+/** The vehicle for low bridges (DESIGN.md §6.5): its height in centimetres (null: not set) and the safety height added to it. */
+data class Vehicle(val heightCm: Int?, val marginCm: Int)
+
 /**
  * A POI with its set/category resolved, ready for the engine, markers and messages. Built once
  * per cache reload by [AlertCoordinator.resolve], never per fix: [alert] is the engine's view of
@@ -182,6 +185,8 @@ class AlertCoordinator @Inject constructor(
     @Volatile private var latest: AppSettings? = null
     /** The global lead-time slider (§11.1), applied when the cache is resolved. */
     @Volatile private var leadSeconds: Int = io.autonav.alerts.settings.DEFAULT_ALERT_LEAD_SECONDS
+    /** The vehicle and its safety height for low bridges (§6.5); null until the settings are read, then re-read on a change. */
+    @Volatile private var vehicle: Vehicle? = null
 
     private val _markers = MutableStateFlow(MarkerState())
     /** The engine's output for the marker layer and the screens (§8.1); the flows below are views of its fields. */
@@ -220,6 +225,12 @@ class AlertCoordinator @Inject constructor(
                     if (it.overspeedPct != engine.overspeedPct) {
                         engine.overspeedPct = it.overspeedPct
                         alertsLog("overspeedPct=${"%.3f".format(it.overspeedPct)}")
+                    }
+                    val v = Vehicle(it.vehicleHeightCm.takeIf { cm -> cm > 0 }, it.bridgeMarginCm)
+                    if (v != vehicle) {
+                        vehicle = v
+                        invalidateCache() // low bridges alert or not by the vehicle height (§6.5)
+                        alertsLog("vehicle height=${v.heightCm ?: "-"} cm margin=${v.marginCm} cm")
                     }
                     if (prev == null || prev.alertLeadSeconds != it.alertLeadSeconds) {
                         leadSeconds = it.alertLeadSeconds
@@ -370,7 +381,8 @@ class AlertCoordinator @Inject constructor(
         val sets = repo.sets()
         val cats = repo.categories()
         val lead = leadSeconds
-        val resolved = pois.mapNotNull { p -> resolve(p, sets[p.setId] ?: return@mapNotNull null, p.categoryId?.let { cats[it] }, lead) }
+        val veh = vehicle
+        val resolved = pois.mapNotNull { p -> resolve(p, sets[p.setId] ?: return@mapNotNull null, p.categoryId?.let { cats[it] }, lead, veh) }
         cache = resolved
         byId = resolved.associateBy { it.poi.id }
         alertable = resolved.filter { it.alertsOn }.map { it.alert }
@@ -461,11 +473,15 @@ class AlertCoordinator @Inject constructor(
         /**
          * A POI's engine view (§4.2 resolution: the category overrides the set for sound, alerts, icon
          * and zone role; the stages are the set's, with the slider's seconds in TIME mode, §11.1). The
-         * limit is converted to m/s here once, so the engine never sees units. Pure; JVM-tested.
+         * limit is converted to m/s here once, so the engine never sees units. A low-bridge set (PGW_BRIDGE)
+         * alerts only when its height, read from its name, is at or below [vehicle]'s height plus its safety
+         * height (§6.5, `BridgeHeight`); otherwise it stays on the map without alerting. Pure; JVM-tested.
          */
-        fun resolve(p: PoiEntity, set: PoiSetEntity, cat: PoiCategoryEntity?, leadSeconds: Int? = null): ResolvedPoi {
+        fun resolve(p: PoiEntity, set: PoiSetEntity, cat: PoiCategoryEntity?, leadSeconds: Int? = null, vehicle: Vehicle? = null): ResolvedPoi {
             val soundOn = cat?.soundEnabled ?: set.soundEnabled
-            val alertsOn = set.enabled && set.alertsEnabled && (cat?.alertsEnabled ?: true)
+            val bridgeOk = set.source != io.autonav.alerts.data.PoiSourceType.PGW_BRIDGE ||
+                io.autonav.alerts.core.poi.BridgeHeight.alerts(io.autonav.alerts.core.poi.BridgeHeight.parseCm(set.name), vehicle?.heightCm, vehicle?.marginCm ?: io.autonav.alerts.core.poi.BridgeHeight.DEFAULT_MARGIN_CM)
+            val alertsOn = set.enabled && set.alertsEnabled && (cat?.alertsEnabled ?: true) && bridgeOk
             val limitMps = p.speedLimit?.let { if (p.speedUnit == SpeedUnit.KMH) it / 3.6 else it * Geo.MPS_PER_MPH }
             val (first, second) = leadStages(set.firstAlert.toStage(), set.secondAlert.toStage(), leadSeconds)
             return ResolvedPoi(

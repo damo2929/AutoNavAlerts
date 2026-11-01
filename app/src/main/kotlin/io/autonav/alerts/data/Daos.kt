@@ -44,6 +44,10 @@ interface PoiSetDao {
     @Query("SELECT * FROM poi_set WHERE source IN ('PGW', 'PGW_PENDING') AND state = 'ACTIVE'")
     suspend fun pgwSets(): List<PoiSetEntity>
 
+    /** Every active set of a source: the low-bridge sets a new bridge download replaces (§6.5). */
+    @Query("SELECT * FROM poi_set WHERE source = :source AND state = 'ACTIVE'")
+    suspend fun allBySource(source: PoiSourceType): List<PoiSetEntity>
+
     /** Inserts a new (usually STAGING) set and returns its id (§4.4 step 1). */
     @Insert
     suspend fun insert(set: PoiSetEntity): Long

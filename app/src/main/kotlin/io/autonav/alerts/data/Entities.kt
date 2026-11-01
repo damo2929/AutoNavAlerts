@@ -19,9 +19,10 @@ import io.autonav.alerts.core.poi.ZoneRole
  * PocketGPSWorld download (the verified cameras, and the unverified pending mobile sites, §5.2);
  * FILE is a POI file the user picked by hand (§5); REPORT is the local "My reports" set (§8.5); CAMERA_FILE
  * is a camera file picked by hand on the Cameras tab, through the same import as FILE (§13 item 8).
- * The phone's Cameras tab lists PGW, PGW_PENDING, CAMERA_FILE and REPORT sets; its POIs tab lists FILE sets only.
+ * The phone's Cameras tab lists PGW, PGW_PENDING, CAMERA_FILE and REPORT sets; its POIs tab lists FILE sets only;
+ * its Bridges tab lists PGW_BRIDGE sets, the low bridges from PocketGPSWorld's POI database (§6.5). Stored as text.
  */
-enum class PoiSourceType { PGW, PGW_PENDING, FILE, REPORT, CAMERA_FILE }
+enum class PoiSourceType { PGW, PGW_PENDING, FILE, REPORT, CAMERA_FILE, PGW_BRIDGE }
 /** A set's place in the staging swap (DESIGN.md §4.4): STAGING while an import fills it, ACTIVE once swapped in. */
 enum class SetState { ACTIVE, STAGING }
 

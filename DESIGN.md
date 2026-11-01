@@ -238,10 +238,10 @@ app/src/main/kotlin/io/autonav/alerts/
     RemoteZip.kt              Reads one entry of a remote zip with HTTP range requests (§8.4a)
   pgw/
     PgwClient.kt              PocketGPSWorld login, feed check, download, report submission over HTTPS; the site's base and feed URLs are constructor values (production: PgwConfig) so tests run it against a fake site (§6, §8.5)
-    PgwWorkers.kt             PgwScheduler (daily), PgwFeedCheckWorker, PgwSyncWorker (never while guiding), ReportSubmitWorker (phone Send only) (§6.2, §6.2a, §8.5)
+    PgwWorkers.kt             PgwScheduler (daily), PgwFeedCheckWorker, PgwSyncWorker (never while guiding), PgwBridgeWorker (low bridges, buttons only, never while guiding), ReportSubmitWorker (phone Send only) (§6.2, §6.2a, §6.5, §8.5)
   phone/
     MainActivity.kt           The phone UI host; PhoneDeps, built by Hilt (§13)
-    PhoneScreens.kt           The Compose screens: Settings (setup, key creation, backup, diagnostics), POIs, Cameras, Reports (§13, docs/SETTINGS.md)
+    PhoneScreens.kt           The Compose screens: Settings (setup, key creation, backup, diagnostics, vehicle and low bridges), POIs, Cameras, Bridges, Reports (§6.5, §13, docs/SETTINGS.md)
     PhoneUi.kt                The phone screens' shared cards, rows, text styles, chips, folds, dialogs, save-to-file launcher, the background-work button (Btn) and the IO hop (io) (§13)
   places/PlacesSearch.kt      Places autocomplete with session tokens and location bias; recents (§8, §8.2)
   util/Background.kt          WorkManager network constraints, notification channels (`ensureChannel` with an optional channel configurator) and the `POST_NOTIFICATIONS` gate (`notifyIfAllowed`) shared by the alert heads-up, the PGW sync, the limit download and the report reminder (§6.2, §8.4a, §8.5, §12.2)
@@ -279,6 +279,7 @@ core/src/main/kotlin/io/autonav/alerts/core/
     RoutePolyline.kt          Route segments ahead of the car; cross-track distance (§11 step 4)
     FollowWatchdog.kt         None / Refollow / Rebuild decision for the map camera (§8)
     RouteReadiness.kt         Guidance starts only on a route the SDK confirmed for this destination (§9.3)
+    BridgeHeight.kt           (core/poi) A low bridge's height from its set name, and whether it alerts for the vehicle + safety height (§6.5)
     TapTargets.kt             Which car map button a tap belongs to: the whole box plus a margin, nearest wins (§8)
     EcoReaskPolicy.kt         When to ask for an energy-efficient route again (§8.3a)
   osm/
@@ -291,7 +292,7 @@ core/src/main/kotlin/io/autonav/alerts/core/
     ShapefileRoads.kt         Streaming readers for Geofabrik's roads shapefile (§8.4a)
     NorthernIreland.kt        The border polygon used to keep Northern Ireland's roads; the ring itself is the resource core/src/main/resources/io/autonav/alerts/core/osm/ni_ring.txt (§8.4a)
   pgw/
-    PgwPages.kt               PgwConfig (every URL, field and selector), page parsing, PgwDownload, PgwSubmission (§6.1, §8.5)
+    PgwPages.kt               PgwConfig (every URL, field and selector), page parsing (cameras, the POI page's low bridges), PgwDownload, PgwSubmission, BridgeSelection (§6.1, §6.5, §8.5)
     PgwUpdateFeed.kt          speed-camera-rss.php → PgwRelease; version comparison (§6.2)
   poi/
     PoiModel.kt               DirectionType, SpeedUnit, ZoneRole, ImportRow, RowError, ImportResult (§4.1, §5.1)
@@ -842,7 +843,7 @@ PGW's terms may forbid automated downloads. To limit the risk:
 
 The user accepts this risk for personal use.
 
-### 6.5 Low bridges (designed 2026-11-01, not built)
+### 6.5 Low bridges (owner, 2026-11-01; approved and built the same day)
 
 **What** (owner, 2026-11-01: "we are going to add low bridge support, these also come from pocketgps world … you use the same login as for the cameras"; then: separate files in TomTom format like the cameras, alerts only for bridges lower than my vehicle, a height setting in the main settings, the same three alert stages as cameras, downloaded only when I press a button). PocketGPSWorld's POI database has a **Low Bridges** category, every subcategory marked **Premium** (subscriber login). Checked logged in on 2026-11-01: 3,927 UK bridges in **47 subcategories, one per signed height**, "Bridge - 5ft 6in" … "Bridge - 16ft 9in" in 3-inch steps plus "Unknown Height" (77), each labelled with its last-update date and count, e.g. `Bridge - 13ft 6in (2026-02-07 : 191)`.
 
@@ -854,11 +855,11 @@ The user accepts this risk for personal use.
 
 **Import**: the zip holds one OV2 per height and its icon (`Bridge - 13ft 6in.ov2` / `.bmp`). **Every file becomes its own set** (hard rule 9), named from its file, icon from the matching `.bmp` (§5.2a), through the same staging swap as the cameras (§4.4), with a new source type **`PGW_BRIDGE`** (stored as text, no schema change) so a bridge download replaces only bridge sets and a camera sync never touches them. **Never swapped in while navigating** (§6.2). The bridge's **height comes from its set's name**: `(\d+)ft( (\d+)in)?` → centimetres; "Unknown Height" has none. OV2 records have no bearing, so bridges alert from **either direction** (`ANY`; the camera direction rule needs a bearing and doesn't apply).
 
-**Only bridges lower than the vehicle alert**: a new setting **Vehicle height** in Settings (main settings, "Vehicle"), in the user's units (feet and inches, or metres), **not set by default**. A bridge set alerts when its height is **at or below the vehicle height plus a 3-inch (8 cm) safety margin**; an **"Unknown Height"** bridge alerts whenever a vehicle height is set. With no vehicle height, or a taller bridge, the set's markers still show on the car map and nothing is spoken. Worked example, vehicle 3.95 m (12ft 11.5in): 12ft 9in, 13ft and 13ft 3in alert (13ft 3in ≤ 12ft 11.5in + 3in); 13ft 6in and taller don't. The setting goes in the settings backup (§13.4).
+**Only bridges lower than the vehicle alert**: a new setting **Vehicle height** in Settings (main settings, "Vehicle"), in the user's units (feet and inches, or metres), **not set by default**. A bridge set alerts when its height is **at or below the vehicle height plus the safety height**, a **slider from 0 to 1 m** under the vehicle height (owner, 2026-11-01: "add a slider to add safety height from 0 to 1m"), default 8 cm (about 3 in), shown in the user's units; an **"Unknown Height"** bridge alerts whenever a vehicle height is set. With no vehicle height, or a taller bridge, the set's markers still show on the car map and nothing is spoken. Worked example, vehicle 13ft (3.96 m) with the default 8 cm: 12ft 9in, 13ft and 13ft 3in alert (13ft 3in ≤ 13ft + 3in); 13ft 6in and taller don't; with 30 cm, 13ft 9in alerts too. Half a centimetre is allowed for rounding, since heights are kept in whole centimetres (`BridgeHeight` in `:core`). Both settings go in the settings backup (§13.4).
 
 **Alerts**: the **same three stages as cameras** (§11.1): 1st and 2nd counted out from the passing alert by the lead slider, the passing alert 3 s / 50 yd before the bridge. The spoken text uses the existing templates: `{category}` is the set name, so a bridge says "Bridge 13 foot 6 …" with **no new template word** (§7.2 unchanged). Bridge sets get their own default templates (e.g. `{category}, {distance}`); no `{speed}`.
 
-**Phone app**: on the POIs tab, a **Low bridges (PocketGPSWorld)** card: the installed date and count, the site's date when last checked, and a **Download low bridges** button (refused while navigating, with the reason shown). It uses the camera login; with no login it says so and links to it. No automatic or scheduled download (owner's choice).
+**Phone app** (owner, 2026-11-01: "I see no bridges tab or setting to set the height or in settings to force redownload"): a **Bridges** tab of its own (POIs · Cameras · Bridges · Reports · Settings) showing the installed version (the site's `{date : count}`), when it was downloaded and the last result, a **Download low bridges** button (skips with "Already up to date" when the site's version equals the installed one) and the bridge sets with their switches, as on the other tabs. **Settings** has the **Vehicle height** (section "Vehicle") and, in the PocketGPSWorld section, **Force re-download low bridges** (downloads whatever the version). Both are refused while navigating, with the reason shown, and use the camera login; with no login they say so. No automatic or scheduled download (owner's choice). The download runs as a one-off `PgwBridgeWorker` (WorkManager, any network), never at the same time as itself.
 
 **Licence**: Premium PGW data, handled exactly like the cameras (§6.4): the member's own login, private storage only, no export, no Android backup, never in the repo, tests or fixtures (hard rule 6); tests use made-up OV2 files named like the real ones.
 
@@ -2128,7 +2129,7 @@ One `ChargerProvider` interface lets sources be added or turned off. Results are
 - `tools/drive.py --limits`: follows OSM speed limits, under / at / over in turn (TESTING.md §3).
 - `tools/drive.py --route app`: drives the app's own guided route, exported by the debug hook `--ez route true` (§15, 2026-11-01).
 - Follow watchdog judged at the car's spot (a tenth of the surface each way) and a re-follow on every route change while guiding (§8 "Follow watchdog", 2026-11-01). Unit-tested; bench drive Banbury → Stansted: in its spot on every readable frame.
-- Low bridges from PocketGPSWorld (§6.5, 2026-11-01): **designed, not built** (awaiting the owner's approval).
+- Low bridges from PocketGPSWorld (§6.5, 2026-11-01): built; Bridges tab, Vehicle height, Force re-download. Unit-tested; not yet run against the site from the app.
 - Guidance starts only on a route whose result was OK (§9.3, 2026-11-01); the SDK's follow and navigation-UI events logged (§8 "Follow watchdog", 2026-11-01). Unit-tested where pure; bench check pending.
 - Contacts' addresses in car Search, with a contacts-only search, geocode cache (DB v4) and an optional permission button (§8.3). Built; not yet run on the emulator.
 - Settings backup and restore: a plain-text JSON file with the settings, Maps key, PGW login and each set's settings; restore checks it, previews it and asks first (§13.4). Built; not yet run on the emulator.

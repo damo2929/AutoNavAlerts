@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
                 }
                 Scaffold(
                     bottomBar = {
-                        // The four tabs in DESIGN.md §13's order; the index is the TAB_* constant.
+                        // The five tabs in DESIGN.md §13's order; the index is the TAB_* constant.
                         NavigationBar {
                             TABS.forEachIndexed { i, t ->
                                 NavigationBarItem(
@@ -114,10 +114,12 @@ class MainActivity : ComponentActivity() {
         const val TAB_POIS = 0
         /** The Cameras tab (PocketGPSWorld and the camera sets). */
         const val TAB_CAMERAS = 1
+        /** The Bridges tab: PocketGPSWorld's low bridges (DESIGN.md §6.5). */
+        const val TAB_BRIDGES = 2
         /** The Reports tab; the "N camera reports to check" notification opens this one (DESIGN.md §8.5). */
-        const val TAB_REPORTS = 2
+        const val TAB_REPORTS = 3
         /** The Settings tab, where setup lives too. */
-        const val TAB_SETTINGS = 3
+        const val TAB_SETTINGS = 4
         /** One bottom-bar tab: its label, icon and screen. */
         private class Tab(val label: String, val icon: Int, val screen: @Composable (MainActivity) -> Unit)
 
@@ -125,6 +127,7 @@ class MainActivity : ComponentActivity() {
         private val TABS = listOf(
             Tab("POIs", R.drawable.ic_action_layers) { PoiSetsScreen(it.deps) },
             Tab("Cameras", R.drawable.ic_action_report) { CameraDbScreen(it.deps) },
+            Tab("Bridges", R.drawable.ic_action_layers) { BridgesScreen(it.deps) },
             Tab("Reports", R.drawable.ic_action_place) { ReportsScreen(it, it.deps) },
             Tab("Settings", R.drawable.ic_action_more) { SettingsScreen(it, it.deps) },
         )

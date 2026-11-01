@@ -137,4 +137,26 @@ class PhoneHelpersTest {
         assertEquals(listOf(Manifest.permission.RECORD_AUDIO), mostly.missingForeground())
         assertTrue(mostly.granted(PERMS.first()))
     }
+
+    @Test fun lowBridgeHelpers() {
+        // DESIGN.md §6.5: heights in the user's units, typed heights, and the sets lowest first with Unknown last.
+        assertEquals("13ft 0in", heightText(396, io.autonav.alerts.core.alerts.Units.IMPERIAL))
+        assertEquals("3.96 m", heightText(396, io.autonav.alerts.core.alerts.Units.METRIC))
+        assertEquals("3 in", marginText(8, io.autonav.alerts.core.alerts.Units.IMPERIAL))
+        assertEquals("30 cm", marginText(30, io.autonav.alerts.core.alerts.Units.METRIC))
+        assertEquals(396, heightCmFromFeet("13", ""))
+        assertEquals(411, heightCmFromFeet("13", "6"))
+        assertEquals(null, heightCmFromFeet("", ""))
+        assertEquals(null, heightCmFromFeet("30", "0"))
+        assertEquals(396, heightCmFromMetres("3.96"))
+        assertEquals(396, heightCmFromMetres("3,96"))
+        assertEquals(null, heightCmFromMetres("x"))
+        val sets = listOf(
+            set("Unknown Height", PoiSourceType.PGW_BRIDGE), set("Bridge - 13ft 6in", PoiSourceType.PGW_BRIDGE),
+            set("Bridge - 5ft 6in", PoiSourceType.PGW_BRIDGE), set("PGW fixed cameras · 30 mph"),
+        )
+        assertEquals(listOf("Bridge - 5ft 6in", "Bridge - 13ft 6in", "Unknown Height"), bridgeSets(sets).map { it.name })
+        // Bridge sets never show among the cameras.
+        assertEquals(listOf("PGW fixed cameras"), cameraGroups(sets).map { it.name })
+    }
 }

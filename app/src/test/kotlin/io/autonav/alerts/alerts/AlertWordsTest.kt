@@ -107,6 +107,22 @@ class AlertWordsTest {
         assertTrue(AlertCoordinator.isMobileSite(set(source = PoiSourceType.PGW_PENDING, format = "IGO:x"), null))
     }
 
+    @Test fun aLowBridgeAlertsOnlyWhenTheVehiclePlusTheSafetyHeightReachesIt() {
+        // DESIGN.md §6.5: the one bridge condition in resolve; everything after it is the camera path.
+        val bridge = set(PoiSourceType.PGW_BRIDGE, "OV2:bridge:Bridge - 13ft 6in.ov2").copy(name = "Bridge - 13ft 6in")
+        fun alerts(vehicle: Vehicle?) = AlertCoordinator.resolve(poiAt(0.0, speed = null), bridge, null, vehicle = vehicle).alertsOn
+        assertFalse("no vehicle height, no bridge alerts", alerts(null))
+        assertFalse(alerts(Vehicle(null, 8)))
+        assertFalse("13ft + 8 cm is under 13ft 6in", alerts(Vehicle(396, 8)))
+        assertTrue("13ft + 30 cm reaches 13ft 6in (411 cm)", alerts(Vehicle(396, 30)))
+        assertTrue(alerts(Vehicle(420, 0)))
+        // Unknown height: any vehicle height set.
+        val unknown = bridge.copy(name = "Unknown Height")
+        assertTrue(AlertCoordinator.resolve(poiAt(0.0, speed = null), unknown, null, vehicle = Vehicle(200, 0)).alertsOn)
+        // Cameras ignore the vehicle entirely.
+        assertTrue(AlertCoordinator.resolve(poiAt(0.0), set(), null, vehicle = Vehicle(null, 0)).alertsOn)
+    }
+
     @Test fun resolveUsesTheSetWhenThereIsNoCategory() {
         val r = AlertCoordinator.resolve(poiAt(0.0), set().copy(soundEnabled = false), null)
         assertEquals("builtin:camera_fixed", r.iconId)

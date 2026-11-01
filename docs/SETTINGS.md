@@ -70,6 +70,16 @@ The colour of the speed panel follows Google's limit separately (section 1.4).
 The lead-time slider changes **when** alerts fire, not **whether** they fire.
 A camera facing the other way still never alerts (section 3.3).
 
+### 1.2a Vehicle and low bridges
+
+| Setting | Default | What it does |
+|---|---|---|
+| **Vehicle height** | Not set | Your vehicle's height, in feet and inches or metres (by your units). Type it and press **Save**; **Clear** removes it. With none set, no low bridge alerts. |
+| **Safety height** | 8 cm (3 in) | A slider from 0 to 1 m. Low bridges alert when they are no higher than your vehicle plus this. |
+| **Force re-download low bridges** | — | Downloads the low bridges again whatever the version. Not while navigating. |
+
+Both heights go in the settings backup. Technical detail: DESIGN.md §6.5.
+
 ### 1.3 Speed and location source
 
 Technical detail: DESIGN.md §10.6, §10.7.
@@ -394,6 +404,19 @@ All camera sets are listed here rather than on the POIs tab, grouped by camera t
 | Expanded group | Lists its sets, each with its own switch. Tap a set to edit it (section 3.3), or swipe it left to delete it. Deleting a PocketGPSWorld set only removes the phone's copy. The next sync downloads it again unless automatic updates are off |
 
 ---
+
+## 4a. Bridges tab
+
+PocketGPSWorld's low bridges (subscriber data), downloaded with the same login as the cameras. Technical detail: DESIGN.md §6.5.
+
+| Item | What it shows or does |
+|---|---|
+| **Your vehicle** | The vehicle height and safety height from Settings → Vehicle and low bridges, and how many bridge heights alert for it. With no vehicle height set, no bridge alerts. |
+| **Installed** | The version on the phone: the site's "Low Bridges {date : count}". Below it, the site's version when last checked, the last download and its result. |
+| **Download low bridges** | Downloads the low bridges, one set per signed height ("Bridge - 13ft 6in"), if the site has a newer version. Not while navigating. **Force re-download low bridges** is in Settings. |
+| **Bridge sets** | One per height, lowest first, "Unknown Height" last. Each can be switched off or edited like any set. |
+
+A bridge alerts, with the same three stages as a camera, only when it is no higher than your vehicle plus the safety height. The others show on the car map without speaking. A bridge with an unknown height alerts whenever a vehicle height is set.
 
 ## 5. Reports tab
 

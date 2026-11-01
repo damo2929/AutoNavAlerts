@@ -83,6 +83,18 @@ class PgwScheduler @Inject constructor(
     }
 
     /**
+     * The low bridges (DESIGN.md §6.5), only ever from the phone's Download low bridges and Force re-download low
+     * bridges buttons: [force] skips the version check. Any network; REPLACE so a pressed button always runs.
+     */
+    fun bridgesNow(force: Boolean) {
+        val req = OneTimeWorkRequestBuilder<PgwBridgeWorker>()
+            .setInputData(workDataOf(PgwBridgeWorker.KEY_FORCE to force))
+            .setConstraints(network().build())
+            .build()
+        wm.enqueueUniqueWork(BRIDGE_WORK, ExistingWorkPolicy.REPLACE, req)
+    }
+
+    /**
      * The automatic download queued by the feed check (§6.2): any network unless the user set Wi-Fi only,
      * battery not low, exponential backoff from 1 h (the worker gives up after 3 attempts, §6.2 "Backoff"),
      * KEEP so a download already queued or running isn't restarted.
@@ -100,6 +112,7 @@ class PgwScheduler @Inject constructor(
         /** Unique work names: one feed check and one sync at a time. */
         const val FEED_WORK = "pgw-feed-check"
         const val SYNC_WORK = "pgw-sync"
+        const val BRIDGE_WORK = "pgw-bridges"
     }
 }
 
@@ -272,6 +285,61 @@ class PgwSyncWorker internal constructor(
         const val KEY_CHECK_FEED = "check_feed"
         /** Notification channel for sync results. */
         const val CHANNEL = "pgw_sync"
+    }
+}
+
+/**
+ * The low-bridge download (DESIGN.md §6.5): log in if needed → read the POI page → unless its version is already
+ * installed (or [KEY_FORCE]) download the member's zip of one OV2 per height → import into PGW_BRIDGE sets
+ * (`PoiRepository.importBridgeZip`) → record the version. A one-off WorkManager job built by Hilt, only queued by
+ * [PgwScheduler.bridgesNow] from the phone's buttons: no automatic download (owner's choice). Refused while guidance
+ * runs, with the reason on the Bridges tab, so the sets never change mid-journey (§6.2). Runs on WorkManager's
+ * background thread. Hard rule 6: the zip is the member's own, in private cache until imported, then deleted.
+ */
+@HiltWorker
+class PgwBridgeWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val client: PgwClient,
+    private val settings: SettingsStore,
+    private val repo: PoiRepository,
+    private val guidance: GuidanceController,
+) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val now = System.currentTimeMillis()
+        if (guidance.guiding.value) return done("Not while navigating: download the low bridges once the route has ended")
+        val zip = File(client.cacheDir(), "bridges-$now.zip")
+        return try {
+            val got = client.downloadBridges(zip, settings.currentPgw().bridgeInstalled, inputData.getBoolean(KEY_FORCE, false))
+            settings.updatePgw { it.copy(bridgeSite = got.version) }
+            val file = got.file ?: return done("Already up to date (${got.version})")
+            val outcome = repo.importBridgeZip(file, got.version)
+            if (outcome.failed) return done(outcome.message, failed = true)
+            settings.updatePgw { it.copy(bridgeInstalled = got.version, bridgeLastMs = now) }
+            done("Updated to ${got.version}: ${outcome.message}")
+        } catch (e: PgwAuthException) {
+            done("Login problem: ${e.message}", failed = true)
+        } catch (e: PgwSubscriptionException) {
+            done("Subscription required: ${e.message}", failed = true)
+        } catch (e: PgwParseException) {
+            done("Site changed: ${e.message}", failed = true)
+        } catch (e: Exception) {
+            done("Network problem: ${e.message}", failed = true)
+        } finally {
+            // §6.1 step 2.4: deleted after import, whatever happened.
+            zip.delete()
+        }
+    }
+
+    /** Records [result] for the Bridges tab; a button press is never retried on its own. */
+    private suspend fun done(result: String, failed: Boolean = false): Result {
+        settings.updatePgw { it.copy(bridgeResult = result) }
+        return if (failed) Result.failure() else Result.success()
+    }
+
+    companion object {
+        /** Input data key set by [PgwScheduler.bridgesNow]: download whatever the site's version (Force re-download). */
+        const val KEY_FORCE = "force"
     }
 }
 

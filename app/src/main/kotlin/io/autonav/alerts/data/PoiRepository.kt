@@ -330,6 +330,46 @@ class PoiRepository @Inject constructor(
         }
     }
 
+    // --- Low bridges -----------------------------------------------------------------------------
+
+    /**
+     * Imports PocketGPSWorld's low bridges (DESIGN.md §6.5; called by `PgwBridgeWorker` on Dispatchers.IO): the
+     * zip holds one OV2 per signed height ("Bridge - 13ft 6in.ov2") and its icon. Every file becomes its own
+     * PGW_BRIDGE set, never merged (hard rule 9), named from the file (the height is read from that name when the
+     * set is resolved, `BridgeHeight`), matched to its set by file name across downloads so the user's switches are
+     * kept; bridge sets no longer in the download are removed. Camera sets are never touched. [version] is the
+     * site's "Low Bridges {date : count}" label, stored on each set. The zip is read entry by entry (§5.2).
+     */
+    suspend fun importBridgeZip(zip: File, version: String): ImportOutcome = withContext(Dispatchers.IO) {
+        ZipEntries.read(zip).use { entries ->
+            // Entry names only: no PGW data is logged (§6.4).
+            Log.i("PgwImport", "Bridge zip ${zip.length()} bytes, entries: ${entries.keys}")
+            val files = poiFilesIn(entries).filterKeys { it.endsWith(".ov2", true) }
+            if (files.isEmpty()) return@withContext fail("No low-bridge files in the download. The zip contained: " + entries.keys.joinToString().ifEmpty { "nothing readable" })
+            val kept = HashSet<String>()
+            val outs = files.map { (fileName, data) ->
+                val key = "${PoiFormat.OV2.name}:bridge:$fileName"
+                kept += key
+                val stem = fileName.substringBeforeLast('.')
+                val iconBytes = entries.entries.firstOrNull { (n, _) ->
+                    n.substringBeforeLast('.').equals(stem, true) && n.lowercase().let { it.endsWith(".bmp") || it.endsWith(".png") }
+                }?.value
+                val icon = iconBytes?.let { icons.saveImportedIcon(stem, it) }
+                val existing = db.poiSets().byFormat(key)
+                fileName to storeImport(
+                    Ov2Importer().parse(data.inputStream()), setNameFor(fileName), PoiSourceType.PGW_BRIDGE, key, existing?.id,
+                    categoryNamer = { setNameFor(fileName) }, version = version, defaultIcon = icon, fileIcon = icon != null,
+                )
+            }
+            db.poiSets().allBySource(PoiSourceType.PGW_BRIDGE).filter { it.format !in kept }.forEach { db.poiSets().delete(it.id) }
+            notifyChanged()
+            combine(outs) { imported, sets, _, problems ->
+                if (sets == 0) problems.joinToString("; ")
+                else "Imported $imported low bridges in $sets sets" + if (problems.isNotEmpty()) " (${problems.size} failed)" else ""
+            }
+        }
+    }
+
     // --- Shared storage ------------------------------------------------------------------------
 
     /**

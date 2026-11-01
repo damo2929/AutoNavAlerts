@@ -88,6 +88,13 @@ data class AppSettings(
     val speedSource: SpeedSource = SpeedSource.CAR_WHEN_AVAILABLE,
     /** Which PocketGPSWorld download to use (Cameras tab). */
     val pgwDownload: PgwDownload = PgwDownload.DEFAULT,
+    /**
+     * The vehicle's height in whole centimetres, 0 = not set (DESIGN.md §6.5): low bridges at or below it plus 3 in
+     * alert; with none set no bridge alerts. Entered in the user's units on the phone (Settings → Vehicle).
+     */
+    val vehicleHeightCm: Int = 0,
+    /** The safety height added to [vehicleHeightCm] for low bridges, 0–100 cm on a slider, default 8 (about 3 in; §6.5). */
+    val bridgeMarginCm: Int = io.autonav.alerts.core.poi.BridgeHeight.DEFAULT_MARGIN_CM,
     /** Record every fix to a CSV for bench replay (DESIGN.md §15.5). Not in the settings backup. */
     val driveRecordingOn: Boolean = false,
 )
@@ -116,6 +123,12 @@ data class PgwState(
     /** The feed's validators for the next conditional GET (§6.2). */
     val feedEtag: String? = null,
     val feedLastModified: String? = null,
+    /** Low bridges (§6.5): the installed version (the site's "Low Bridges {date : count}" label) and the site's when last read. */
+    val bridgeInstalled: String? = null,
+    val bridgeSite: String? = null,
+    /** Epoch millis of the last bridge download that finished, and its one line for the Bridges tab. */
+    val bridgeLastMs: Long = 0,
+    val bridgeResult: String? = null,
 )
 
 /**
@@ -282,6 +295,8 @@ internal val SETTINGS_FIELDS: List<Field<*, *>> = listOf(
     bool("pgw_auto", "pgwAutoSync", { it.pgwAutoSync }, { copy(pgwAutoSync = it) }),
     bool("pgw_wifi_only", "pgwWifiOnly", { it.pgwWifiOnly }, { copy(pgwWifiOnly = it) }),
     enum<PgwDownload>("pgw_download", "pgwDownload", { it.pgwDownload }, { copy(pgwDownload = it) }),
+    int("vehicle_height_cm", "vehicleHeightCm", 0..600, { it.vehicleHeightCm }, { copy(vehicleHeightCm = it) }),
+    int("bridge_margin_cm", "bridgeMarginCm", io.autonav.alerts.core.poi.BridgeHeight.MARGIN_RANGE_CM, { it.bridgeMarginCm }, { copy(bridgeMarginCm = it) }),
     plain(longPreferencesKey("muted_until"), { it.mutedUntilMs }, { copy(mutedUntilMs = it) }),
     plain(floatPreferencesKey("sim_speed"), { it.simulationSpeed }, { copy(simulationSpeed = it) }),
     bool("drive_recording", null, { it.driveRecordingOn }, { copy(driveRecordingOn = it) }),
@@ -306,6 +321,10 @@ private val PGW_FIELDS = listOf(
     PgwField(stringPreferencesKey("pgw_result"), { it.lastResult }, { copy(lastResult = it) }),
     PgwField(stringPreferencesKey("pgw_etag"), { it.feedEtag }, { copy(feedEtag = it) }),
     PgwField(stringPreferencesKey("pgw_last_modified"), { it.feedLastModified }, { copy(feedLastModified = it) }),
+    PgwField(stringPreferencesKey("bridge_installed"), { it.bridgeInstalled }, { copy(bridgeInstalled = it) }),
+    PgwField(stringPreferencesKey("bridge_site"), { it.bridgeSite }, { copy(bridgeSite = it) }),
+    PgwField(longPreferencesKey("bridge_last"), { it.bridgeLastMs }, { copy(bridgeLastMs = it ?: 0) }),
+    PgwField(stringPreferencesKey("bridge_result"), { it.bridgeResult }, { copy(bridgeResult = it) }),
 )
 
 /**

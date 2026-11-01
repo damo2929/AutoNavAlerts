@@ -84,6 +84,7 @@ import io.autonav.alerts.core.alerts.AlertTemplateRenderer
 import io.autonav.alerts.core.alerts.DistanceMode
 import io.autonav.alerts.core.alerts.TemplateValues
 import io.autonav.alerts.core.alerts.Units
+import io.autonav.alerts.core.poi.BridgeHeight
 import io.autonav.alerts.core.geo.Geo
 import io.autonav.alerts.core.pgw.PgwConfig
 import io.autonav.alerts.core.poi.SpeedUnit
@@ -578,6 +579,121 @@ fun PoiSetsScreen(deps: PhoneDeps) {
             ImportDialog(deps, uri, onClose = { msg -> importUri = null; list.message = msg })
         }
     }
+}
+
+/**
+ * The Bridges tab (DESIGN.md §6.5; docs/SETTINGS.md): PocketGPSWorld's low bridges, one set per signed height. Shows
+ * the vehicle the alerts are judged against (set in Settings → Vehicle and low bridges), the installed and site
+ * versions with the last result, the **Download low bridges** button (skips when already up to date; refused while
+ * navigating, by `PgwBridgeWorker`) and the bridge sets lowest first, each a [SetCard] like the other tabs. Uses the
+ * camera login from the Cameras tab (hard rule 6: the member's own; the data stays on this phone).
+ */
+@Composable
+fun BridgesScreen(deps: PhoneDeps) {
+    val sets by deps.pois.activeSets.collectAsState(initial = emptyList())
+    val state by deps.settings.pgwState.collectAsState(initial = PgwState())
+    val settings by deps.settings.settings.collectAsState(initial = AppSettings())
+    var hasLogin by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { hasLogin = deps.settings.pgwCredentials() != null }
+    val df = remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
+    val bridges = bridgeSets(sets)
+    val vehicle = settings.vehicleHeightCm.takeIf { it > 0 }
+    val alerting = bridges.count { BridgeHeight.alerts(BridgeHeight.parseCm(it.name), vehicle, settings.bridgeMarginCm) }
+
+    SetListHost(deps) { list ->
+        LazyColumn {
+            item {
+                Text("Low bridges", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(16.dp))
+                Section("Your vehicle") {
+                    if (vehicle == null) Help("No vehicle height set, so no bridge alerts. Set it in Settings → Vehicle and low bridges.", color = MaterialTheme.colorScheme.primary)
+                    else Text("${heightText(vehicle, settings.units)} + ${marginText(settings.bridgeMarginCm, settings.units)} safety height")
+                    if (bridges.isNotEmpty()) Help("$alerting of ${bridges.size} bridge heights alert for your vehicle; the rest show on the map only.")
+                }
+                Section("PocketGPSWorld") {
+                    Help("Subscriber data, downloaded with your PocketGPSWorld login as one set per signed height. It stays on this phone.")
+                    if (!hasLogin) Help("Add your PocketGPSWorld login on the Cameras tab first.", color = MaterialTheme.colorScheme.primary)
+                    Text("Installed: ${state.bridgeInstalled ?: "none"}")
+                    state.bridgeSite?.let { Help("On the site when last checked: $it") }
+                    if (state.bridgeLastMs > 0) Help("Last download: ${df.format(Date(state.bridgeLastMs))}")
+                    state.bridgeResult?.let { Help(it) }
+                    Button(enabled = hasLogin, onClick = { deps.scheduler.bridgesNow(force = false) }) { Text("Download low bridges") }
+                    Help("Not while navigating. Force re-download is in Settings.")
+                }
+                list.message?.let { Ok(it, Modifier.padding(16.dp)) }
+                if (bridges.isEmpty()) Text("No low bridges yet. Use Download low bridges.", Modifier.padding(16.dp))
+            }
+            items(bridges, key = { it.id }) { set ->
+                SetCard(deps, set, onEdit = { list.editing = set }, onDelete = { list.confirmDelete = set })
+            }
+        }
+    }
+}
+
+/** The low-bridge sets, lowest height first and "Unknown Height" last (DESIGN.md §6.5). Internal for `PhoneHelpersTest`. */
+internal fun bridgeSets(sets: List<PoiSetEntity>): List<PoiSetEntity> =
+    sets.filter { it.source == PoiSourceType.PGW_BRIDGE }.sortedWith(compareBy({ BridgeHeight.parseCm(it.name) ?: Int.MAX_VALUE }, { it.name }))
+
+/** A height in the user's units: "3.96 m", or "13ft 0in" (DESIGN.md §6.5). */
+internal fun heightText(cm: Int, units: Units): String =
+    if (units == Units.METRIC) "%.2f m".format(java.util.Locale.ROOT, cm / 100.0)
+    else (cm / 2.54).roundToInt().let { inches -> "${inches / 12}ft ${inches % 12}in" }
+
+/** The safety height in the user's units: "8 cm", or "3 in". */
+internal fun marginText(cm: Int, units: Units): String =
+    if (units == Units.METRIC) "$cm cm" else "${(cm / 2.54).roundToInt()} in"
+
+/** Centimetres from typed feet and inches (either may be blank), or null when neither is a number or the result is 0. */
+internal fun heightCmFromFeet(feet: String, inches: String): Int? {
+    val ft = feet.trim().toIntOrNull()
+    val inch = inches.trim().toDoubleOrNull()
+    if (ft == null && inch == null) return null
+    return (((ft ?: 0) * 12 + (inch ?: 0.0)) * 2.54).roundToInt().takeIf { it in 1..600 }
+}
+
+/** Centimetres from typed metres ("3.96", or "3,96"), or null when it isn't a height up to 6 m. */
+internal fun heightCmFromMetres(metres: String): Int? =
+    metres.trim().replace(',', '.').toDoubleOrNull()?.let { (it * 100).roundToInt() }?.takeIf { it in 1..600 }
+
+/**
+ * Settings → Vehicle and low bridges (DESIGN.md §6.5; docs/SETTINGS.md): the vehicle height in the user's units
+ * (feet and inches, or metres; Clear sets none, so no bridge alerts), the safety height slider (0 to 1 m), and
+ * **Force re-download low bridges** (whatever the site's version; refused while navigating by `PgwBridgeWorker`).
+ */
+@Composable
+private fun VehicleSection(deps: PhoneDeps, s: AppSettings, set: ((AppSettings) -> AppSettings) -> Unit) {
+    var hasLogin by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { hasLogin = deps.settings.pgwCredentials() != null }
+    val current = s.vehicleHeightCm.takeIf { it > 0 }
+    // The fields start from the saved height and are applied with Save, so half-typed numbers never alert.
+    var feet by remember(current, s.units) { mutableStateOf(current?.let { ((it / 2.54).roundToInt() / 12).toString() } ?: "") }
+    var inches by remember(current, s.units) { mutableStateOf(current?.let { ((it / 2.54).roundToInt() % 12).toString() } ?: "") }
+    var metres by remember(current, s.units) { mutableStateOf(current?.let { "%.2f".format(java.util.Locale.ROOT, it / 100.0) } ?: "") }
+    val typed = if (s.units == Units.METRIC) heightCmFromMetres(metres) else heightCmFromFeet(feet, inches)
+    Text(if (current != null) "Vehicle height: ${heightText(current, s.units)}" else "Vehicle height: not set (no low-bridge alerts)")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (s.units == Units.METRIC) {
+            OutlinedTextField(metres, { metres = it }, label = { Text("Metres") }, singleLine = true, modifier = Modifier.weight(1f),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
+        } else {
+            OutlinedTextField(feet, { feet = it }, label = { Text("Feet") }, singleLine = true, modifier = Modifier.weight(1f),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number))
+            OutlinedTextField(inches, { inches = it }, label = { Text("Inches") }, singleLine = true, modifier = Modifier.weight(1f),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(enabled = typed != null && typed != current, onClick = { typed?.let { cm -> set { it.copy(vehicleHeightCm = cm) } } }) { Text("Save") }
+        OutlinedButton(enabled = current != null, onClick = { set { it.copy(vehicleHeightCm = 0) } }) { Text("Clear") }
+    }
+    Text("Safety height: ${marginText(s.bridgeMarginCm, s.units)}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+    androidx.compose.material3.Slider(
+        value = s.bridgeMarginCm.toFloat(),
+        onValueChange = { v -> set { it.copy(bridgeMarginCm = v.roundToInt()) } },
+        valueRange = BridgeHeight.MARGIN_RANGE_CM.first.toFloat()..BridgeHeight.MARGIN_RANGE_CM.last.toFloat(),
+    )
+    Help("Low bridges alert when they are no higher than your vehicle plus this. 0 to 1 m.")
+    OutlinedButton(enabled = hasLogin, onClick = { deps.scheduler.bridgesNow(force = true) }) { Text("Force re-download low bridges") }
+    Help("Downloads the low bridges again whatever the version. Not while navigating.")
 }
 
 /** What the two set lists keep between frames (DESIGN.md §13 items 3 and 8): the set being edited, the one awaiting delete confirmation, and the result line. */
@@ -1217,6 +1333,8 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             SwitchRow("Announce speed limit changes ahead", s.announceLimitChanges) { v -> set { it.copy(announceLimitChanges = v) } }
             Help("Spoken once per change, from the OpenStreetMap limits on the phone.")
         }
+        // DESIGN.md §6.5; docs/SETTINGS.md §1.2a.
+        Section("Vehicle and low bridges") { VehicleSection(deps, s) { b -> set(b) } }
         // docs/SETTINGS.md §1.3; DESIGN.md §10.6, §10.7.
         Section("Speed and location source") {
             ChoiceChips(listOf(SpeedSource.CAR_WHEN_AVAILABLE to "Car when available", SpeedSource.PHONE_GPS to "Phone only"), s.speedSource) { v ->

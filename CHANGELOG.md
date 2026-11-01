@@ -4,6 +4,7 @@ What changed for the person using the app, by day. Each entry names the DESIGN.m
 
 ## 2026-11-01 — version 0.1.0-2026-11-01
 
+- **Low bridges**: a new **Bridges** tab downloads PocketGPSWorld's low bridges with your camera login, one set per signed height. Set your **Vehicle height** and a **Safety height** (0 to 1 m) in Settings → Vehicle and low bridges: a bridge no higher than your vehicle plus the safety height alerts like a camera, in three stages; the others show on the map only. Download only when you press the button; **Force re-download low bridges** is in Settings (DESIGN §6.5).
 - **The camera alert comes in time to hear it**: the final "camera now" alert comes 3 seconds before the camera at your speed, never less than 50 yards (it was 1 second, never less than 20 yards). At motorway speed the old alert was still talking as you passed the camera. The 1st and 2nd alerts are now counted out from it, so at 70 mph with the default 15 seconds they come at about 563 m and 329 m (they were 469 m and 235 m). Average-speed zones still start and end at their cameras (DESIGN §11.1).
 - **Easier buttons on the car map**: Satellite, + / − and recenter now react to a tap anywhere on the button, on its edge or just beside it, not only near the middle. A tap between two buttons goes to the nearer one (DESIGN §8).
 - **Zoom in half a step further**: + now goes to zoom 17.5 (it stopped at 17). Google's road map still draws traffic there; from 18 it doesn't, so the map stops at 17.5. It still starts at 17, and − from 17.5 goes back to 17 (DESIGN §8).

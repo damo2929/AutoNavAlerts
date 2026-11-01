@@ -427,6 +427,15 @@ Before testing, allow the **microphone** in the phone's Settings tab (Permission
 | P5 | Start a drive, then **Force re-download** | The sync waits until guidance ends and then completes |
 | P6 | **Forget login**, then Sync | The buttons are disabled |
 
+### 6.8a Low bridges (phone, then the car)
+| # | Test | Expected |
+|---|---|---|
+| LB1 | Bridges tab → **Download low bridges** (PGW login saved, not navigating) | "Updated to Low Bridges {…}: Imported N low bridges in 47 sets"; the sets listed lowest first, Unknown Height last. `logcat -s PgwClient PgwImport`: the POI page's file count and the zip's entry names only (§6.4) |
+| LB2 | Press it again | "Already up to date (Low Bridges {…})"; Settings → **Force re-download low bridges** downloads again |
+| LB3 | Start guidance, then press Download | "Not while navigating …"; nothing changes |
+| LB4 | Settings → Vehicle height 13 ft, safety 8 cm | Bridges tab: the heights up to 13ft 3in alert; drive at a 13ft bridge: three stages spoken as for a camera; at a 14ft bridge: marker only, nothing spoken (`alert-debug` `cache … alertable=`) |
+| LB5 | Clear the vehicle height | No bridge alerts; markers still drawn |
+
 ### 6.9 Navigation from other apps
 | # | Steps | Expected |
 |---|---|---|

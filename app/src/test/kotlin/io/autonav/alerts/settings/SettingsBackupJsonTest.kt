@@ -36,15 +36,16 @@ class SettingsBackupJsonTest {
         announceLimitChanges = false, pgwAutoSync = false, pgwWifiOnly = true, speedPanelOn = false, satelliteMap = true,
         evEfficientRoutes = true, avoidTolls = false, osmLimitsOn = false, osmWifiOnly = false, mutedUntilMs = 123_456_789L,
         simulationSpeed = 4f, speedSource = SpeedSource.PHONE_GPS, pgwDownload = PgwDownload.IGO, driveRecordingOn = true,
-        cameraIcons = CameraIconStyle.DOWNLOAD,
+        cameraIcons = CameraIconStyle.DOWNLOAD, vehicleHeightCm = 396, bridgeMarginCm = 30,
     )
 
-    /** The 17 backed-up fields by JSON name (cameraIcons added 2026-10-25, DESIGN.md §7.1); mute, the simulator speed and drive recording are left out (§13.4 "Not included"). */
+    /** The 19 backed-up fields by JSON name (cameraIcons added 2026-10-25, DESIGN.md §7.1; the vehicle and bridge safety heights 2026-11-01, §6.5); mute, the simulator speed and drive recording are left out (§13.4 "Not included"). */
     private val settingsLiteral = mapOf(
         "units" to "METRIC", "voiceOn" to false, "chimeOn" to false, "overspeedPct" to 0.123, "alertLeadSeconds" to 42,
         "announceLimitChanges" to false, "speedSource" to "PHONE_GPS", "speedPanelOn" to false, "satelliteMap" to true,
         "evEfficientRoutes" to true, "avoidTolls" to false, "osmLimitsOn" to false, "osmWifiOnly" to false,
         "pgwAutoSync" to false, "pgwWifiOnly" to true, "pgwDownload" to "IGO", "cameraIcons" to "DOWNLOAD",
+        "vehicleHeightCm" to 396, "bridgeMarginCm" to 30,
     )
 
     @Test fun settingsJsonIsTheFormat1Layout() {
@@ -79,6 +80,7 @@ class SettingsBackupJsonTest {
             "satellite_map" to true, "osm_limits" to false, "osm_wifi_only" to false, "ev_efficient_routes" to true,
             "avoid_tolls" to false, "muted_until" to 123_456_789L, "speed_source" to "PHONE_GPS", "pgw_download" to "IGO",
             "sim_speed" to 4f, "drive_recording" to true, "camera_icons" to "DOWNLOAD",
+            "vehicle_height_cm" to 396, "bridge_margin_cm" to 30,
         )
         assertEquals(expected, p.asMap().mapKeys { it.key.name })
         assertEquals(all, SettingsCodec.read(p))
@@ -103,17 +105,19 @@ class SettingsBackupJsonTest {
         val full = PgwState(
             installedVersion = "24.101", installedPackage = 288, installedLayout = 3, latestVersion = "24.102", latestSummary = "New mobiles",
             pendingVersion = "24.102", lastFeedCheckMs = 1_000L, lastSyncMs = 2_000L, lastResult = "Updated", feedEtag = "W/\"x\"", feedLastModified = "Mon",
+            bridgeInstalled = "Low Bridges {2026-11-01 : 30}", bridgeSite = "Low Bridges {2026-11-01 : 30}", bridgeLastMs = 3_000L, bridgeResult = "Updated",
         )
         val p = mutablePreferencesOf()
         SettingsCodec.writePgw(p, full)
         assertEquals(
             setOf("pgw_installed", "pgw_installed_package", "pgw_installed_layout", "pgw_latest", "pgw_latest_summary", "pgw_pending",
-                "pgw_feed_check", "pgw_last_sync", "pgw_result", "pgw_etag", "pgw_last_modified"),
+                "pgw_feed_check", "pgw_last_sync", "pgw_result", "pgw_etag", "pgw_last_modified",
+                "bridge_installed", "bridge_site", "bridge_last", "bridge_result"),
             p.asMap().keys.map { it.name }.toSet(),
         )
         assertEquals(full, SettingsCodec.readPgw(p))
         SettingsCodec.writePgw(p, PgwState())
-        assertEquals(setOf("pgw_feed_check", "pgw_last_sync"), p.asMap().keys.map { it.name }.toSet())
+        assertEquals(setOf("pgw_feed_check", "pgw_last_sync", "bridge_last"), p.asMap().keys.map { it.name }.toSet())
         assertEquals(PgwState(), SettingsCodec.readPgw(p))
         assertEquals(PgwState(), SettingsCodec.readPgw(mutablePreferencesOf()))
     }

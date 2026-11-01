@@ -162,6 +162,42 @@ class PgwClient internal constructor(
         dest
     }
 
+    /** What a low-bridge download found: the site's [version] label, and the zip in [file] unless it was already installed. */
+    data class BridgeDownload(val version: String, val file: File?)
+
+    /**
+     * The low bridges from the POI database (DESIGN.md §6.5): the POI page is read (logged in) for the member's form
+     * fields and the Low Bridges branch; when its version label equals [installed] and not [force], nothing more is
+     * fetched. Otherwise the form is posted for TomTom OV2, one file per height, with the link page, and the temp zip
+     * is streamed to [dest]. Throws [PgwAuthException] when logged out, [PgwSubscriptionException] when the page
+     * offers no low bridges or no link while logged in (they are Premium), [PgwParseException] for a bad reply.
+     */
+    suspend fun downloadBridges(dest: File, installed: String?, force: Boolean): BridgeDownload = withContext(Dispatchers.IO) {
+        ensureLoggedIn()
+        val page = get(base + PgwConfig.POIS_PATH)
+        val sel = PgwPages.lowBridges(page)
+            ?: if (PgwPages.loginState(page) == PgwPages.LoginState.LOGGED_IN) throw PgwSubscriptionException("No low bridges offered: is your subscription active?")
+            else throw PgwAuthException("Logged out while reading the POI page")
+        Log.i(TAG, "POI page: ${sel.labels.size} low-bridge files, version ${sel.version}")
+        if (!force && sel.version == installed) return@withContext BridgeDownload(sel.version, null)
+        val html = post(base + PgwConfig.POIS_DOWNLOAD_PATH, formBody(PgwConfig.bridgeDownloadForm(sel))).use { it.body.string() }
+        val link = PgwPages.findPoiZipLink(html)?.replaceFirst(PgwConfig.BASE, base)
+            ?: if (PgwPages.loginState(html) == PgwPages.LoginState.LOGGED_IN) throw PgwSubscriptionException("No low-bridge download link: is your subscription active?")
+            else throw PgwAuthException("Logged out while downloading")
+        http.newCall(Request.Builder().url(link).build()).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("Download HTTP ${resp.code}")
+            val type = resp.header("Content-Type").orEmpty()
+            Log.i(TAG, "Bridge zip response: HTTP ${resp.code}, type=$type, length=${resp.header("Content-Length")}")
+            if (!type.contains("zip")) throw PgwParseException("Download wasn't a zip ($type)")
+            dest.parentFile?.mkdirs()
+            // Streamed straight to disk: the zip is never held in memory (§1.3).
+            dest.outputStream().use { out -> resp.body.byteStream().copyTo(out) }
+        }
+        // A real download is tens of KB (47 small OV2 files and icons); a tiny file is an error page.
+        if (dest.length() < 2_000) throw PgwParseException("Download too small (${dest.length()} bytes)")
+        BridgeDownload(sel.version, dest)
+    }
+
     /**
      * Sends one camera report through PGW's "Send Entry" form (DESIGN.md §8.5 `PgwReportSubmitter`). Only ever
      * reached from `ReportSubmitWorker`, which the phone's Send button queues and which refuses to run while
