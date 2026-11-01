@@ -118,26 +118,34 @@ object PgwPages {
 
     /**
      * The low bridges on the POI page (DESIGN.md §6.5 step 1), or null when the page has no download form or no Low
-     * Bridges category (logged out, or the site changed). The form's tree checkboxes come in page order, each named
-     * by its label; a category's label ends `{date : count}`, a subcategory's `(date : count)`, so the branch is
-     * every checkbox after "Low Bridges {" up to the next category. Country boxes are named `C_<country>`.
+     * Bridges category (logged out, or the site changed). The member's `uid` and the ticked country boxes are plain
+     * inputs of the form `fDownload1`; the category tree is **built by script** (the page's BlueShoes `Bs_Tree`,
+     * `myTree.initByArray(a)`): `a[n]['caption'] = "Low Bridges {date : count}";` and each height
+     * `a[n]['children'][k]['caption'] = "Bridge - 13ft 6in (date : count)  <font …>Premium</font>";`. The widget names
+     * each checkbox after its caption, so those captions are the field names sent back (checked on the live page,
+     * 2026-11-01: the raw HTML has no `<input>` for them, which the first parser expected).
      */
     fun lowBridges(html: String): BridgeSelection? {
         val form = Jsoup.parse(html).select("form").firstOrNull { it.attr("name") == "fDownload1" } ?: return null
         val uid = form.select("input[name=uid]").firstOrNull()?.attr("value")?.takeIf { it.isNotBlank() } ?: return null
-        val boxes = form.select("input[type=checkbox]").map { it.attr("name") to it.hasAttr("checked") }
-        val countries = boxes.filter { (n, ticked) -> n.startsWith("C_") && ticked }
-            .map { (n, _) -> n to form.select("input").first { it.attr("name") == n }.attr("value") }
-        val tree = boxes.map { it.first }.filter { it.isNotBlank() && !it.startsWith("C_") }
-        val start = tree.indexOfFirst { it.startsWith(LOW_BRIDGES) }
-        if (start < 0) return null
-        val labels = tree.drop(start + 1).takeWhile { !CATEGORY_LABEL.containsMatchIn(it) }
-        return BridgeSelection(uid, countries, tree[start], labels).takeIf { labels.isNotEmpty() }
+        val countries = form.select("input[type=checkbox]")
+            .filter { it.attr("name").startsWith("C_") && it.hasAttr("checked") }
+            .map { it.attr("name") to it.attr("value") }
+        val category = TREE_CATEGORY.findAll(html).firstOrNull { it.groupValues[2].startsWith(LOW_BRIDGES) } ?: return null
+        val index = category.groupValues[1]
+        val labels = TREE_CHILD.findAll(html).filter { it.groupValues[1] == index }
+            .sortedBy { it.groupValues[2].toInt() }.map { unescapeJs(it.groupValues[3]) }.toList()
+        return BridgeSelection(uid, countries, unescapeJs(category.groupValues[2]), labels).takeIf { labels.isNotEmpty() }
     }
 
     private const val LOW_BRIDGES = "Low Bridges {"
-    /** A category's label ends with "{yyyy-mm-dd : n}"; a subcategory's uses round brackets. */
-    private val CATEGORY_LABEL = Regex("""\{\d{4}-\d{2}-\d{2} : \d+}""")
+    /** `a[24]['caption'] = "…";` in the page's tree script: the category index and its caption. */
+    private val TREE_CATEGORY = Regex("""\ba\[(\d+)\]\['caption'\]\s*=\s*"((?:[^"\\]|\\.)*)"""")
+    /** `a[24]['children'][3]['caption'] = "…";`: the category index, the child's position and its caption. */
+    private val TREE_CHILD = Regex("""\ba\[(\d+)\]\['children'\]\[(\d+)\]\['caption'\]\s*=\s*"((?:[^"\\]|\\.)*)"""")
+
+    /** A JavaScript string literal's content as the browser sees it: `\"` and `\\` (none seen on 2026-11-01, kept safe). */
+    private fun unescapeJs(s: String): String = s.replace("\\\"", "\"").replace("\\\\", "\\")
 
     /** Per-user hidden fields of the submission form (never logged or stored). */
     fun submitHiddenFields(html: String): Map<String, String> {

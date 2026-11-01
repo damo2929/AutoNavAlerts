@@ -13,26 +13,48 @@ import org.junit.Test
  * The member number and every label here are invented; no PocketGPSWorld data (hard rule 6).
  */
 class PgwPoiPageTest {
+    /**
+     * The POI page as the site sends it (checked 2026-11-01): the form with the member's `uid` and the country boxes as
+     * plain inputs, and the category tree as a script for the page's `Bs_Tree` (no `<input>` for the categories).
+     */
     private fun page(withBridges: Boolean = true, uid: String = "12345") = """
         <html><body><a href="modules.php?name=Your_Account&amp;op=logout">Logout</a>
         <form name="fDownload1" method="post" action="modules.php?name=POIs&amp;Download">
-          <input type="hidden" name="uid" value="$uid">
-          <input type="checkbox" name="C_France" value="France">
-          <input type="checkbox" name="C_United_Kingdom" value="United Kingdom" checked>
+          <input name="uid" type="hidden" id="uid" value="$uid">
+          <label><input name='C_France' type='checkbox' value='France'>France</label>
+          <label><input name='C_United_Kingdom'  type='checkbox' value='United Kingdom' checked>United Kingdom</label>
           <select name="System"><option>TomTom (OV2)</option></select>
-          <input type="checkbox" name="Holiday Park {2019-01-20 : 181}" value="0">
-          <input type="checkbox" name="Caravan &amp; Camping (2019-01-20 : 12) " value="0">
-          ${if (withBridges) """
-          <input type="checkbox" name="Low Bridges {2026-11-01 : 30}" value="0">
-          <input type="checkbox" name="Bridge - 10ft (2025-07-22 : 5)  <font color=red>Premium</font>" value="0">
-          <input type="checkbox" name="Bridge - 13ft 6in (2026-02-07 : 20)  <font color=red>Premium</font>" value="0">
-          <input type="checkbox" name="Unknown Height (2023-11-28 : 5)  <font color=red>Premium</font>" value="0">
-          """ else ""}
-          <input type="checkbox" name="Motorcycle Dealership {2023-09-08 : 280}" value="0">
-          <input type="checkbox" name="Ducati (2023-09-08 : 9) " value="0">
+          <div id="treeDiv1"></div>
           <input type="radio" name="FileType" value="Separate" checked><input type="radio" name="FileType" value="Combined">
           <input type="checkbox" name="Link" value="Link">
-        </form></body></html>
+        </form>
+        <script>
+         var a = new Array;
+         a[0] = new Array;
+         a[0]['caption'] = "Holiday Park {2019-01-20 : 181}";
+         a[0]['children'] = new Array;
+         a[0]['children'][0] = new Array;
+         a[0]['children'][0]['caption'] = "Caravan & Camping (2019-01-20 : 12) ";
+         ${if (withBridges) """
+         a[1] = new Array;
+         a[1]['caption'] = "Low Bridges {2026-11-01 : 30}";
+         a[1]['children'] = new Array;
+         a[1]['children'][0] = new Array;
+         a[1]['children'][0]['caption'] = "Bridge - 10ft (2025-07-22 : 5)  <font color=red>Premium</font>";
+         a[1]['children'][1] = new Array;
+         a[1]['children'][1]['caption'] = "Bridge - 13ft 6in (2026-02-07 : 20)  <font color=red>Premium</font>";
+         a[1]['children'][2] = new Array;
+         a[1]['children'][2]['caption'] = "Unknown Height (2023-11-28 : 5)  <font color=red>Premium</font>";
+         """ else ""}
+         a[2] = new Array;
+         a[2]['caption'] = "Motorcycle Dealership {2023-09-08 : 280}";
+         a[2]['children'] = new Array;
+         a[2]['children'][0] = new Array;
+         a[2]['children'][0]['caption'] = "Ducati (2023-09-08 : 9) ";
+         myTree = new Bs_Tree();
+         myTree.initByArray(a);
+         myTree.drawInto('treeDiv1');
+        </script></body></html>
     """.trimIndent()
 
     @Test
@@ -63,6 +85,7 @@ class PgwPoiPageTest {
         // Only the branch: the neighbouring categories are never sent.
         assertNull(form.toMap()["Motorcycle Dealership {2023-09-08 : 280}"])
         assertNull(form.toMap()["Caravan & Camping (2019-01-20 : 12) "])
+        assertNull(form.toMap()["Ducati (2023-09-08 : 9) "])
     }
 
     @Test
@@ -81,5 +104,19 @@ class PgwPoiPageTest {
             PgwPages.findPoiZipLink("""<a href="https://www.pocketgpsworld.com/temp/users/12345_POIs.zip">x</a>"""),
         )
         assertNull(PgwPages.findPoiZipLink("<p>Error in selection criteria</p>"))
+    }
+
+    @Test
+    fun noBareClosingBraceInThePagePatternsForAndroidsRegexEngine() {
+        // ICU (Android) rejects an unescaped "}" outside a quantifier; the JVM doesn't, so a JVM test alone missed it
+        // and the camera sync failed on the phone with NoClassDefFoundError: PgwPages (2026-11-01).
+        val src = java.io.File("src/main/kotlin/io/autonav/alerts/core/pgw/PgwPages.kt").readText()
+        val patterns = Regex("Regex\\(\"\"\"(.*?)\"\"\"").findAll(src).map { it.groupValues[1] }.toList()
+        assert(patterns.isNotEmpty())
+        for (p in patterns) {
+            // Drop escaped braces and {n} / {n,m} quantifiers; any "}" left is bare.
+            val rest = p.replace("\\}", "").replace("\\{", "").replace(Regex("\\{\\d+(,\\d*)?\\}"), "")
+            assertEquals("bare } in $p", -1, rest.indexOf('}'))
+        }
     }
 }
