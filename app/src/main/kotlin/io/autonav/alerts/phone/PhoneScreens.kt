@@ -669,6 +669,8 @@ private fun VehicleSection(deps: PhoneDeps, s: AppSettings, set: ((AppSettings) 
     var inches by remember(current, s.units) { mutableStateOf(current?.let { ((it / 2.54).roundToInt() % 12).toString() } ?: "") }
     var metres by remember(current, s.units) { mutableStateOf(current?.let { "%.2f".format(java.util.Locale.ROOT, it / 100.0) } ?: "") }
     val typed = if (s.units == Units.METRIC) heightCmFromMetres(metres) else heightCmFromFeet(feet, inches)
+    // What the last Save or Clear did, so a press always shows its result (owner, 2026-11-01: "why can't I save the height?").
+    var saved by remember { mutableStateOf<String?>(null) }
     Text(if (current != null) "Vehicle height: ${heightText(current, s.units)}" else "Vehicle height: not set (no low-bridge alerts)")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (s.units == Units.METRIC) {
@@ -682,8 +684,14 @@ private fun VehicleSection(deps: PhoneDeps, s: AppSettings, set: ((AppSettings) 
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(enabled = typed != null && typed != current, onClick = { typed?.let { cm -> set { it.copy(vehicleHeightCm = cm) } } }) { Text("Save") }
-        OutlinedButton(enabled = current != null, onClick = { set { it.copy(vehicleHeightCm = 0) } }) { Text("Clear") }
+        Button(enabled = typed != null, onClick = {
+            typed?.let { cm -> set { it.copy(vehicleHeightCm = cm) }; saved = "Saved: ${heightText(cm, s.units)}" }
+        }) { Text("Save") }
+        OutlinedButton(enabled = current != null, onClick = { set { it.copy(vehicleHeightCm = 0) }; saved = "Cleared: no low-bridge alerts" }) { Text("Clear") }
+    }
+    when {
+        saved != null -> Ok(saved!!)
+        typed == null && (feet.isNotBlank() || inches.isNotBlank() || metres.isNotBlank()) -> Help("Type a height up to 6 m (19ft 8in).", color = MaterialTheme.colorScheme.error)
     }
     Text("Safety height: ${marginText(s.bridgeMarginCm, s.units)}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
     androidx.compose.material3.Slider(
