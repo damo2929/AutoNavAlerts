@@ -470,8 +470,8 @@ class MapSurface(
      * The follow watchdog (DESIGN.md §8), fed the SDK's own road-snapped position by `NavSession`
      * (never our fix, which may be the car's GPS while the SDK map follows the phone's). Core
      * [FollowWatchdog] decides: nothing while panned or on the route preview, or on an SDK fix
-     * older than 10 s; the car counts as followed when it is drawn inside the padded map at the
-     * locked zoom ([carInPlace], free drive and guidance alike); the 500 m camera-target test is
+     * older than 10 s; the car counts as followed when it is drawn near its spot at the locked zoom
+     * ([carInPlace], free drive and guidance alike; owner, 2026-11-01); the 500 m camera-target test is
      * only the fallback before the map has a frame, and never in guidance. On a miss, follow
      * again at the chosen zoom; a rebuild only after three misses 5 s apart. Also keeps Google
      * traffic on (§8, always on). Every decision goes to `debug-nav`; skips only when their
@@ -489,7 +489,7 @@ class MapSurface(
         val target = m.cameraPosition.target
         val d = FloatArray(1)
         Location.distanceBetween(target.latitude, target.longitude, loc.latitude, loc.longitude, d)
-        // In guidance: is the car drawn inside the padded map at the locked zoom (DESIGN.md §8 "Follow watchdog")?
+        // Is the car drawn near its spot at the locked zoom (DESIGN.md §8 "Follow watchdog", 2026-11-01)?
         val inPlace = carInPlace(m, loc)
         when (val r = watchdog.check(now, following, guidingProvider(), previewShowing, ageMs, d[0], inPlace)) {
             is FollowWatchdog.Decision.None ->
@@ -508,17 +508,18 @@ class MapSurface(
     }
 
     /**
-     * Whether the car is in place: the SDK's position projects inside the padded map area (a margin of a
-     * tenth of the surface each way) and the camera is at the locked zoom; null before the map has a
-     * frame. Same for both map types (DESIGN.md §8 "One view with and without a route").
+     * Whether the car is in place: the SDK's position projects within a tenth of the surface each way of
+     * the car's spot ([FollowWatchdog.carSpot] from the padding last set; owner, 2026-11-01: on screen
+     * alone let a frozen camera go unnoticed until the car drove off the top) and the camera is at the
+     * locked zoom; null before the map has a frame. Same for both map types (DESIGN.md §8 "One view with
+     * and without a route").
      */
     private fun carInPlace(m: GoogleMap, loc: Location): Boolean? {
         val pad = lastPadding ?: return null
         val (w, h) = surfaceSize ?: return null
         val p = runCatching { m.projection.toScreenLocation(LatLng(loc.latitude, loc.longitude)) }.getOrNull() ?: return null
-        val mx = w / 10; val my = h / 10
-        val onScreen = p.x >= pad[0] - mx && p.x <= w - pad[2] + mx && p.y >= pad[1] - my && p.y <= h - pad[3] + my
-        return onScreen && abs(m.cameraPosition.zoom - followZoom) <= ZOOM_TOLERANCE
+        val spot = FollowWatchdog.carSpot(w, h, pad[0], pad[1], pad[2], pad[3], guidingProvider(), GUIDED_CAR_FRACTION)
+        return FollowWatchdog.nearSpot(p.x.toFloat(), p.y.toFloat(), spot, w, h) && abs(m.cameraPosition.zoom - followZoom) <= ZOOM_TOLERANCE
     }
 
     /** The padding [applyPadding] last set, as l, t, r, b in pixels, for [carInPlace]. */
@@ -580,10 +581,11 @@ class MapSurface(
     /** True for the SDK child that holds the map's GL view (never hidden). */
     private fun holdsMap(v: View): Boolean = v.firstDescendant { it is android.opengl.GLSurfaceView || it is android.view.TextureView } != null
 
-    /** Re-applies the SDK-controls-off calls (when guidance starts or stops, from [NavSession]). */
+    /** Re-applies the SDK-controls-off calls and the view (guidance starts or stops, or a new route while guiding; from [NavSession]). */
     fun refreshSdkControls(reason: String) {
-        // Guidance started or stopped: the car keeps its place (free drive pads differently, DESIGN.md §8),
-        // and the view stays put: the SDK moves its camera a moment after stopGuidance returns, so settle.
+        // Guidance started or stopped, or a new route while guiding: the car keeps its place (free drive pads
+        // differently, DESIGN.md §8), and the view stays put: the SDK moves its camera a moment after
+        // stopGuidance returns or a route is set, so settle (a route set over running guidance, bench 2026-11-01).
         applyView(reason, settle = true)
         val view = navView ?: return
         main.post { disableSdkControls(view, reason) }

@@ -3,6 +3,8 @@
 
 package io.autonav.alerts.core.nav
 
+import kotlin.math.abs
+
 /**
  * Decides when the map has stopped following the car (DESIGN.md §8, "Follow watchdog"). Pure, with
  * only the miss counter as state: `MapSurface` calls [check] on the main thread for each of the
@@ -12,7 +14,8 @@ package io.autonav.alerts.core.nav
  * moves the camera away, §16 row 22). In free drive and in guidance alike (guidance added
  * 2026-10-24), on the first miss it re-follows; a rebuild comes only after [missesBeforeRebuild]
  * consecutive misses at least [intervalMs] apart, and the count resets as soon as the car is back
- * in place (or, with no frame, within [thresholdM]). Metres and milliseconds.
+ * in place (or, with no frame, within [thresholdM]). Metres and milliseconds. "In place" is the car
+ * drawn near its designed spot ([carSpot], [nearSpot]; owner, 2026-11-01), not merely on screen.
  */
 class FollowWatchdog(
     // 500 m camera-target test, free drive only and only before the map has a frame; 5 s between
@@ -41,7 +44,7 @@ class FollowWatchdog(
      * @param previewShowing the route preview is up: never act.
      * @param sdkFixAgeMs age of the SDK's last road-snapped fix, null if none yet.
      * @param distanceM camera target to the SDK fix, metres; the fallback test only.
-     * @param inPlace the car projects inside the padded map at the locked zoom (`MapSurface.carInPlace`),
+     * @param inPlace the car projects near its spot ([nearSpot]) at the locked zoom (`MapSurface.carInPlace`),
      *   null before the map has a frame.
      */
     fun check(
@@ -79,5 +82,27 @@ class FollowWatchdog(
     private fun skip(reason: String): Decision {
         misses = 0
         return Decision.None(reason)
+    }
+
+    companion object {
+        /**
+         * Where a followed car is drawn, as surface pixels x to y (DESIGN.md §8 "Where the car sits"): across
+         * the middle of the padded map, and down it at [guidedFraction] of the padded height in guidance (the
+         * SDK puts it there) or at the padded centre in free drive (whose top padding is raised so the two
+         * meet). [left], [top], [right] and [bottom] are the camera padding the map was given.
+         */
+        fun carSpot(w: Int, h: Int, left: Int, top: Int, right: Int, bottom: Int, guiding: Boolean, guidedFraction: Float): Pair<Float, Float> {
+            val x = (left + (w - right)) / 2f
+            val y = if (guiding) top + guidedFraction * (h - bottom - top) else (top + (h - bottom)) / 2f
+            return x to y
+        }
+
+        /**
+         * Whether the car drawn at [x], [y] is in its place: within a tenth of the surface's width and a tenth
+         * of its height of the spot ([carSpot]; owner, 2026-11-01). A frozen camera lets the car drift that far
+         * in a few seconds at road speed, long before it leaves the screen.
+         */
+        fun nearSpot(x: Float, y: Float, spot: Pair<Float, Float>, w: Int, h: Int): Boolean =
+            abs(x - spot.first) <= w / 10f && abs(y - spot.second) <= h / 10f
     }
 }

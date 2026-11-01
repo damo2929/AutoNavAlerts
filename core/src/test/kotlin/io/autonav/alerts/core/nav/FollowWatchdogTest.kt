@@ -5,6 +5,7 @@ package io.autonav.alerts.core.nav
 
 import io.autonav.alerts.core.nav.FollowWatchdog.Decision
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -92,5 +93,32 @@ class FollowWatchdogTest {
         assertEquals(Decision.None("within 500 m"), w.at(4_000, 30f))
         assertEquals(0, w.misses)
         assertTrue(w.at(5_000, 20f) is Decision.None)
+    }
+
+    @Test
+    fun carSpotIsTheSameInFreeDriveAndGuidance() {
+        // The DHU's 1816×1056 surface (bench, 2026-11-01): guidance pads 12,88,12,120; free drive raises the top to 795.
+        val guided = FollowWatchdog.carSpot(1816, 1056, 12, 88, 12, 120, guiding = true, guidedFraction = 0.917f)
+        val free = FollowWatchdog.carSpot(1816, 1056, 12, 795, 12, 120, guiding = false, guidedFraction = 0.917f)
+        assertEquals(908f, guided.first, 0.5f)
+        assertEquals(865.6f, guided.second, 0.5f)
+        assertEquals(guided.first, free.first, 0.5f)
+        assertEquals(guided.second, free.second, 1f)
+        // Beside the host's media panel the map is x 12–1180: the spot moves to that panel's middle.
+        assertEquals(596f, FollowWatchdog.carSpot(1816, 1056, 12, 88, 636, 120, guiding = true, guidedFraction = 0.917f).first, 0.5f)
+    }
+
+    @Test
+    fun aFrozenCameraIsCaughtLongBeforeTheCarLeavesTheScreen() {
+        val spot = FollowWatchdog.carSpot(1816, 1056, 12, 88, 12, 120, guiding = true, guidedFraction = 0.917f)
+        // Drawn where guidance put it on the bench (876 on screen, 864 on the surface): in place.
+        assertTrue(FollowWatchdog.nearSpot(908f, 864f, spot, 1816, 1056))
+        // Within a tenth of the surface each way is still in place (a turn, a roundabout).
+        assertTrue(FollowWatchdog.nearSpot(908f + 180f, 865f - 100f, spot, 1816, 1056))
+        // The frozen map of 2026-11-01: the car drawn at 297, then 216, still on screen but not in its place.
+        assertFalse(FollowWatchdog.nearSpot(1007f, 297f, spot, 1816, 1056))
+        assertFalse(FollowWatchdog.nearSpot(959f, 216f, spot, 1816, 1056))
+        // Off to one side counts too.
+        assertFalse(FollowWatchdog.nearSpot(908f + 200f, 865f, spot, 1816, 1056))
     }
 }

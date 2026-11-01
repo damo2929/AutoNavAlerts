@@ -239,6 +239,9 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
             delay(2_000)
             surface.refreshSdkControls("guiding=$g +2s")
         }.launchIn(lifecycleScope)
+        // A new route while guiding leaves the guiding flag as it was, so nothing above runs; the SDK may drop
+        // its camera then (bench 2026-11-01), so the view is put back the same way (DESIGN.md §8 "Follow watchdog").
+        deps.guidance().routeChanges.onEach { if (deps.guidance().guiding.value) surface.refreshSdkControls("route") }.launchIn(lifecycleScope)
         // Every fix: redraw markers (DESIGN.md §8.1) and update the speed panel (§8.4).
         // The same fix the engine used feeds the panel, so the dial and the engine can't diverge (§8.4).
         deps.alerts().markers.onEach { m ->

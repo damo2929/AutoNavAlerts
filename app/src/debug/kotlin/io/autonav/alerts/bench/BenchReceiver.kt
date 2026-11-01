@@ -63,7 +63,8 @@ import java.util.Random
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es banner "'Speed camera'"  # a test alert banner for 8 s
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez ev true --ez tolls true  # route options
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez diag true  # last 100 lines of each debug log to logcat
- *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez go true    # Go on the route preview that's showing
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez go true    # Go on the route preview that's showing, once its route is there
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez route true   # the SDK's current route to files/bench/route.csv (drive.py --route app)
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez engine true  # the alert engine's snapshot to alert-debug and logcat
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es import f.gpx  # import files/bench/f.gpx as a set (see the import branch)
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez follow false  # stop the map following (true: like recenter)
@@ -126,6 +127,14 @@ class BenchReceiver : BroadcastReceiver() {
                 App.appScope.launch(Dispatchers.IO) { Log.i(TAG, "OSM $osm: ${repo.stats()}") }
             }
             import != null -> import(context, deps, intent, import)
+            intent.getBooleanExtra("route", false) -> {
+                // The SDK's current route for tools/drive.py --route (DESIGN.md §15, 2026-11-01), so the bench drive
+                // follows the route the app guides on. files/bench/route.csv, "lat,lon" per point; empty with no route.
+                val pts = deps.guidance().routePointsNow()
+                val out = File(context.filesDir, "bench/route.csv").apply { parentFile?.mkdirs() }
+                out.writeText(pts.joinToString("") { "%.6f,%.6f\n".format(java.util.Locale.ROOT, it.latitude, it.longitude) })
+                Log.i(TAG, "Route: ${pts.size} points to ${out.path}")
+            }
             intent.getBooleanExtra("engine", false) -> {
                 // The alert engine's snapshot (DESIGN.md §15.5): the same text as Settings → Diagnostics → Engine now,
                 // to alert-debug and logcat. Needs no car session.
@@ -156,8 +165,9 @@ class BenchReceiver : BroadcastReceiver() {
                 if (preview == null) {
                     Log.w(TAG, "No route preview showing (guiding=${deps.guidance().guiding.value}, dest=${deps.guidance().destination.value?.title})")
                 } else {
-                    Log.i(TAG, "Go on the preview for ${deps.guidance().destination.value?.title}")
-                    preview.go()
+                    val title = deps.guidance().destination.value?.title
+                    if (preview.go()) Log.i(TAG, "Go on the preview for $title")
+                    else Log.w(TAG, "Go not pressed: the route to $title is still loading or wasn't found; ask again once routeStatus=OK")
                 }
             }
             // Makes the route preview show two rows for one route, to check the layout of the EV choice (DESIGN.md §8.3a).

@@ -10,6 +10,12 @@ default is a ~20 km loop around central London. Runs until stopped (Ctrl+C), loo
   tools/drive.py --mph 40 --once
   tools/drive.py --via "-0.1281,51.5080;-0.0754,51.5055"   # your own lon,lat waypoints
   tools/drive.py --via "…" --limits    # follow the posted limits: under, at and over them in turn
+  tools/drive.py --route app --limits --once   # drive the route the app is guiding on (debug build, DHU up)
+
+--route app asks the debug app for the Navigation SDK's current route (the bench hook --ez route true
+writes files/bench/route.csv) and drives that instead of an OSRM route, so the drive never leaves the
+guided route: OSRM and Google pick different roads between the same two points. --route FILE drives a
+saved copy ("lat,lon" per line). Keep exported routes out of the repo.
 
 With --limits the speed limit of each road comes from OpenStreetMap (maxspeed, via Overpass) and the
 car takes turns driving under it, at it and over it, changing every --stint metres. Roads with no
@@ -45,6 +51,30 @@ LONDON = ("-0.1281,51.5080;-0.0754,51.5055;-0.0803,51.5155;-0.1236,51.5308;"  # 
 
 RECORD_COLUMNS = ("t_ms,kind,src,used,lat,lon,acc_m,spd_mps,brg_deg,has_brg,alt_m,fix_t_ms,"
                   "eng_spd_mps,eng_hdg_deg,hdg_src,car_raw_mps,car_disp_mps").split(",")
+
+
+def app_route(adb, serial, spec):
+    """The route as [lon, lat] points: the app's own (spec "app", via the debug bench hook) or a saved "lat,lon" file."""
+    if spec == "app":
+        pkg = "uk.damiendye.autonav"
+        subprocess.run([adb, "-s", serial, "shell", "am", "broadcast", "-a", "io.autonav.alerts.BENCH", "-p", pkg,
+                        "--ez", "route", "true"], check=True, capture_output=True)
+        time.sleep(1)
+        text = subprocess.run([adb, "-s", serial, "exec-out", "run-as", pkg, "cat", "files/bench/route.csv"],
+                              check=True, capture_output=True, text=True).stdout
+    else:
+        with open(spec) as f:
+            text = f.read()
+    coords = []
+    for line in text.splitlines():
+        parts = line.strip().split(",")
+        try:
+            coords.append([float(parts[1]), float(parts[0])])
+        except (IndexError, ValueError):
+            continue  # a header or a blank line
+    if len(coords) < 2:
+        sys.exit(f"No route in {spec}: set a route in the app first (route preview or guidance)")
+    return coords
 
 
 def route(via):
@@ -395,6 +425,7 @@ def wait_until(deadline, car):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--via", default=LONDON, help="lon,lat;lon,lat;… waypoints")
+    ap.add_argument("--route", metavar="app|FILE", help="drive the app's own route (app: asked from the debug app) or a saved lat,lon file, not OSRM's")
     ap.add_argument("--mph", type=float, default=30)
     ap.add_argument("--hz", type=float, default=5, help="positions a second (smoother map with more)")
     ap.add_argument("--once", action="store_true", help="drive the route once instead of looping")
@@ -443,10 +474,10 @@ def main():
         once = True
         print(f"Replaying {a.replay} at {a.speed:g}× (position and speed only). Ctrl+C to stop.")
     else:
-        coords = route(a.via)
+        coords = app_route(adb, a.serial, a.route) if a.route else route(a.via)
         mps = a.mph * 0.44704
         total = sum(metres(p, q) for p, q in zip(coords, coords[1:]))
-        print(f"Route {total / 1000:.1f} km at {a.mph:g} mph (~{total / mps / 60:.0f} min a lap). Ctrl+C to stop.")
+        print(f"Route ({'the app' if a.route == 'app' else a.route or 'OSRM'}) {total / 1000:.1f} km at {a.mph:g} mph (~{total / mps / 60:.0f} min a lap). Ctrl+C to stop.")
         if a.limits:
             look = LimitLookup(limits(coords))
             pattern = a.pattern.split(",")

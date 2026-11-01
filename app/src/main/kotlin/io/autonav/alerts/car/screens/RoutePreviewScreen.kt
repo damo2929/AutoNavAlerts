@@ -213,8 +213,16 @@ class RoutePreviewScreen(
         else -> ""
     }
 
-    /** The bench's `--ez go true`: Go on the showing preview (TESTING.md §3). */
-    fun go() = start(simulate = false)
+    /**
+     * The bench's `--ez go true`: Go on the showing preview (TESTING.md §3), only once a route is there,
+     * as the screen itself offers Go; false while the route is loading or when none was found (bench
+     * 2026-11-01: a Go 0.2 s after the destination started guidance with no route under it).
+     */
+    fun go(): Boolean {
+        if (loading || route == null) return false
+        start(simulate = false)
+        return true
+    }
 
     /**
      * Go. The destination is remembered in Recents first, from the app scope and not cancellable

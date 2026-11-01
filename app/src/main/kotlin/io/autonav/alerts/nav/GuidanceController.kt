@@ -151,6 +151,9 @@ class GuidanceController @Inject constructor(
     private val _arrivals = MutableSharedFlow<String>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     /** The destination's title, once per arrival that ended guidance (DESIGN.md §8 "Arrival"). */
     val arrivals: SharedFlow<String> = _arrivals
+    private val _routeChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** Each SDK route change (a new route, a reroute, an energy-efficient re-ask): the car map re-follows while guiding (DESIGN.md §8 "Follow watchdog", 2026-11-01). */
+    val routeChanges: SharedFlow<Unit> = _routeChanges
 
     /** What is being guided, so Back on a preview opened while guiding can put it back (§8, owner 2026-10-13). */
     private class Guided(val waypoint: Waypoint, val view: RouteView, val token: String?)
@@ -158,6 +161,8 @@ class GuidanceController @Inject constructor(
 
     /** The SDK's route as it gave it, refreshed on every route change; read by [routePointsAhead]. */
     @Volatile private var routePoints: List<LatLng> = emptyList()
+    /** The SDK's whole current route as it gave it, empty with none; the debug bench's route export (DESIGN.md §15, 2026-11-01). */
+    fun routePointsNow(): List<LatLng> = routePoints
     /** The same route as a core polyline, for the alert engine and the limit lookahead. */
     @Volatile private var polyline: RoutePolyline? = null
     /** The navigator the listeners were added to (a new key makes a new navigator). */
@@ -553,6 +558,7 @@ class GuidanceController @Inject constructor(
             state = state.routeChanged()
             refreshRoutePoints(nav)
             log("routeChanged points=${routePoints.size} rerouteCompleted=${state.sdkRerouteCompleted}")
+            _routeChanges.tryEmit(Unit)
             if (ecoReaskPending) {
                 ecoReaskPending = false
                 maybeEcoReask(nav)

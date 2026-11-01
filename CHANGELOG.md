@@ -4,6 +4,7 @@ What changed for the person using the app, by day. Each entry names the DESIGN.m
 
 ## 2026-11-01 — version 0.1.0-2026-11-01
 
+- **The map keeps the car in its place**: when Google's navigation camera stops following during a drive, the app now notices as soon as the car moves away from its usual spot near the bottom of the map, and puts it back within a few seconds. Before, it waited until the car had driven off the screen. A new route or a reroute during guidance also puts the camera back on the car (DESIGN §8 "Follow watchdog").
 - **The version shows the date**: Settings → About now says 0.1.0-2026-11-01 (version code 3, ready for the next Play upload). Everything below dated 2026-10-25 ships in this version (DESIGN §13.3).
 
 ## 2026-10-25 — OV2 skippers; the car screen follows the phone's set-up (uncommitted at the time of writing)

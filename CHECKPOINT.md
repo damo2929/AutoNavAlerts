@@ -298,6 +298,16 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 - **Tests:** core 461 (6 env-gated skips), app 567, all green at 21:00.
 - **Not yet checked on the bench:** a look at the new icons on the car map, Test speak's audio, the Cameras tab import of a real zip, and S3a live. Nothing is committed.
 
+## 4k. Session 12 (2026-11-01, PC `fedora`): merge to main, 0.1.0-2026-11-01, Banbury → Stansted bench drive
+
+- **Merged:** `code_shrink` rebased onto `origin/main` (one DESIGN §16 row 21 conflict, both texts kept) as `code_shrink-rebased`, the uncommitted icon/OV2/import work committed on it, then **`main` fast-forwarded to `46a2e30` and pushed** (owner: "push main when the tests pass"). Tests at that commit: core 461 (6 env-gated skips), app 567, all passing. A second full build under load (emulator booting on the same 2 vCPUs) failed 3 `ListScreensTest` cases on their 20 s wait; rerun them on an idle PC before trusting a red run.
+- **Version:** `0.1.0-2026-11-01`, versionCode 3 (owner: "bump the version to have the current date suffix"; DESIGN §13.3).
+- **Bench (emulator `auto-bench`, Android Auto 18.0.664204, DHU 2.0):** the debug build installed over 0.1.0 (code 2) kept every set (55 sets, 22,779 POIs, DB v9). Android Auto's head unit server must be started again after an emulator boot (AA settings → ⋮ → Start head unit server); `bench.sh car` must not be wrapped in `timeout` (it killed the DHU).
+- **Route Banbury → Stansted Airport** (`--es geo "51.8894,0.2620"`): 113 mi, Go, U1 passed (one turn card, the host's X only, our column on the right, `sdkControls off=[…]`).
+- **Bench Go before the route** (13:14): a `--ez go true` 0.2 s after the destination started guidance with no route, so no turn card and the car mid-screen. Not reachable by a tap (the preview shows Go only with a route); the hook now refuses until the route is there.
+- **The SDK dropped its guidance camera** (13:18:40 → 13:20:44): the car drove from its spot up to y≈228 while the watchdog said "in place" (anything on screen counted); it re-followed only after the car left the top, 2.3 km on. Fixed on branch `bench-route-watchdog`: in place = within a tenth of the surface of the car's spot; a route change while guiding re-follows (DESIGN §8 "Follow watchdog", 2026-11-01).
+- **OSRM vs Google routes differ** (OSRM 136 km by the A422, Google 182 km by the M40): `drive.py --route app` now drives the app's own route, from the debug hook `--ez route true` (DESIGN §15, TESTING §3).
+
 ## 5. Decisions and rules the user has set (don't undo these)
 
 - **Never a built-in or fallback Maps key.** Each user's Maps use is billed to their own Google account; the maintainer never pays for other users.
