@@ -8,6 +8,7 @@ import android.graphics.Color
 import androidx.room.Room
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.core.poi.Grid
+import io.autonav.alerts.core.poi.importers.Ov2Samples
 import io.autonav.alerts.data.AppDatabase
 import io.autonav.alerts.data.PoiEntity
 import io.autonav.alerts.data.toCols
@@ -18,8 +19,6 @@ import io.autonav.alerts.data.PoiSourceType
 import io.autonav.alerts.data.SetState
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -55,13 +54,17 @@ object DataFixtures {
         (listOf("X,Y,Type,Speed,DirType,Direction") + rows + "0.70001,51.50001,Copyright Example,,").joinToString("\n") + "\n"
 
     /** One OV2 type-2 record: little-endian length, lon and lat ×100000, the name NUL-terminated (§5.6). */
-    fun ov2Record(lat: Double, lon: Double, name: String): ByteArray {
-        val text = name.toByteArray(Charsets.ISO_8859_1)
-        val len = 1 + 4 + 4 + 4 + text.size + 1
-        return ByteBuffer.allocate(len).order(ByteOrder.LITTLE_ENDIAN).apply {
-            put(2); putInt(len); putInt(Math.round(lon * 100_000).toInt()); putInt(Math.round(lat * 100_000).toInt()); put(text); put(0)
-        }.array()
-    }
+    fun ov2Record(lat: Double, lon: Double, name: String): ByteArray = Ov2Samples.record(Ov2Samples.Poi(lat, lon, name))
+
+    /** A set's POIs in insertion order, read back from [db] (the import tests' check that rows went where they should). */
+    suspend fun poisOf(db: AppDatabase, setId: Long): List<PoiEntity> =
+        db.openHelper.readableDatabase.query("SELECT id FROM poi WHERE setId = $setId ORDER BY id").use { c ->
+            buildList { while (c.moveToNext()) add(db.pois().get(c.getLong(0))!!) }
+        }
+
+    /** How many POIs [db] holds for a set. */
+    fun countIn(db: AppDatabase, setId: Long): Int =
+        db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM poi WHERE setId = $setId").use { it.moveToFirst(); it.getInt(0) }
 
     /** An OV2 file of PGW-style named entries plus the copyright watermark entry the parser skips (§5.2a). */
     fun ov2(vararg entries: Triple<Double, Double, String>): ByteArray =

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+<!-- Copyright 2026 Damien Dye. SPDX-License-Identifier: Apache-2.0. Original AutoNavAlerts vector of the UK speed-camera sign (TSRGD diagram 880; Crown copyright sign design, Open Government Licence) (DESIGN.md §7.1); not based on any PocketGPSWorld icon. -->
+<title>Fixed camera</title>
+<path fill="#000" fill-rule="evenodd" d="M3.34 2.16h17.32a2.84 2.84 0 0 1 2.84 2.84v14.01a2.84 2.84 0 0 1 -2.84 2.84h-17.32a2.84 2.84 0 0 1 -2.84 -2.84v-14.01a2.84 2.84 0 0 1 2.84 -2.84zM3.61 3.51h16.77a1.76 1.76 0 0 1 1.76 1.76v13.46a1.76 1.76 0 0 1 -1.76 1.76h-16.77a1.76 1.76 0 0 1 -1.76 -1.76v-13.46a1.76 1.76 0 0 1 1.76 -1.76z"/>
+<path fill="#000" fill-rule="evenodd" d="M4.7 5.4h8.72a0.95 0.95 0 0 1 0.95 0.95v11.29a0.95 0.95 0 0 1 -0.95 0.95h-8.72a0.95 0.95 0 0 1 -0.95 -0.95v-11.29a0.95 0.95 0 0 1 0.95 -0.95zM9.63 7.84a1.56 1.56 0 1 0 3.12 0a1.56 1.56 0 1 0 -3.12 0zM5.23 14.54a2.71 2.71 0 1 0 5.42 0a2.71 2.71 0 1 0 -5.42 0z"/>
+<path fill="#000" d="M10.18 7.84a1.01 1.01 0 1 0 2.02 0a1.01 1.01 0 1 0 -2.02 0zM5.84 14.54a2.1 2.1 0 1 0 4.2 0a2.1 2.1 0 1 0 -4.2 0z"/>
+<path fill="#000" d="M14.77 7.57h0.61v9.06h-0.61zM15.72 8.11h0.61v8.12h-0.61zM16.67 8.72h0.61v7.1h-0.61z"/>
+<path fill="#000" d="M17.61 10.34h2.64v4.19h-2.64z"/>
+</svg>

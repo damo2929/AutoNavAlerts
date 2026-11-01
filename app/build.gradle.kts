@@ -153,6 +153,8 @@ dependencies {
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     testImplementation(libs.junit)
+    // Ov2Samples: made-up OV2 files with the real files' structure (DESIGN.md §5.6, §6.4).
+    testImplementation(testFixtures(project(":core")))
     testImplementation(libs.okhttp.mockwebserver)
     // Real org.json for JVM tests (Android's is a stub there).
     testImplementation("org.json:json:20240303")

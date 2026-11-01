@@ -109,6 +109,10 @@ interface PoiDao {
     @Query("SELECT * FROM poi WHERE id = :id")
     suspend fun get(id: Long): PoiEntity?
 
+    /** A visible POI of a set, one with a limit first: the camera the set editor's Test speak speaks for (§13 item 7). */
+    @Query("SELECT * FROM poi WHERE setId = :setId AND hiddenByReport = 0 ORDER BY speedLimit IS NULL, id LIMIT 1")
+    suspend fun sampleIn(setId: Long): PoiEntity?
+
     /** Review edits applied to a report's marker (`CameraReportRepository.saveReview`). */
     @Update
     suspend fun update(poi: PoiEntity)

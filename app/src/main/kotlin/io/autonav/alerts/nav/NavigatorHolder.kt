@@ -39,6 +39,7 @@ enum class NavUnavailable { NO_API_KEY, TERMS_NOT_ACCEPTED, NOT_AUTHORIZED, NETW
  * Lifecycle: a Hilt singleton shared by the car session and the phone app (§2). The session
  * (and the phone's key test) call [ensureNavigator]; `GuidanceController` reads [navigator] and
  * registers for [onKeyChanged]; the phone's Settings call [keyChanged] after a new key is saved.
+ * [setupChanges] tells the car session to try again when the key or terms change (§1.4).
  * The suspend functions run on whatever dispatcher the caller uses; the SDK's callbacks come on
  * the main thread, and the StateFlows are safe to read from any.
  */
@@ -93,9 +94,21 @@ class NavigatorHolder @Inject constructor(
      */
     suspend fun sdkTermsAccepted(): Boolean = applyApiKey() && NavigationApi.areTermsAccepted(app)
 
+    /**
+     * Bumped when the phone's set-up changes (key saved or removed, terms newly accepted); the car session
+     * runs [ensureNavigator] on each value so its set-up card follows without a reconnect (DESIGN.md §1.4).
+     * Not a second [onKeyChanged]: that one runs before the old Navigator is cleaned up, for guidance to stop
+     * on it, and only on a key change; this one follows, for anyone, and also on the terms.
+     */
+    private val _setupChanges = MutableStateFlow(0)
+    val setupChanges: StateFlow<Int> = _setupChanges
+
     /** Records an acceptance from the terms dialog. */
     suspend fun recordTermsAccepted() {
-        if (settings.navTermsAcceptedAt() == null) settings.setNavTermsAccepted(System.currentTimeMillis())
+        if (settings.navTermsAcceptedAt() == null) {
+            settings.setNavTermsAccepted(System.currentTimeMillis())
+            _setupChanges.value++
+        }
     }
 
     /** Gets (or returns the existing) Navigator. Terms must already be accepted on the phone. */
@@ -163,6 +176,7 @@ class NavigatorHolder @Inject constructor(
         keyListener?.let { l -> runCatching(l).onFailure { Log.w(TAG, "keyChanged listener", it) } }
         _navigator.value?.cleanup()
         _navigator.value = null
+        _setupChanges.value++
     }
 
     companion object { private const val TAG = "NavigatorHolder" }

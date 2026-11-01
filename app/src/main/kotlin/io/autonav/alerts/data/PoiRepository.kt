@@ -114,13 +114,16 @@ class PoiRepository @Inject constructor(
      * Imports a file the user picked on the phone (DESIGN.md §5): a single POI file becomes one set named after
      * the file; a zip becomes one set per POI file inside it, never merged (hard rule 9). [format] overrides the
      * sniffed format; [csvProfile] is the wizard's column mapping (§5.7) and is required for CSV; [replaceSetId]
-     * is the set a **Re-import** replaces, keeping its settings (§4.4). Runs on Dispatchers.IO.
+     * is the set a **Re-import** replaces, keeping its settings (§4.4). [source] is FILE for the POIs tab and
+     * CAMERA_FILE for the Cameras tab's manual import, the one difference between the two (§13 item 8). Runs on
+     * Dispatchers.IO.
      */
     suspend fun importFile(
         uri: Uri,
         format: PoiFormat? = null,
         csvProfile: CsvProfile? = null,
         replaceSetId: Long? = null,
+        source: PoiSourceType = PoiSourceType.FILE,
     ): ImportOutcome = withContext(Dispatchers.IO) {
         val name = displayName(uri)
         val outcome = if (name.endsWith(".zip", true)) {
@@ -130,17 +133,17 @@ class PoiRepository @Inject constructor(
                     val poiFiles = poiFilesIn(entries)
                     if (poiFiles.isEmpty()) return@withContext fail("No POI file found in the zip")
                     // Every file in the zip becomes its own set (never merged), with its own icon if supplied.
-                    if (poiFiles.size > 1) return@withContext importZipFiles(name, entries, poiFiles, csvProfile)
+                    if (poiFiles.size > 1) return@withContext importZipFiles(name, entries, poiFiles, csvProfile, source)
                     val entryName = poiFiles.keys.first()
                     val data = poiFiles.getValue(entryName)
-                    importOne(entryName, data.copyOf(minOf(512, data.size)), format, { data.inputStream() }, csvProfile, replaceSetId)
+                    importOne(entryName, data.copyOf(minOf(512, data.size)), format, { data.inputStream() }, csvProfile, replaceSetId, source)
                 }
             }
         } else {
             // A single file is streamed to a temp file and parsed from it, never held whole in memory (§1.3).
             withTemp(uri, ".poi") { tmp ->
                 val head = tmp.inputStream().use { i -> ByteArray(512).let { b -> b.copyOf(i.read(b).coerceAtLeast(0)) } }
-                importOne(name, head, format, { tmp.inputStream() }, csvProfile, replaceSetId, sizeBytes = tmp.length())
+                importOne(name, head, format, { tmp.inputStream() }, csvProfile, replaceSetId, source, sizeBytes = tmp.length())
             }
         }
         outcome ?: fail("Couldn't open the file")
@@ -154,14 +157,14 @@ class PoiRepository @Inject constructor(
      */
     private suspend fun importOne(
         name: String, head: ByteArray, format: PoiFormat?, open: () -> java.io.InputStream,
-        csvProfile: CsvProfile?, replaceSetId: Long?, sizeBytes: Long = 0L,
+        csvProfile: CsvProfile?, replaceSetId: Long?, source: PoiSourceType, sizeBytes: Long = 0L,
     ): ImportOutcome {
         val fmt = format ?: FormatSniffer.detect(name, head) ?: return fail("Unknown file format")
         if ((fmt == PoiFormat.KML || fmt == PoiFormat.GPX) && sizeBytes > MAX_XML_BYTES) {
             return fail("This ${fmt.name} file is too large (over ${MAX_XML_BYTES / 1_000_000} MB). Split it, or use CSV or OV2.")
         }
         val result = parse(fmt, open, csvProfile) ?: return fail("CSV files need a column mapping")
-        return storeImport(result, setNameFor(name), PoiSourceType.FILE, fmt.name, replaceSetId, categoryNamer = { it })
+        return storeImport(result, setNameFor(name), source, fmt.name, replaceSetId, categoryNamer = { it })
     }
 
     /** An outcome for a file that couldn't be read at all. */
@@ -222,8 +225,9 @@ class PoiRepository @Inject constructor(
         entries: Map<String, ByteArray>,
         poiFiles: Map<String, ByteArray>,
         csvProfile: CsvProfile?,
+        source: PoiSourceType,
     ): ImportOutcome {
-        val outs = poiFiles.map { (fileName, data) -> fileName to importZipFile(zipName, entries, fileName, data, csvProfile) }
+        val outs = poiFiles.map { (fileName, data) -> fileName to importZipFile(zipName, entries, fileName, data, csvProfile, source) }
         return combine(outs) { imported, sets, skipped, problems ->
             "Imported $imported POIs from $zipName into $sets sets" +
                 (if (skipped > 0) " ($skipped rows skipped)" else "") +
@@ -232,7 +236,9 @@ class PoiRepository @Inject constructor(
     }
 
     /** One POI file of a zip as its own set (§5): sniffed, parsed, given the zip's matching icon, and stored over the set an earlier import of the same zip and file made. */
-    private suspend fun importZipFile(zipName: String, entries: Map<String, ByteArray>, fileName: String, data: ByteArray, csvProfile: CsvProfile?): ImportOutcome {
+    private suspend fun importZipFile(
+        zipName: String, entries: Map<String, ByteArray>, fileName: String, data: ByteArray, csvProfile: CsvProfile?, source: PoiSourceType,
+    ): ImportOutcome {
         val fmt = FormatSniffer.detect(fileName, data.copyOf(minOf(512, data.size))) ?: return fail("unknown format")
         val result = parse(fmt, { data.inputStream() }, csvProfile) ?: return fail("CSV needs a column mapping")
         val stem = fileName.substringBeforeLast('.')
@@ -240,12 +246,14 @@ class PoiRepository @Inject constructor(
             n.substringBeforeLast('.').equals(stem, true) && n.lowercase().let { it.endsWith(".bmp") || it.endsWith(".png") }
         }?.value
         val icon = iconBytes?.let { icons.saveImportedIcon(stem, it) }
-        // Keyed by zip and file, so another zip with a file of the same name gets its own set.
-        // A set imported before 2026-10-13 has the old key without the zip: the first re-import claims it.
-        val key = "${fmt.name}:file:$zipName/$fileName"
-        val existing = db.poiSets().byFormat(key) ?: db.poiSets().byFormat("${fmt.name}:file:$fileName")
+        // Keyed by zip and file, so another zip with a file of the same name gets its own set, and by tab, so the
+        // same file imported as POIs and as cameras makes two sets (§13 item 8). A POI set imported before
+        // 2026-10-13 has the old key without the zip: the first re-import claims it.
+        val camera = source == PoiSourceType.CAMERA_FILE
+        val key = "${fmt.name}:${if (camera) "camera" else "file"}:$zipName/$fileName"
+        val existing = db.poiSets().byFormat(key) ?: if (camera) null else db.poiSets().byFormat("${fmt.name}:file:$fileName")
         return storeImport(
-            result, setNameFor(fileName), PoiSourceType.FILE, key, existing?.id,
+            result, setNameFor(fileName), source, key, existing?.id,
             categoryNamer = { it }, defaultIcon = icon, fileIcon = icon != null,
         )
     }
@@ -290,9 +298,6 @@ class PoiRepository @Inject constructor(
             ZipEntries.pgwTypeFiles(entries).mapValues { (_, bytes) -> { IgoTxtImporter().parse(bytes.inputStream().bufferedReader(Charsets.ISO_8859_1)) } }
         }
         val fileFormat = if (ov2.isNotEmpty()) PoiFormat.OV2.name else PoiFormat.IGO_TXT.name
-        // The _X2 icons' licence text travels with the download and must be kept beside the icons (§5.2a).
-        entries.entries.firstOrNull { it.key.equals(PgwOv2.ICON_LICENCE_FILE, true) }
-            ?.let { icons.savePgwIconLicence(it.value) }
         if (files.isEmpty()) return fail(
             "No camera files in the download. The zip contained: " +
                 entries.keys.joinToString().ifEmpty { "nothing readable (${zip.length()} bytes)" },
@@ -374,9 +379,11 @@ class PoiRepository @Inject constructor(
             for (code in result.rows.mapNotNull { it.categoryCode }.distinct()) {
                 val prev = oldCats[code]
                 val isPgw = source == PoiSourceType.PGW || source == PoiSourceType.PGW_PENDING
+                // Camera sets, downloaded or imported by hand, give each type code its camera icon (§13 item 8).
+                val cameraIcons = isPgw || source == PoiSourceType.CAMERA_FILE
                 val cat = (prev?.let { p -> if (fileIcon && p.iconId in IconRepository.BUILTIN) p.copy(iconId = null) else p } ?: PoiCategoryEntity(
                     setId = stagingId, sourceCode = code, name = categoryNamer(code),
-                    iconId = if (isPgw && !fileIcon) IconRepository.pgwIconFor(code, source) else null,
+                    iconId = if (cameraIcons && !fileIcon) IconRepository.pgwIconFor(code, source) else null,
                     zoneRole = if (isPgw && (code in IgoTxtImporter.PGW_AVERAGE_SPEED_CODES || PgwOv2.isAverageSpeed(code))) ZoneRole.ZONE_POINT else ZoneRole.NONE,
                 )).copy(id = 0, setId = stagingId)
                 catIds[code] = db.categories().insert(cat)
@@ -468,6 +475,10 @@ class PoiRepository @Inject constructor(
     /** "Camera not there": hides an existing camera without deleting it (§8.5). */
     suspend fun setHidden(poiId: Long, hidden: Boolean) { db.pois().setHidden(poiId, hidden); notifyChanged() }
     suspend fun poi(id: Long) = db.pois().get(id)
+
+    /** One of a set's cameras with its category, for Test speak (§13 item 7); null for an empty set. */
+    suspend fun samplePoi(setId: Long): Pair<PoiEntity, PoiCategoryEntity?>? =
+        db.pois().sampleIn(setId)?.let { p -> p to p.categoryId?.let { id -> db.categories().forSet(setId).firstOrNull { it.id == id } } }
     /** Startup: drops reported mobile sites past their 24 h (§8.5). */
     suspend fun purgeExpired() = db.pois().deleteExpired(System.currentTimeMillis())
 

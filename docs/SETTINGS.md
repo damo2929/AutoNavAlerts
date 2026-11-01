@@ -103,6 +103,7 @@ Technical detail: DESIGN.md §8.4.
 |---|---|---|---|
 | **Show speed and limit on the map** | On / Off | On | Shows your current speed, and a speed limit sign next to it, in the bottom right corner of the car map. It stays clear of the turn card and the media panel |
 | **Satellite map in the car** | On / Off | Off | Shows satellite pictures with road names instead of the road map. The same switch is the **Satellite / Map** button at the top right of the car map, and **More → Satellite map** in the car. All three are one setting |
+| **Camera icons** | AutoNavAlerts / From the download | AutoNavAlerts | How cameras look on the car map and in the lists. **AutoNavAlerts** draws every camera sharply: a speed limit sign with the limit, and a small coloured tab for the camera type (yellow fixed, blue mobile, purple average speed, black red light, red red light and speed, grey pending site, orange for roadworks cameras). **From the download** uses the pictures that came with your PocketGPSWorld download instead. A set whose icon you chose yourself keeps it either way |
 
 What the panel shows:
 
@@ -223,7 +224,7 @@ It holds the steps for getting AutoNavAlerts onto a car's screen, and for debugg
 The app name and version, by Damien Dye.
 The **build** line: the git commit the app was built from, with `-dirty` if the tree had uncommitted changes, and "(debug)" for debug builds.
 The source repository, github.com/damo2929/AutoNavAlerts (tap to open it).
-Then the licence (Apache 2.0), a note that the code is AI-assisted, and the PGW icon credit.
+Then the licence (Apache 2.0) and a note that the code is AI-assisted.
 There is nothing to set here.
 
 ---
@@ -323,13 +324,13 @@ Importing a file creates a new set. Each new set starts with the defaults in sec
 | Show and alert | **Show on map** | On | Draws this set's markers on the car map (at zoom 11 or closer, up to 200 markers, nearest first). A camera with a bearing in its data gets a small direction arrow beside its icon, pointing the way the camera faces (one head for one-way cameras, two for both ways, none when the data has no bearing). Cameras facing the other way on your road are drawn dimmed with their arrow, so you can see why they do not alert. They never alert |
 | | **Alerts** | On | Whether this set's POIs trigger alerts at all |
 | | **Sound** | On | Spoken alerts for this set. While on, the passing alert (1 second ahead, at least 20 yards) is compulsory. Off gives cards and notifications only |
-| Icon | (from the download) | PocketGPSWorld sets | Each PocketGPSWorld set uses the icon supplied for its file (for example a Gatso "30" sign). A sync updates it unless you have chosen your own. These icons are © GerryC, 2007 (non-commercial use with credit). The full licence is in **Settings → About → Show icon licence** |
+| Icon | (from the download) | PocketGPSWorld sets | Each PocketGPSWorld set keeps the icon supplied for its file (for example a Gatso "30" sign); it is shown when **Camera icons** is set to **From the download** (section 1.4), otherwise the AutoNavAlerts camera icon is drawn. A sync updates it unless you have chosen your own |
 | Icon | **Choose** | A camera icon for PGW, a pin for files | Picks from the built-in icons (camera types, red light, pending site, pin, hazard, school, fuel, EV charger, star) or icons you have added |
 | | **From file** | | Adds your own image (scaled to 256 px wide) and uses it for this set |
 | **1st alert** | **Distance / Seconds ahead**, minimum distance | Seconds ahead, minimum 265 yd (242 m) | When the first warning fires. "Seconds ahead" uses your current speed each moment, with the seconds from the Alerts slider (section 1.2; 15 seconds by default, which is about 470 m at 70 mph and 335 m at 50 mph), and never fires closer than the minimum. There is no seconds field here. The card says "from the Alerts slider". **Distance** fires at a fixed distance instead. The 1st alert cannot be switched off. Turn off the set's Alerts instead |
 | **2nd alert** | **On**, Distance / Seconds ahead, minimum distance | On, seconds ahead, minimum 155 yd (142 m) | A second, closer warning at half the slider's seconds (7.5 seconds by default, about 235 m at 70 mph). The minimum keeps it outside the passing alert. It can be switched off |
 | **Passing alert** | none | 1 second ahead at the current speed, at least 20 yd | Fixed and compulsory while Sound is on. It also fires if a GPS jump skips past the 20 yard mark. It is never dropped, and it plays at most 1 second after Google's voice |
-| **Spoken text** | **1st alert**, **2nd alert**, **Passing** templates | `{category} ahead, {speed} limit` · `{category}, {distance}` · `{category} now` | What is said and shown. Each field has a live preview and a **Test speak** button |
+| **Spoken text** | **1st alert**, **2nd alert**, **Passing** templates | `{category} ahead, {speed} limit` · `{category}, {distance}` · `{category} now` | What is said and shown. Each field has a live preview and a **Test speak** button. **Test speak** (and the preview line) says what that alert would really say for one of this set's own cameras: its type and limit, at the distance that stage is spoken at |
 | | **Save** | | Saves the set. It is disabled while a distance check fails (below) |
 | | **Delete set** | | Removes the set and its POIs from the phone, after asking you to confirm |
 
@@ -374,7 +375,8 @@ Technical detail: DESIGN.md §5.2, §5.2a, §6.
 | **Force re-download** | | Downloads and imports the current database whatever the version |
 | **Update automatically when a new release is announced** | On | Checks PocketGPSWorld's update feed once a day. On a new release, the app logs in, downloads the chosen package (a small zip) and imports it by itself. If no sync has succeeded for 14 days, it syncs anyway. Updates are never swapped in while you are navigating. They wait until guidance ends |
 | **Wi-Fi only** | Off | Holds automatic downloads until you are on Wi-Fi. The daily feed check, a tiny request, still runs on mobile data |
-| **Open download page** | | Opens PocketGPSWorld's download page in the browser, if you would rather download a file yourself and import it on the POIs tab |
+| **Import file** (Manual import) | | Imports camera files you have from anywhere, not only PocketGPSWorld: OV2, iGO, KML, GPX, CSV, or a zip of them. It works exactly like **Import file** on the POIs tab (the same preview, the same CSV column boxes, one set per file named after it, with its icon if the zip has one), but the sets are camera sets: they are listed here, alert like cameras, and each camera type gets its camera icon |
+| **Open download page** | | Opens PocketGPSWorld's download page in the browser, if you would rather download a file yourself and import it with **Import file** |
 
 You get a notification when the database updates, when your login fails, or when your subscription has lapsed.
 Your PocketGPSWorld data stays in private app storage, is not backed up, and is never shared.
@@ -499,6 +501,7 @@ You see "Searching…" and then results or "No results for …", never a silent 
 | Speed and location source | Car when available |
 | Speed panel | On |
 | Satellite map in the car | Off |
+| Camera icons | AutoNavAlerts |
 | Avoid tolls | On |
 | Energy-efficient routes (EV) | Off |
 | Show OpenStreetMap limits | On |

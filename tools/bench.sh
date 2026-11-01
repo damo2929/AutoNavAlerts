@@ -26,8 +26,9 @@ CORES=${BENCH_CORES:-2}   # vCPUs for the emulator (override with BENCH_CORES=n)
 #  - "-gpu host" with Vulkan on crashes on AMD Raven + Mesa 26.2: SIGSEGV in radeonsi
 #    si_resource_from_memobj, via gfxstream ColorBufferGl::importMemory (Vulkan→GL memory import).
 #  - "-gpu swiftshader_indirect" (software) needs writable+executable heap for its JIT, which
-#    SELinux blocks (execheap; selinuxuser_execheap is off by default on Fedora), so it crashes too.
-#    We don't turn that boolean on: it weakens protection for every user process.
+#    SELinux blocks unless selinuxuser_execheap is on (off by default on Fedora). The owner turned
+#    it on for this bench on 2026-10-25 (`sudo setsebool -P selinuxuser_execheap 1`), so the
+#    software modes work: BENCH_GPU=swiftshader_indirect BENCH_GPU_FLAGS= tools/bench.sh phone.
 # Override with BENCH_GPU=… and BENCH_GPU_FLAGS=…
 GPU=${BENCH_GPU:-host}
 GPU_FLAGS=${BENCH_GPU_FLAGS:--feature -Vulkan}

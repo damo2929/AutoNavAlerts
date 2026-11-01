@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+<!-- Copyright 2026 Damien Dye. SPDX-License-Identifier: Apache-2.0. Original AutoNavAlerts artwork (DESIGN.md §7.1): the speed-camera sign's camera (as glyph_fixed.svg) on a tripod; not based on any PocketGPSWorld icon. -->
+<title>Mobile camera (the camera on a tripod)</title>
+<path fill="#000" fill-rule="evenodd" d="M4.25 0.8h9.26a1 1 0 0 1 1 1v11.99a1 1 0 0 1 -1 1h-9.26a1 1 0 0 1 -1 -1v-11.99a1 1 0 0 1 1 -1zM9.49 3.38a1.65 1.65 0 1 0 3.3 0a1.65 1.65 0 1 0 -3.3 0zM4.83 10.48a2.87 2.87 0 1 0 5.74 0a2.87 2.87 0 1 0 -5.74 0z"/>
+<path fill="#000" d="M10.06 3.38a1.08 1.08 0 1 0 2.16 0a1.08 1.08 0 1 0 -2.16 0zM5.48 10.48a2.22 2.22 0 1 0 4.44 0a2.22 2.22 0 1 0 -4.44 0z"/>
+<path fill="#000" d="M14.94 3.1h0.65v9.61h-0.65zM15.94 3.67h0.65v8.61h-0.65zM16.95 4.31h0.65v7.53h-0.65z"/>
+<path fill="#000" d="M17.95 6.04h2.8v4.45h-2.8z"/>
+<path fill="#000" d="M7.74 14.79h2.2v1.6h-2.2z"/>
+<path fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round" d="M8.84 16.19L3.84 23M8.84 16.19V23M8.84 16.19L13.84 23"/>
+</svg>

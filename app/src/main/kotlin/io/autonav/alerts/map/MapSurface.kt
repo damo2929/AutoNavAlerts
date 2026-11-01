@@ -11,6 +11,7 @@ import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.location.Location
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -207,7 +208,8 @@ class MapSurface(
         areasFor = sizeKey
         restoreAreas()
         saveAreas()
-        // OWN_CONTENT_ONLY: the display shows only what we draw on it, at the container's size and dpi.
+        // OWN_CONTENT_ONLY: the display shows only what we draw on it, at the container's size and dpi. Not paced:
+        // a display made with VirtualDisplayConfig's requested refresh rate showed nothing on the car (bench 2026-10-25).
         val dm = carContext.getSystemService(DisplayManager::class.java)
         val vd = dm.createVirtualDisplay(
             "autonav-map", container.width, container.height, container.dpi, surface,

@@ -228,8 +228,9 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
         surface.onSatelliteToggle = { on ->
             lifecycleScope.launch { deps.settings().update { it.copy(satelliteMap = on) } }
         }
-        // The listeners follow the current navigator: a new key makes a new one (DESIGN.md §9.3).
-        lifecycleScope.launch { deps.navigator().ensureNavigator() }
+        // The listeners follow the current navigator: a new key makes a new one (DESIGN.md §9.3). Run at
+        // start and again whenever the phone's key or terms change, so the set-up card follows live (§1.4).
+        deps.navigator().setupChanges.onEach { deps.navigator().ensureNavigator() }.launchIn(lifecycleScope)
         deps.navigator().navigator.onEach(::attachNavigator).launchIn(lifecycleScope)
         // The SDK builds its ETA card when guidance starts, so the controls-off calls are repeated then
         // (DESIGN.md §8 step 6; on the bench a call made before the card existed had no effect).

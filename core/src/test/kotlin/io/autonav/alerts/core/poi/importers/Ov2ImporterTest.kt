@@ -13,19 +13,18 @@ import java.nio.ByteOrder
 
 /**
  * TomTom OV2 records (DESIGN.md §5.6): little-endian lengths and coordinates, POI types 2 and 3,
- * skipper (1), deleted (0) and unknown types skipped by their length, and a corrupt or truncated
+ * skipper (1) records stepped over as 21 bytes whatever their block size, deleted (0) and unknown types
+ * skipped by their length, and a corrupt or truncated
  * stream ending the file with at most one error, never a crash. Made-up names and places.
  */
 class Ov2ImporterTest {
     private fun le(size: Int) = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN)
 
-    private fun poi(lonE5: Int, latE5: Int, name: String, type: Int = 2): ByteArray {
-        val n = (name + "\u0000").toByteArray(Charsets.ISO_8859_1)
-        return le(13 + n.size).put(type.toByte()).putInt(13 + n.size).putInt(lonE5).putInt(latE5).put(n).array()
-    }
+    // The records come from the shared made-up samples (Ov2Samples), in the hundred-thousandths OV2 stores.
+    private fun poi(lonE5: Int, latE5: Int, name: String, type: Int = 2) =
+        Ov2Samples.record(Ov2Samples.Poi(latE5 / 100_000.0, lonE5 / 100_000.0, name, type))
 
-    /** A non-POI record of [type] with [payload] bytes after its 5-byte header. */
-    private fun other(type: Int, payload: Int) = le(5 + payload).put(type.toByte()).putInt(5 + payload).array()
+    private fun other(type: Int, payload: Int) = Ov2Samples.other(type, payload)
 
     @Test
     fun coordinatesAreLittleEndianHundredThousandths() {
@@ -46,6 +45,23 @@ class Ov2ImporterTest {
         assertEquals(listOf("One", "Two"), r.rows.map { it.name })
         assertEquals(0, r.errors.size)
         assertEquals(0, r.silentlySkipped)
+    }
+
+    @Test
+    fun aSkipperIs21BytesAndItsBlockSizeCoversTheRecordsThatFollow() {
+        // As TomTom and PGW write it: the skipper's int is the size of the whole block (itself and the POIs in it),
+        // here the whole file, and nested skippers split it into areas (DESIGN.md §5.6; bench 2026-10-25).
+        val inner = poi(-394_000, 5_163_000, "Swansea, Quadrant") + poi(-396_000, 5_158_000, "Oystermouth Rd")
+        fun skipper(block: Int) = le(21).put(1).putInt(block).putInt(-390_000).putInt(5_165_000).putInt(-400_000).putInt(5_155_000).array()
+        val nested = skipper(21 + inner.size) + inner
+        val file = skipper(21 + nested.size + 5) + nested + other(0, 0)
+        val r = Ov2Importer().parse(file)
+        assertEquals(listOf("Swansea, Quadrant", "Oystermouth Rd"), r.rows.map { it.name })
+        assertEquals(0, r.errors.size)
+        // A block size over the 1 MiB record cap is normal for a big file's outer skipper, not corruption.
+        val big = Ov2Importer().parse(skipper((1 shl 20) + 5) + inner)
+        assertEquals(2, big.rows.size)
+        assertEquals(0, big.errors.size)
     }
 
     @Test

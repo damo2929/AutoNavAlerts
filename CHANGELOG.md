@@ -2,6 +2,20 @@
 
 What changed for the person using the app, by day. Each entry names the DESIGN.md section that holds the rule, where there is one; the commit history has the rest. Newest first.
 
+## 2026-10-25 — OV2 skippers; the car screen follows the phone's set-up (uncommitted at the time of writing)
+
+- **New camera icons for fixed, average speed and red light**: a fixed camera's corner badge is the UK speed-camera road sign; an average speed (SPECS) camera has the same sign on yellow; a red light camera shows a traffic light with red, amber and green lamps (red light and speed too). Every camera icon now always shows a speed: when the limit isn't known, "*" takes the number's place (DESIGN §7.1).
+- **More camera icon changes**: a mobile camera is the speed-camera sign's camera on a tripod (black on white), a pending mobile site the same in grey; a red light camera is just the traffic light, with no speed circle. The icons in the phone's POI and camera lists are bigger, 64 dp square (DESIGN §7.1).
+- **Test speak says the real alert**: in a set's editor, each Test speak button (and the preview under it) now says what that stage's alert would really say for one of the set's own cameras, at the distance it would be spoken, instead of a made-up 30 mph example (DESIGN §13 item 7).
+- **Import cameras from anywhere on the Cameras tab**: **Import file** under Manual import takes any supported file or zip, from any source, through the same import as the POIs tab, and lists the result as camera sets (DESIGN §13 item 8).
+- **No icon credit or licence screen any more**: the camera icons are our own, and a download's own pictures are your own copy, so the set editor and Settings → About no longer show a credit or "Show icon licence" (DESIGN §5.2a).
+- **Free POI zips import again**: PocketGPSWorld's free OV2 files (tram and metro stops, clean air zones, level crossings) imported as 0 POIs, because the reader jumped over the "skipper" blocks those files start with, and so over every POI inside them. Now all 22 files of the current zip come in, 2,953 POIs, one set per file with its icon. The speed-camera download reads OV2 through the same code (DESIGN §5.6).
+- **No reconnect after setting up the phone**: with the car screen up, "Finish setup on your phone" now clears as soon as the Maps key is saved and the navigation terms are accepted, and comes back if the key is removed. Before, the card stayed until Android Auto reconnected (DESIGN §1.4, owner 2026-10-25).
+
+## 2026-10-25 — new camera icons (uncommitted at the time of writing)
+
+- **Cameras have sharp new icons of our own**: a speed limit sign with the limit, and a small coloured tab showing the type (fixed, mobile, average speed, red light, red light and speed, pending site; orange for roadworks). "VAR" for a variable limit and "?" for one still to be confirmed. They are drawn from vectors, so they stay crisp on any car screen, and they replace the download's small pictures by default. **Settings → Car screen → Camera icons → From the download** brings those back (DESIGN §7.1; owner chose an original set rather than copying the PocketGPSWorld pictures, hard rule 6).
+
 ## 2026-10-25 — the reduction pass and the test tier (uncommitted at the time of writing)
 
 - **No change to what you see or hear.** A second pass of reuse and plainer Kotlin took the code from 10,971 to about 10,330 code lines (11,816 before the reuse pass: −13% over both). The settings file, logs, notifications and screens are the same. The owner was told again that 50% is not reachable with every function kept, and chose this ceiling plus the removal of code no user could reach (owner, 2026-10-25).

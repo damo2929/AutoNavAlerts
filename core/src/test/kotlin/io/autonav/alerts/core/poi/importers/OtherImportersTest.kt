@@ -43,13 +43,10 @@ class OtherImportersTest {
 
     @Test
     fun ov2RecordsIncludingSkipper() {
-        fun poi(lon: Double, lat: Double, name: String): ByteArray {
-            val n = (name + "\u0000").toByteArray(Charsets.ISO_8859_1)
-            return ByteBuffer.allocate(13 + n.size).order(ByteOrder.LITTLE_ENDIAN)
-                .put(2).putInt(13 + n.size).putInt((lon * 100_000).toInt()).putInt((lat * 100_000).toInt()).put(n).array()
-        }
-        val skipper = ByteBuffer.allocate(21).order(ByteOrder.LITTLE_ENDIAN).put(1).putInt(21).putInt(0).putInt(0).putInt(0).putInt(0).array()
-        val bytes = skipper + poi(-1.5, 53.8, "[SPECS] 50") + poi(-1.6, 53.9, "Shop")
+        // A real skipper over the two POIs (Ov2Samples, §5.6), as TomTom writes it.
+        val pois = listOf(Ov2Samples.Poi(53.8, -1.5, "[SPECS] 50"), Ov2Samples.Poi(53.9, -1.6, "Shop"))
+        val records = pois.map(Ov2Samples::record).reduce(ByteArray::plus)
+        val bytes = Ov2Samples.skipper(records, pois) + records
         val r = Ov2Importer().parse(bytes)
         assertEquals(2, r.rows.size)
         assertEquals(53.8, r.rows[0].lat, 1e-5)

@@ -156,4 +156,32 @@ class AlertWordsTest {
         assertEquals(100.0, AlertCoordinator.resolve(poiAt(0.0), set(), cat(code = "mobile")).alert.sideToleranceM!!, 0.0)
         assertNull(AlertCoordinator.resolve(poiAt(0.0), set(), cat()).alert.sideToleranceM)
     }
+
+    @Test fun testSpeakSaysWhatTheLiveAlertSaysAtEachStagesRealDistance() {
+        // DESIGN.md §13 item 7 (owner 2026-10-25): Test speak renders through the live alerts' alertText.
+        val r = AlertCoordinator.resolve(poiAt(0.0, speed = 30), set(), cat(), leadSeconds = 30)
+        val renderer = io.autonav.alerts.core.alerts.AlertTemplateRenderer(io.autonav.alerts.core.alerts.Units.METRIC)
+        val v = r.alert.speedLimitMps!!
+        val first = AlertCoordinator.stageDistanceM(io.autonav.alerts.core.alerts.AlertKind.FIRST, r, v)
+        val second = AlertCoordinator.stageDistanceM(io.autonav.alerts.core.alerts.AlertKind.SECOND, r, v)
+        val passing = AlertCoordinator.stageDistanceM(io.autonav.alerts.core.alerts.AlertKind.PASSING, r, v)
+        // 30 mph is 13.4 m/s: 30 s → 402 m; the 2nd's 15 s (201 m) is inside the 1st by more than 100 m; passing 1 s
+        // is under the 20 yd minimum, so 18.3 m.
+        assertEquals(402.3, first, 0.5)
+        assertEquals(201.2, second, 0.5)
+        assertEquals(io.autonav.alerts.core.alerts.AlertEngine.PASSING_METRES, passing, 0.0)
+        assertTrue(first > second && second > passing)
+        val text = AlertCoordinator.alertText(renderer, "{category} ahead, {speed} {units}, {distance}", r, first, "ahead")
+        // Metric display units, as a live alert: the 30 mph limit in km/h.
+        assertEquals("Fixed camera ahead, 48 km/h, 400 m", text.display)
+        // At a crawl the floors hold: 242 m, then the 2nd 100 m inside it, never under 142 m.
+        assertEquals(242.0, AlertCoordinator.stageDistanceM(io.autonav.alerts.core.alerts.AlertKind.FIRST, r, 2.0), 0.0)
+        assertEquals(142.0, AlertCoordinator.stageDistanceM(io.autonav.alerts.core.alerts.AlertKind.SECOND, r, 2.0), 0.0)
+        // At 70 mph the passing alert is 1 s ahead: 31.3 m.
+        assertEquals(31.3, AlertCoordinator.stageDistanceM(io.autonav.alerts.core.alerts.AlertKind.PASSING, r, 70 * Geo.MPS_PER_MPH), 0.1)
+        // The over-limit suffix is speech only, as on a live alert.
+        val over = AlertCoordinator.alertText(renderer, "{category}", r, first, "ahead", overspeed = true)
+        assertEquals("Fixed camera", over.display)
+        assertTrue(over.spoken.endsWith(io.autonav.alerts.core.alerts.AlertTemplateRenderer.OVERSPEED_SUFFIX))
+    }
 }

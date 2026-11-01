@@ -23,8 +23,11 @@ class IconIdsTest {
             ),
             IconRepository.BUILTIN.keys.toList(),
         )
-        // Every built-in has its own drawable.
-        assertEquals(IconRepository.BUILTIN.size, IconRepository.BUILTIN.values.toSet().size)
+        // Every built-in has its own drawable except two that share one, painted another way (DESIGN.md §7.1,
+        // owner 2026-10-25): average speed is the fixed sign on yellow, pending the mobile camera in grey.
+        assertEquals(IconRepository.BUILTIN.size - 2, IconRepository.BUILTIN.values.toSet().size)
+        assertEquals(IconRepository.BUILTIN.getValue(IconRepository.CAMERA_FIXED), IconRepository.BUILTIN.getValue(IconRepository.CAMERA_AVERAGE))
+        assertEquals(IconRepository.BUILTIN.getValue(IconRepository.CAMERA_MOBILE), IconRepository.BUILTIN.getValue(IconRepository.CAMERA_PENDING))
     }
 
     @Test fun suppliedIconsAreThePgwAndZipImportOnes() {

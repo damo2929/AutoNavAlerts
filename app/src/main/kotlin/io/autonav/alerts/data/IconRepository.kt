@@ -51,6 +51,17 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     /** The arrow descriptors, by direction type, emphasis and size: at most 8, made once (§8.1). */
     private val arrows = HashMap<String, BitmapDescriptor>()
 
+    /** Draws our camera icons (§7.1); stateless apart from its font. */
+    private val cameras = CameraIconPainter(context)
+
+    /**
+     * True (the default) draws every camera set with our vector icons, PocketGPSWorld sets included; false shows
+     * the bitmaps the download supplied (Settings → Car screen → Camera icons, DESIGN.md §7.1). Set by `App` from
+     * the settings; a change empties the cache so the next draw uses the other style.
+     */
+    @Volatile var ourCameraIcons: Boolean = true
+        set(value) { if (field != value) { field = value; cache.evictAll() } }
+
     /** `filesDir/icons/`: every "user:" icon lives here as `<id>.png` (§7.1). Private storage, so it goes with an uninstall. */
     private fun dirUser() = File(context.filesDir, "icons").apply { mkdirs() }
 
@@ -92,14 +103,6 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         return "user:$id"
     }
 
-    /** Keeps the icon licence next to the icons, as the licence requires (§5.2a: the `_X2` icons are free for non-commercial use with credit). */
-    fun savePgwIconLicence(text: ByteArray) {
-        File(dirUser(), "LICENCE_pgw_X2_icons.txt").writeBytes(text)
-    }
-
-    /** The saved licence text for the set editor and Settings → About "Show icon licence" (§5.2a), or null before any OV2 download. */
-    fun pgwIconLicence(): String? = File(dirUser(), "LICENCE_pgw_X2_icons.txt").takeIf { it.exists() }?.readText(Charsets.ISO_8859_1)
-
     /**
      * Square icon bitmap in pixels, cached per (id, size). A "user:" icon whose file has gone (an uninstall,
      * a set restored before its download) falls back to the pin, as does an unknown "builtin:" id, so a
@@ -108,7 +111,8 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     fun bitmap(id: String, sizePx: Int): Bitmap {
         val key = "$id@$sizePx"
         cache.get(key)?.let { return it }
-        val bmp = id.takeIf { it.startsWith("user:") }?.let { File(dirUser(), it.removePrefix("user:") + ".png") }?.takeIf { it.exists() }
+        // Our camera icons (§7.1): the type and, for a download set, the file's own limit; no POI here.
+        val bmp = CameraLooks.of(id, null, null, ourCameraIcons)?.let { cameras.draw(it, sizePx) } ?: id.takeIf { it.startsWith("user:") }?.let { File(dirUser(), it.removePrefix("user:") + ".png") }?.takeIf { it.exists() }
             ?.let { BitmapFactory.decodeFile(it.path) }?.let { Bitmap.createScaledBitmap(it, sizePx, sizePx, true) }
             ?: ContextCompat.getDrawable(context, BUILTIN[id] ?: R.drawable.ic_poi_pin)!!.toBitmap(sizePx, sizePx)
         cache.put(key, bmp)
@@ -118,11 +122,12 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
     /**
      * Map marker: icon, optional speed badge, and emphasis (DESIGN.md §8.1 step 3), cached per
      * (icon, speed, emphasis, size) so a redraw never creates a bitmap. [basePx] is the 48 dp marker in
-     * pixels; ACTIVE is drawn 1.3× with a translucent red pulse ring behind the icon. [speed] is already
-     * in the display units (the caller converts, §8.4 "Units").
+     * pixels; ACTIVE is drawn 1.3× with a translucent red pulse ring behind the icon. [speed] is the POI's
+     * limit as stored (§8.4 "Units"); [categoryCode] is its category's source code, which tells our camera
+     * icons the type and a temporary camera (§7.1).
      */
-    fun marker(id: String, speed: Int?, emphasis: Emphasis, basePx: Int): Bitmap {
-        val key = "m:$id:$speed:$emphasis:$basePx"
+    fun marker(id: String, speed: Int?, emphasis: Emphasis, basePx: Int, categoryCode: String? = null): Bitmap {
+        val key = "m:$id:$categoryCode:$speed:$emphasis:$basePx"
         cache.get(key)?.let { return it }
         val size = if (emphasis == Emphasis.ACTIVE) (basePx * 1.3f).toInt() else basePx
         val out = createBitmap(size, size)
@@ -134,7 +139,9 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         // the head of the flat direction arrow under it must stay clear on the tilted map (hard rule 1).
         val camera = isCameraIcon(id)
         val inner = (size * 0.8f).toInt()
-        c.drawBitmap(bitmap(id, inner), (size - inner) / 2f, (size - inner) / 2f, paint)
+        // Our camera icons carry the limit in their roundel (§7.1); anything else is the icon's own picture.
+        val picture = CameraLooks.of(id, categoryCode, speed, ourCameraIcons)?.let { cameras.draw(it, inner) } ?: bitmap(id, inner)
+        c.drawBitmap(picture, (size - inner) / 2f, (size - inner) / 2f, paint)
         if (speed != null && !camera) {
             // The limit badge for non-camera POIs (§7.1): a white disc, a red ring, the number in bold, bottom right.
             val r = size * 0.22f
@@ -215,14 +222,15 @@ class IconRepository @Inject constructor(@ApplicationContext private val context
         /** One icon of the built-in pack: its id, its vector drawable and its picker label. */
         private class Builtin(val id: String, val drawable: Int, val label: String)
 
-        /** The built-in pack in picker order (§7.1). The drawables are vector assets under res/drawable/ic_poi_*. */
+        /** The built-in pack in picker order (§7.1). The drawables are vector assets under res/drawable (ic_cam_glyph_*, ic_poi_*). */
         private val BUILTIN_PACK = listOf(
-            Builtin(CAMERA_FIXED, R.drawable.ic_poi_camera_fixed, "Fixed camera"),
-            Builtin(CAMERA_MOBILE, R.drawable.ic_poi_camera_mobile, "Mobile camera"),
-            Builtin(CAMERA_AVERAGE, R.drawable.ic_poi_camera_average, "Average speed"),
-            Builtin(CAMERA_REDLIGHT, R.drawable.ic_poi_camera_redlight, "Red light"),
-            Builtin(CAMERA_REDLIGHT_SPEED, R.drawable.ic_poi_camera_redlight_speed, "Red light + speed"),
-            Builtin(CAMERA_PENDING, R.drawable.ic_poi_camera_pending, "Pending site"),
+            // The cameras are drawn by CameraIconPainter (§7.1); the drawable is their glyph.
+            Builtin(CAMERA_FIXED, R.drawable.ic_cam_glyph_fixed, "Fixed camera"),
+            Builtin(CAMERA_MOBILE, R.drawable.ic_cam_glyph_mobile, "Mobile camera"),
+            Builtin(CAMERA_AVERAGE, R.drawable.ic_cam_glyph_fixed, "Average speed"),
+            Builtin(CAMERA_REDLIGHT, R.drawable.ic_cam_glyph_redlight, "Red light"),
+            Builtin(CAMERA_REDLIGHT_SPEED, R.drawable.ic_cam_glyph_redlight_speed, "Red light + speed"),
+            Builtin(CAMERA_PENDING, R.drawable.ic_cam_glyph_mobile, "Pending site"),
             Builtin(PIN, R.drawable.ic_poi_pin, "Pin"),
             Builtin("builtin:hazard", R.drawable.ic_poi_hazard, "Hazard"),
             Builtin("builtin:school", R.drawable.ic_poi_school, "School"),

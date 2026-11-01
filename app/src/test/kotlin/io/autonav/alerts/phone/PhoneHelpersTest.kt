@@ -40,13 +40,15 @@ class PhoneHelpersTest {
         )
     }
 
-    @Test fun pendingSitesComeAfterPgwAndMyReportsLastAndHandImportsAreLeftOut() {
+    @Test fun pendingSitesComeAfterPgwThenHandImportedCamerasAndMyReportsLastAndPoiFilesAreLeftOut() {
         val groups = cameraGroups(listOf(
             set("My reports", PoiSourceType.REPORT), set("Speed bumps", PoiSourceType.FILE),
+            set("Council cameras", PoiSourceType.CAMERA_FILE),
             set("PGW pending mobile sites (unverified)", PoiSourceType.PGW_PENDING), set("PGW red light cameras"), set("PGW mobile camera sites"),
         ))
+        // Cameras imported by hand on the Cameras tab are camera sets; POI files stay on the POIs tab (DESIGN.md §13 item 8).
         assertEquals(
-            listOf("PGW mobile camera sites", "PGW red light cameras", "PGW pending mobile sites (unverified)", "My reports"),
+            listOf("PGW mobile camera sites", "PGW red light cameras", "PGW pending mobile sites (unverified)", "Council cameras", "My reports"),
             groups.map { it.name },
         )
         assertTrue(cameraGroups(emptyList()).isEmpty())

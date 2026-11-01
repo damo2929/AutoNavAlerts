@@ -341,15 +341,10 @@ class AlertCoordinator @Inject constructor(
             AlertKind.GUIDANCE -> null // never emitted by the engine; spoken by DirectionsSpeaker (§12.3)
         } ?: return null
         val speedUnit = r?.poi?.speedUnit ?: SpeedUnit.MPH
-        val values = TemplateValues(
-            category = r?.categoryName, setName = r?.set?.name,
-            speed = r?.poi?.speedLimit, speedUnit = speedUnit,
-            distanceM = e.distanceM.takeIf { it > 0 },
-            direction = r?.let { directionWord(fix, it.poi) },
+        val out = alertText(
+            renderer, template, r, e.distanceM, r?.let { directionWord(fix, it.poi) },
+            overspeed = e.overspeed && e.kind != AlertKind.OVERSPEED,
         )
-        val out = renderer.render(template, values).let {
-            if (e.overspeed && e.kind != AlertKind.OVERSPEED) it.copy(spoken = it.spoken + ", " + AlertTemplateRenderer.OVERSPEED_SUFFIX) else it
-        }
         return ActiveAlert(
             poiId = e.poiId, kind = e.kind, display = out.display, spoken = out.spoken,
             iconId = r?.iconId ?: io.autonav.alerts.data.IconRepository.CAMERA_AVERAGE,
@@ -484,6 +479,39 @@ class AlertCoordinator @Inject constructor(
                 ),
                 alertsOn = alertsOn,
             )
+        }
+
+        /**
+         * The display and spoken text of one alert (§7.2): [template] filled from [r]'s category, set, limit and
+         * units at [distanceM] and [direction], with the "you are over the limit" suffix in speech when
+         * [overspeed] (§11 step 9). The one place alert text is made: live alerts and the set editor's Test speak
+         * (§13 item 7) both call it. Pure.
+         */
+        fun alertText(
+            renderer: AlertTemplateRenderer, template: String, r: ResolvedPoi?, distanceM: Double, direction: String?,
+            overspeed: Boolean = false,
+        ): io.autonav.alerts.core.alerts.RenderedAlert {
+            val values = TemplateValues(
+                category = r?.categoryName, setName = r?.set?.name,
+                speed = r?.poi?.speedLimit, speedUnit = r?.poi?.speedUnit ?: SpeedUnit.MPH,
+                distanceM = distanceM.takeIf { it > 0 }, direction = direction,
+            )
+            return renderer.render(template, values).let {
+                if (overspeed) it.copy(spoken = it.spoken + ", " + AlertTemplateRenderer.OVERSPEED_SUFFIX) else it
+            }
+        }
+
+        /**
+         * Where [kind]'s alert is said for [r] at [speedMps], by the engine's rules (§11.1): the 1st stage's
+         * trigger; the 2nd's, at least 100 m inside the 1st and never under [AlertEngine.SECOND_FLOOR_M] (as
+         * `AlertEngine.effectiveSecondTrigger`); passing 1 s ahead, never under 20 yd.
+         * Before the ratchet, so it's the distance a steady approach hears. For Test speak (§13 item 7).
+         */
+        fun stageDistanceM(kind: AlertKind, r: ResolvedPoi, speedMps: Double): Double = when (kind) {
+            AlertKind.FIRST -> r.alert.first.triggerMetres(speedMps)
+            AlertKind.SECOND -> minOf(r.alert.second.triggerMetres(speedMps), r.alert.first.triggerMetres(speedMps) - 100.0)
+                .coerceAtLeast(AlertEngine.SECOND_FLOOR_M)
+            else -> maxOf(AlertEngine.PASSING_METRES, speedMps * AlertEngine.PASSING_LEAD_S)
         }
 
         /**

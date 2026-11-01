@@ -189,6 +189,8 @@ class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
             val type = inp.read().takeIf { it >= 0 } ?: break
             record++
             val len = leInt() ?: break
+            // A skipper is always 21 bytes; its int is the size of the block it covers, whose records follow (§5.6).
+            if (type == 1) { if (!skip(SKIPPER_BOX)) break; continue }
             // A length under the 5-byte header, or over 1 MiB, means the stream is not OV2 any more: stop.
             if (len < 5 || len > MAX_RECORD) {
                 errors += RowError(record, "type $type", "bad record length $len"); break
@@ -210,13 +212,14 @@ class Ov2Importer(private val defaultUnit: SpeedUnit = SpeedUnit.MPH) {
                     errors.checkCoordinate(lat, lon, record, name) ?: continue
                     rows += importRow(lat, lon, name, null, speedFromText(name), defaultUnit, DirectionType.ANY, null)
                 }
-                else -> if (!skip(len - 5)) break // skipper (1), deleted or unknown
+                else -> if (!skip(len - 5)) break // deleted (0) or unknown
             }
         }
     }
 
     /** 1 MiB: far above any real record, a guard against reading a bad length as a size. */
-    private companion object { const val MAX_RECORD = 1 shl 20 }
+    /** [SKIPPER_BOX]: a skipper's bounding box, the 16 bytes after its 5-byte header (§5.6). */
+    private companion object { const val MAX_RECORD = 1 shl 20; const val SKIPPER_BOX = 16 }
 }
 
 /**

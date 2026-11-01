@@ -17,6 +17,8 @@ import io.autonav.alerts.pgw.PgwScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -53,6 +55,10 @@ class App : Application(), Configuration.Provider {
     @Inject lateinit var eventLog: EventLog
     /** Created with the process so it follows the `driveRecordingOn` setting from the start (DESIGN.md §15.5). */
     @Inject lateinit var driveRecorder: DriveRecorder
+    /** Follows Settings → Camera icons (DESIGN.md §7.1). */
+    @Inject lateinit var icons: io.autonav.alerts.data.IconRepository
+    /** The settings the icon style is read from. */
+    @Inject lateinit var settings: io.autonav.alerts.settings.SettingsStore
 
     /**
      * WorkManager's configuration. The manifest removes the default `WorkManagerInitializer`, so
@@ -78,6 +84,11 @@ class App : Application(), Configuration.Provider {
         dispatcher.ensureChannel()
         // Starts the CarConnection observer that gates report sending (DESIGN.md §8.5; AGENTS.md §3.1 rule 8).
         driving.observe()
+        // Our camera icons or the download's (DESIGN.md §7.1), for the car map and the phone alike.
+        appScope.launch {
+            settings.settings.map { it.cameraIcons == io.autonav.alerts.settings.CameraIconStyle.OURS }.distinctUntilChanged()
+                .collect { icons.ourCameraIcons = it }
+        }
         // Room work, off the main thread: staging sets left by an interrupted import go (DESIGN.md §4.4),
         // expired pending mobile sites are purged, and the PGW feed check is (re)scheduled (DESIGN.md §6.2).
         appScope.launch {

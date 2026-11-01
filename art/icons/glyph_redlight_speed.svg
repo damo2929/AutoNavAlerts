@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+<!-- Copyright 2026 Damien Dye. SPDX-License-Identifier: Apache-2.0. Original AutoNavAlerts artwork (DESIGN.md §7.1); not based on any PocketGPSWorld icon. -->
+<title>Red light and speed camera (traffic light with a camera)</title>
+<path fill="#000" fill-rule="evenodd" d="M4 2.5h3.5a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4.5a2 2 0 0 1 2-2zM5.75 4.8a1.6 1.6 0 1 0 0 3.2a1.6 1.6 0 1 0 0-3.2zM5.75 9.6a1.6 1.6 0 1 0 0 3.2a1.6 1.6 0 1 0 0-3.2zM5.75 14.4a1.6 1.6 0 1 0 0 3.2a1.6 1.6 0 1 0 0-3.2z"/>
+<path fill="#000" fill-rule="evenodd" d="M12.6 8.5h5.9a1.6 1.6 0 0 1 1.6 1.6v4.3a1.6 1.6 0 0 1-1.6 1.6h-5.9a1.6 1.6 0 0 1-1.6-1.6v-4.3a1.6 1.6 0 0 1 1.6-1.6zM15.5 10.4a1.85 1.85 0 1 0 0 3.7a1.85 1.85 0 1 0 0-3.7z"/>
+<path fill="#000" d="M20.4 10l2.6-1.3v7.1l-2.6-1.3z"/>
+<path fill="#000" d="M14.6 16h1.8v3h-1.8z"/>
+<!-- The lamps: drawn in colour by the painter in the holes above (CameraType.lamps), not part of the tinted drawable. -->
+<circle id="lamp-red" cx="5.75" cy="6.4" r="1.6" fill="#E53935"/>
+<circle id="lamp-amber" cx="5.75" cy="11.2" r="1.6" fill="#FDD835"/>
+<circle id="lamp-green" cx="5.75" cy="16" r="1.6" fill="#43A047"/>
+</svg>

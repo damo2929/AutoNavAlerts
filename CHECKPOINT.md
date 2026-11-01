@@ -278,6 +278,26 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 - **Not verified on a bench (ISSUES V5, V6):** no phone or emulator with Android Auto on this PC. **Next on a bench:** `tools/bench.sh reload`, U1 day/night in free drive and guidance, taps on each right-hand button, U2 on More, `tools/scenario.sh wrong-way` and `bend-camera`, an upgrade install over the `1311634` APK, a Settings backup compared with one from before; then commit (the owner hasn't asked for a commit of this pass yet).
 - **Worktrees to remove after the commit:** `.claude/worktrees/{reduce-a1..a4, tests-c1, tests-c1b, tests-c2, tests-c3a, tests-c3b, tests-c3c, integ-base}` and the older `agent-*`/`integration` ones from §4h (their removal was refused by the permission check this session; the owner can run `git worktree remove`).
 
+## 4j. Session 11 (2026-10-25 evening, PC `fedora`): bench back, OV2 skippers, car set-up live, icons, Test speak, camera import
+
+- **Bench:** the emulator had lost the full Android Auto (only the image's stub, `1.2.551000-stub`). **Android Auto 18.0.664204 was copied from the OPPO** (`pm path` → `adb pull` the four splits → `adb -s emulator-5554 install-multiple -r -d`, TESTING §3 step 2). Then: developer mode, Unknown sources, Start head unit server; its runtime permissions with `pm grant` (the welcome page's Continue loops without them); notification access with the `$` escaped for the device shell (`"cmd notification allow_listener '…SharedNotificationListenerManager\$ListenerService'"`; unescaped, it silently grants a class that doesn't exist and the car screen says "turn on notification access"). The old `io.autonav.alerts` package was uninstalled at the owner's request; only `uk.damiendye.autonav` is on the emulator. The Maps key was entered by the owner and the terms accepted on the emulator.
+- **Load:** with the DHU up, the emulator's 2 vCPUs are saturated: software H.264 of the 1080p car screen 63%, our app 48% while parked (ISSUES B13), compositing 44%; 4 GB RAM with 1.5 GB in zram. The car-screen Robolectric tests' 5 s wall-clock wait timed out three times under that load (`ListScreensTest`, `MoreScreenTest`); `CarScreenRig.awaitUntil` now waits up to 20 s and returns as soon as the condition holds. Options for the owner: DHU at 720p, `hw.ramSize=6144`.
+- **Fixed and designed (DESIGN first, owner 2026-10-25):**
+  - The car's "Finish setup" card now follows the phone live: `NavigatorHolder.setupChanges`, collected by `NavSession` (§1.4; TESTING S3a).
+  - **OV2 skipper records are 21 bytes**, their int the block size: a real free-POI zip imported 0 POIs before; now 22 sets and 2,953 POIs (§5.6). `PgwOv2` reads through the same `Ov2Importer`. Made-up `Ov2Samples` (`core/src/testFixtures`, shared with the app tests) plus a local-only `OV2_POI_ZIP` check; only PGW's speed-camera data is licensed (§6.4).
+  - Icons (§7.1):
+    - fixed = the UK speed-camera sign; SPECS = the same sign on yellow;
+    - mobile = the sign's camera on a tripod, black on white; pending = the same in grey;
+    - red light = the traffic light alone (red, amber and green lamps, no roundel); red light + speed = the roundel plus the same lamps;
+    - "*" when the limit isn't known;
+    - phone list icons 64 dp.
+  - No icon credit or licence in the app (§5.2a).
+  - Test speak says the real alert through `AlertCoordinator.alertText` / `stageDistanceM` (§13 item 7).
+  - The Cameras tab's **Import file** runs `importFile` with `source = CAMERA_FILE`, for any format and any source (§13 item 8).
+- **Reuse audit (owner's ask):** the OV2 builders in `DataFixtures`, `Ov2ImporterTest` and `OtherImportersTest` now go through `Ov2Samples`; `poisOf` / `countIn` are shared in `DataFixtures`; the painter and `camera_icons.py` have one glyph-and-lamps helper each; Test speak reuses the live render, `resolve`, `leadStages` and `triggerMetres`; the camera import reuses `importFile`, `ImportDialog` and `pgwIconFor`. Code lines by `scratchpad/loc.py` (it counts `app/src/debug` too, so it isn't comparable with §4i's numbers): production 12,057 → 12,056, tests 13,999 → 13,985 over the audit.
+- **Tests:** core 461 (6 env-gated skips), app 567, all green at 21:00.
+- **Not yet checked on the bench:** a look at the new icons on the car map, Test speak's audio, the Cameras tab import of a real zip, and S3a live. Nothing is committed.
+
 ## 5. Decisions and rules the user has set (don't undo these)
 
 - **Never a built-in or fallback Maps key.** Each user's Maps use is billed to their own Google account; the maintainer never pays for other users.
@@ -287,8 +307,9 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 - **Update DESIGN.md first** for design changes. The user wanted a full design before code; see memory `design-doc-before-code`.
 - **Apache 2.0**, with an SPDX header in every source file. README says the code is AI-assisted.
 - **Licensing:**
+  - **Only PGW's speed-camera data is licensed** (owner, 2026-10-25); their free tram/metro/clean-air-zone POI files are public domain. Tests still use made-up OV2 samples (`Ov2Samples`, owner's choice), the real zip only through `OV2_POI_ZIP` locally (DESIGN §6.4).
   - PGW data is never put in the repo or the app. Each user signs in with their **own** subscription, and the data stays in private storage that is excluded from backup.
-  - PGW `_X2` icons are © GerryC: credited in the app, and the licence text is saved with the icons.
+  - **No icon credit or licence in the app** (owner, 2026-10-25): our own camera icons are the default and a download's bitmaps are the user's own copy (DESIGN §5.2a). Their artwork still never enters the repo (hard rule 6).
 - **PGW:**
   - Default download is **TomTom OV2, "UK speed zoned complete" (package 1)**. iGO (package 288) can be chosen on the Cameras tab.
   - **Every file in a download becomes its own set. Never merge** (see memory `pgw-one-set-per-file`). The same applies to manual zip imports.
@@ -307,7 +328,7 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 - **HARD RULE: every on-screen button on the car map is on the right-hand side only** (user, 2026-10-12): the Satellite/Map pill, zoom +/−, recenter, and anything added later go down the right edge, below the action strip; the speed panel is bottom-right. Nothing of ours on the left. Check every layout change on the bench with a screenshot.
 - **Alert templates:** only `{category} {speed} {units} {distance} {direction}`. There's no name, set or road.
 - **Navigation terms:** accept once and they're remembered.
-- **Emulator:** **2 vCPUs**. Don't change SELinux booleans; `selinuxuser_execheap` stays off.
+- **Emulator:** **2 vCPUs**. **`selinuxuser_execheap` is on** (owner, 2026-10-25: "fix selinux so any graphics mode can be used"; it was kept off until then because it lets every user process execute heap memory). Don't change any other SELinux boolean.
 - **The quarterly SDK check must stay free:** public repo, standard Linux runner, 10-minute cap.
 
 ## 6. Known issues and notes
@@ -316,7 +337,7 @@ First checks after resuming: the A52 zone leg (TESTING.md A9–A9c), the map tap
 |---|---|
 | Google speed limit | The Navigation SDK only exposes it while you're **over** it (via `SpeedingListener` %). Otherwise the speed panel shows the camera's limit, marked with a blue dot. |
 | Incident reporting on Android Auto | Not offered to apps by the Navigation SDK (it's phone-only). The quarterly workflow `.github/workflows/nav-sdk-feature-watch.yml` checks for it; the in-app reflection stub was removed 2026-10-25 (owner), so it's built by hand when the SDK offers it. |
-| Emulator GPU | `-gpu host` with Vulkan crashes in AMD Mesa 26.2 (`radeonsi si_resource_from_memobj`). SwiftShader is blocked by SELinux `execheap`. Use `-gpu host -feature -Vulkan`; `bench.sh` does this by default. |
+| Emulator GPU | `-gpu host` with Vulkan crashes in AMD Mesa 26.2 (`radeonsi si_resource_from_memobj`). Default `-gpu host -feature -Vulkan`. SwiftShader and `guest` (software) work since `selinuxuser_execheap` was turned on (owner, 2026-10-25): `BENCH_GPU=swiftshader_indirect BENCH_GPU_FLAGS= tools/bench.sh phone`. On 2026-10-25 13:09 COSMIC's compositor failed on the host-mode window ("import for wrong devices"), its Xwayland exited and the emulator died 30 s later; a logout/login brings Xwayland back. |
 | PGW zip reading | Must use `ZipFile` (the central directory). `ZipInputStream` stops after the first entry of PGW zips. See `ZipEntries.kt`. |
 | Imported free POI sets | Alerts are **on** by default, so tram stops will speak, in any direction (no direction or speed data). The user may want new file imports to default to "map only". This was offered but not decided. |
 | POIs tab, first load | Slow-ish with 33+ icons on the emulator. Could move icon loading to the background. |

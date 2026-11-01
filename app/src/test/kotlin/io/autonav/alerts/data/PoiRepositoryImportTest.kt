@@ -60,10 +60,7 @@ class PoiRepositoryImportTest {
         "<wpt lat=\"$lat\" lon=\"$lon\"><name>$name</name>" + (type?.let { "<type>$it</type>" } ?: "") +
             (course?.let { "<course>$it</course>" } ?: "") + "</wpt>"
 
-    private suspend fun poisOf(setId: Long): List<PoiEntity> =
-        db.openHelper.readableDatabase.query("SELECT id FROM poi WHERE setId = $setId ORDER BY id").use { c ->
-            buildList { while (c.moveToNext()) add(db.pois().get(c.getLong(0))!!) }
-        }
+    private suspend fun poisOf(setId: Long): List<PoiEntity> = DataFixtures.poisOf(db, setId)
 
     @Test fun aSingleFileBecomesOneSetNamedAfterTheFile() = runBlocking<Unit> {
         val f = file("Croydon_Tramlink_Stop_PGPSW.gpx", gpx(
@@ -274,5 +271,41 @@ class PoiRepositoryImportTest {
         repo.deleteSet(db.poiSets().active().single().id)
         again.await()
         assertTrue(db.poiSets().active().isEmpty())
+    }
+
+    @Test fun theCamerasTabImportRunsTheSameImportAndMakesCameraSets() = runBlocking<Unit> {
+        // Any format, any source (DESIGN.md §13 item 8, owner 2026-10-25): here a zip of a GPX and an iGO file.
+        val zip = DataFixtures.zip(File(dir, "council.zip"), listOf(
+            "school_zones.gpx" to gpx(wpt(52.1, -1.2, "School zone 20")).toByteArray(),
+            "fixed_and_mobile.txt" to DataFixtures.igo("-1.50000,52.30000,1,30,1,90", "-1.60000,52.40000,5,40,,").toByteArray(),
+        ))
+
+        val out = repo.importFile(uri(zip), source = PoiSourceType.CAMERA_FILE)
+
+        assertFalse(out.message, out.failed)
+        assertEquals("Imported 3 POIs from council.zip into 2 sets", out.message)
+        val sets = db.poiSets().active().associateBy { it.name }
+        assertEquals(setOf(PoiSourceType.CAMERA_FILE), sets.values.map { it.source }.toSet())
+        assertEquals("IGO_TXT:camera:council.zip/fixed_and_mobile.txt", sets.getValue("fixed and mobile").format)
+        // A camera set starts with the camera icon, and each type code gets its own (§7.1), as a PGW set does.
+        assertEquals(IconRepository.CAMERA_FIXED, sets.getValue("school zones").defaultIconId)
+        val cats = db.categories().forSet(sets.getValue("fixed and mobile").id).associate { it.sourceCode to it.iconId }
+        assertEquals(mapOf("1" to IconRepository.CAMERA_FIXED, "5" to IconRepository.CAMERA_MOBILE), cats)
+        // Direction comes through as the file states it (hard rule 1); no zones for a hand import.
+        assertEquals(listOf(DirectionType.ONE_WAY, DirectionType.ANY), poisOf(sets.getValue("fixed and mobile").id).map { it.directionType })
+        assertTrue(db.categories().forSet(sets.getValue("fixed and mobile").id).all { it.zoneRole == ZoneRole.NONE })
+
+        // The same zip on the POIs tab is a separate pair of POI sets, not a takeover of the camera sets.
+        repo.importFile(uri(zip))
+        assertEquals(4, db.poiSets().active().size)
+        assertEquals(2, db.poiSets().active().count { it.source == PoiSourceType.FILE })
+    }
+
+    @Test fun testSpeakSpeaksForOneOfTheSetsCamerasPreferringOneWithALimit() = runBlocking<Unit> {
+        val f = file("mixed.gpx", gpx(wpt(52.1, -1.2, "No limit here"), wpt(52.2, -1.3, "Camera 40")))
+        val set = db.poiSets().get(repo.importFile(uri(f)).setId!!)!!
+        val (poi, _) = repo.samplePoi(set.id)!!
+        assertEquals(40, poi.speedLimit)
+        assertNull(repo.samplePoi(-1))
     }
 }

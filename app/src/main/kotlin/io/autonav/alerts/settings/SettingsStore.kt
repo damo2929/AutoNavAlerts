@@ -37,6 +37,9 @@ const val MAX_ALERT_LEAD_SECONDS = 60
 /** Where speed comes from (DESIGN.md §10.6): the car's own speed when the head unit offers it, or the phone's GPS only. */
 enum class SpeedSource { CAR_WHEN_AVAILABLE, PHONE_GPS }
 
+/** Which picture a camera gets (DESIGN.md §7.1): our own vector icons (default), or the bitmaps that came in the PocketGPSWorld download. */
+enum class CameraIconStyle { OURS, DOWNLOAD }
+
 /**
  * Every user setting, as one immutable snapshot (DESIGN.md §13 item 9; each one explained in docs/SETTINGS.md).
  * Read as a Flow from [SettingsStore.settings] or once with [SettingsStore.current]; changed only through
@@ -67,6 +70,8 @@ data class AppSettings(
     val speedPanelOn: Boolean = true,
     /** Car map shows satellite imagery (with road names) instead of the road map. */
     val satelliteMap: Boolean = false,
+    /** Camera icons: ours, drawn from vectors with the limit in a roundel, or the download's own bitmaps (DESIGN.md §7.1). */
+    val cameraIcons: CameraIconStyle = CameraIconStyle.OURS,
     /** Route for least energy use by an electric car (DESIGN.md §8.3a). */
     val evEfficientRoutes: Boolean = false,
     /** Avoid toll roads where there's a way round (DESIGN.md §8.3a). */
@@ -269,6 +274,7 @@ internal val SETTINGS_FIELDS: List<Field<*, *>> = listOf(
     enum<SpeedSource>("speed_source", "speedSource", { it.speedSource }, { copy(speedSource = it) }),
     bool("speed_panel", "speedPanelOn", { it.speedPanelOn }, { copy(speedPanelOn = it) }),
     bool("satellite_map", "satelliteMap", { it.satelliteMap }, { copy(satelliteMap = it) }),
+    enum<CameraIconStyle>("camera_icons", "cameraIcons", { it.cameraIcons }, { copy(cameraIcons = it) }),
     bool("ev_efficient_routes", "evEfficientRoutes", { it.evEfficientRoutes }, { copy(evEfficientRoutes = it) }),
     bool("avoid_tolls", "avoidTolls", { it.avoidTolls }, { copy(avoidTolls = it) }),
     bool("osm_limits", "osmLimitsOn", { it.osmLimitsOn }, { copy(osmLimitsOn = it) }),

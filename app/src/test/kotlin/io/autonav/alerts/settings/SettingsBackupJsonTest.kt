@@ -36,14 +36,15 @@ class SettingsBackupJsonTest {
         announceLimitChanges = false, pgwAutoSync = false, pgwWifiOnly = true, speedPanelOn = false, satelliteMap = true,
         evEfficientRoutes = true, avoidTolls = false, osmLimitsOn = false, osmWifiOnly = false, mutedUntilMs = 123_456_789L,
         simulationSpeed = 4f, speedSource = SpeedSource.PHONE_GPS, pgwDownload = PgwDownload.IGO, driveRecordingOn = true,
+        cameraIcons = CameraIconStyle.DOWNLOAD,
     )
 
-    /** The 16 backed-up fields by JSON name; mute, the simulator speed and drive recording are left out (§13.4 "Not included"). */
+    /** The 17 backed-up fields by JSON name (cameraIcons added 2026-10-25, DESIGN.md §7.1); mute, the simulator speed and drive recording are left out (§13.4 "Not included"). */
     private val settingsLiteral = mapOf(
         "units" to "METRIC", "voiceOn" to false, "chimeOn" to false, "overspeedPct" to 0.123, "alertLeadSeconds" to 42,
         "announceLimitChanges" to false, "speedSource" to "PHONE_GPS", "speedPanelOn" to false, "satelliteMap" to true,
         "evEfficientRoutes" to true, "avoidTolls" to false, "osmLimitsOn" to false, "osmWifiOnly" to false,
-        "pgwAutoSync" to false, "pgwWifiOnly" to true, "pgwDownload" to "IGO",
+        "pgwAutoSync" to false, "pgwWifiOnly" to true, "pgwDownload" to "IGO", "cameraIcons" to "DOWNLOAD",
     )
 
     @Test fun settingsJsonIsTheFormat1Layout() {
@@ -77,7 +78,7 @@ class SettingsBackupJsonTest {
             "announce_limit_changes" to false, "pgw_auto" to false, "pgw_wifi_only" to true, "speed_panel" to false,
             "satellite_map" to true, "osm_limits" to false, "osm_wifi_only" to false, "ev_efficient_routes" to true,
             "avoid_tolls" to false, "muted_until" to 123_456_789L, "speed_source" to "PHONE_GPS", "pgw_download" to "IGO",
-            "sim_speed" to 4f, "drive_recording" to true,
+            "sim_speed" to 4f, "drive_recording" to true, "camera_icons" to "DOWNLOAD",
         )
         assertEquals(expected, p.asMap().mapKeys { it.key.name })
         assertEquals(all, SettingsCodec.read(p))

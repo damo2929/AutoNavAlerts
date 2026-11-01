@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+<!-- Copyright 2026 Damien Dye. SPDX-License-Identifier: Apache-2.0. Original AutoNavAlerts artwork (DESIGN.md §7.1); not based on any PocketGPSWorld icon. -->
+<title>Red light camera (traffic light with red, amber and green lamps)</title>
+<path fill="#000" fill-rule="evenodd" d="M9.5 1.5h5A2.5 2.5 0 0 1 17 4v14a2.5 2.5 0 0 1-2.5 2.5h-5A2.5 2.5 0 0 1 7 18V4a2.5 2.5 0 0 1 2.5-2.5zM12 4a2 2 0 1 0 0 4a2 2 0 1 0 0-4zM12 9.2a2 2 0 1 0 0 4a2 2 0 1 0 0-4zM12 14.4a2 2 0 1 0 0 4a2 2 0 1 0 0-4z"/>
+<path fill="#000" d="M11 20.5h2v2.5h-2z"/>
+<!-- The lamps: drawn in colour by the painter in the holes above (CameraType.lamps), not part of the tinted drawable. -->
+<circle id="lamp-red" cx="12" cy="6" r="2" fill="#E53935"/>
+<circle id="lamp-amber" cx="12" cy="11.2" r="2" fill="#FDD835"/>
+<circle id="lamp-green" cx="12" cy="16.4" r="2" fill="#43A047"/>
+</svg>

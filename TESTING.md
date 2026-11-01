@@ -226,6 +226,7 @@ Work through these and tick off each expected result. "DHU" means the car screen
 | S1 | Phone Settings → Google Maps API key: **Remove** the API key, then open the app on the DHU | The DHU map area shows "Finish setup on your phone: Add your Google Maps API key…" |
 | S2 | Add the key back. Then, in a fresh install, open the DHU before accepting the terms | "…accept the navigation terms" |
 | S3 | Accept the terms, then reopen the app on the DHU | The map loads and follows your position, with traffic shown |
+| S3a | With the DHU showing the set-up card, save the key and accept the terms on the phone; **don't** reconnect. Then Remove the key | The card clears within a second or two and the map loads; after Remove the "Add your Google Maps API key" card comes back, still without a reconnect (DESIGN.md §1.4, owner 2026-10-25) |
 | S4 | Enter a wrong key | "The Maps API key isn't authorised for the Navigation SDK" |
 | S5 | Fresh install (no key saved), open the phone app | No crash. It opens on Settings; **Review and accept** (terms) is greyed out with "Add your Google Maps API key above first". |
 | S6 | Fresh install with no key, open the app on the DHU | No crash. The car screen asks you to add the key on the phone. |
@@ -405,10 +406,12 @@ Before testing, allow the **microphone** in the phone's Settings tab (Permission
 |---|---|---|
 | I1 | **Import file**: your PGW iGO `pocketgps_uk_sc.txt` | About 17,000 POIs, 0 bad rows |
 | I2 | Import the GPX from §4, a KML file, an OV2 file, and a zip containing one of them | Each imports, with the right counts |
+| I2a | Import PGW's free POI zip (tram and metro stops, clean air zones, level crossings: `*_PGPSW.ov2` with a `.bmp` each) | One set per file, each with its icon and a non-zero count (2026-10-25 zip: 22 sets, 2,953 POIs); no "Import failed: 0 bad rows out of 0" (DESIGN.md §5.6 skippers) |
+| I2b | Cameras tab → **Import file** with a zip of an iGO and a GPX file (not from PocketGPSWorld) | The same import dialog as the POIs tab; the sets appear on the Cameras tab, not POIs; the iGO set's cameras get their type's icons (fixed, mobile…); the same zip imported on the POIs tab makes separate POI sets (DESIGN.md §13 item 8) |
 | I3 | Import a CSV and set the columns | The preview shows the first rows; the import reports its count |
 | I4 | A file with >20% bad rows | "Import failed: N bad rows out of M"; no set is created |
 | I5 | Set editor: 2nd alert at 100 yd | An error is shown and **Save** is disabled |
-| I6 | Change a template and press **Test speak** | It speaks the sample text through the phone's navigation audio |
+| I6 | Change a template and press **Test speak** on each of the three | It speaks through the phone's navigation audio what that stage would say for one of the set's own cameras: its category, its limit, the stage's real distance (1st further than 2nd, passing about 20 yd at 30 mph), with the chime if on (DESIGN.md §13 item 7) |
 | I7 | **Choose** an icon, or **From file** | The icon updates on the card and on the map markers |
 | I8 | **Delete set** | Asks to confirm; the set and its markers are gone |
 
@@ -520,7 +523,7 @@ For a full bug report add `adb bugreport autonav-bugreport.zip` (battery and GPS
 |---|---|
 | `desktop-head-unit: error while loading shared libraries: libc++.so.1` | Install the C++ runtime (§1.2) |
 | Emulator window opens, then the emulator disappears (crash) | Check `coredumpctl list`. On **AMD GPUs with Mesa 26.x**, `-gpu host` crashes in `radeonsi si_resource_from_memobj`: start with **`-gpu host -feature -Vulkan`**, which `tools/bench.sh` does by default. |
-| SELinux alert "preventing RenderThread from using the execheap access" | Caused by `-gpu swiftshader_indirect` (software rendering needs executable heap memory). Use `-gpu host -feature -Vulkan` instead. We **don't** recommend `setsebool selinuxuser_execheap 1`, because it weakens protection for every program you run. |
+| SELinux alert "preventing RenderThread from using the execheap access" | Caused by `-gpu swiftshader_indirect` (software rendering needs executable heap memory) while `selinuxuser_execheap` is off. The owner's bench has it on (2026-10-25): `sudo setsebool -P selinuxuser_execheap 1`; or use `-gpu host -feature -Vulkan` instead. |
 | DHU says it's waiting for the phone | On the phone: **⋮ → Start head unit server** (again after a reboot). Then run `adb forward tcp:5277 tcp:5277` again. Check `adb devices`. |
 | AutoNavAlerts isn't in the DHU launcher | Android Auto developer settings → **Unknown sources** on. Reinstall the APK. |
 | DHU log ends with `connected.` then the DHU quits | Its console input ended (it was started in the background without `bench.sh`). Use `tools/bench.sh car`, which keeps it open. |

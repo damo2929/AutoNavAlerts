@@ -179,7 +179,8 @@ class PoiMarkerLayer(
         // Add or update.
         for (r in visible) {
             val emphasis = emphasisOf(r, state)
-            val iconKey = "${r.iconId}:${r.poi.speedLimit}"
+            // The style is in the key so a change of Settings → Camera icons re-icons on the next fix (§7.1).
+            val iconKey = "${r.iconId}:${r.category?.sourceCode}:${r.poi.speedLimit}:${icons.ourCameraIcons}"
             // ACTIVE on top of everything (§8.1); the arrow sits half a level under its own icon.
             val z = if (emphasis == Emphasis.ACTIVE) 10f else 1f
             val existing = shown[r.poi.id]
@@ -272,7 +273,7 @@ class PoiMarkerLayer(
     private fun descriptor(r: ResolvedPoi, iconKey: String, emphasis: Emphasis): BitmapDescriptor {
         if (descriptors.size > 256) descriptors.clear()
         return descriptors.getOrPut("$iconKey:$emphasis") {
-            toDescriptor(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx))
+            toDescriptor(icons.marker(r.iconId, r.poi.speedLimit, emphasis, basePx, r.category?.sourceCode))
         }
     }
 

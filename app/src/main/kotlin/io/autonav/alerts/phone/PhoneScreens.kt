@@ -57,6 +57,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -76,6 +77,9 @@ import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.Scope
 import com.google.android.libraries.navigation.NavigationApi
+import io.autonav.alerts.alerts.AlertCoordinator
+import io.autonav.alerts.alerts.ResolvedPoi
+import io.autonav.alerts.core.alerts.AlertKind
 import io.autonav.alerts.core.alerts.AlertTemplateRenderer
 import io.autonav.alerts.core.alerts.DistanceMode
 import io.autonav.alerts.core.alerts.TemplateValues
@@ -86,7 +90,6 @@ import io.autonav.alerts.core.poi.SpeedUnit
 import io.autonav.alerts.core.poi.importers.CsvImporter
 import io.autonav.alerts.core.poi.importers.CsvProfile
 import io.autonav.alerts.data.CameraReportEntity
-import io.autonav.alerts.data.IconRepository
 import io.autonav.alerts.data.PoiSetEntity
 import io.autonav.alerts.data.PoiSourceType
 import io.autonav.alerts.data.ReportKind
@@ -112,6 +115,7 @@ import io.autonav.alerts.core.pgw.PgwDownload
 import io.autonav.alerts.core.poi.DirectionType
 import io.autonav.alerts.data.LimitSource
 import io.autonav.alerts.settings.AppSettings
+import io.autonav.alerts.settings.CameraIconStyle
 import io.autonav.alerts.settings.PgwState
 import io.autonav.alerts.settings.SettingsBackup
 import io.autonav.alerts.settings.SpeedSource
@@ -622,7 +626,7 @@ private fun SetCard(deps: PhoneDeps, set: PoiSetEntity, onEdit: () -> Unit, onDe
         },
     ) {
         IconRowCard(
-            deps.icons.bitmap(set.defaultIconId, 96).asImageBitmap(), set.name,
+            { px -> deps.icons.bitmap(set.defaultIconId, px).asImageBitmap() }, set.name,
             "${set.poiCount} POIs · ${set.source.name.lowercase().replace('_', ' ')}" + (set.version?.let { " · v$it" } ?: ""),
             Modifier.fillMaxWidth(), onClick = onEdit,
         ) {
@@ -655,7 +659,7 @@ private fun DeleteSetDialog(deps: PhoneDeps, set: PoiSetEntity, pgwNote: Boolean
  * or null when cancelled.
  */
 @Composable
-private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) {
+private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit, source: PoiSourceType = PoiSourceType.FILE) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val fileName = remember { deps.pois.displayName(uri) }
@@ -705,7 +709,7 @@ private fun ImportDialog(deps: PhoneDeps, uri: Uri, onClose: (String?) -> Unit) 
                         latCol = col("Lat") ?: 0, lonCol = col("Lon") ?: 1, nameCol = col("Name"), speedCol = col("Speed"),
                         bearingCol = col("Heading"), dirTypeCol = col("Dir"),
                     ) else null
-                    val out = runCatching { deps.pois.importFile(uri, csvProfile = profile) }
+                    val out = runCatching { deps.pois.importFile(uri, csvProfile = profile, source = source) }
                     result = out.fold({ it.message + (it.errorSamples.firstOrNull()?.let { s -> "\nFirst problem: $s" } ?: "") }, { "Import failed: ${it.message}" })
                     busy = false
                 }
@@ -738,7 +742,13 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
     var leadSeconds by remember { mutableIntStateOf(DEFAULT_ALERT_LEAD_SECONDS) }
     var pickIcon by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { deps.settings.current().let { units = it.units; leadSeconds = it.alertLeadSeconds } }
+    var chime by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) { deps.settings.current().let { units = it.units; leadSeconds = it.alertLeadSeconds; chime = it.chimeOn } }
+    // One of the set's own cameras, resolved against the edits as they stand, for Test speak (DESIGN.md §13 item 7).
+    val sample by produceState<Pair<io.autonav.alerts.data.PoiEntity, io.autonav.alerts.data.PoiCategoryEntity?>?>(null, initial.id) {
+        value = deps.pois.samplePoi(initial.id)
+    }
+    val resolved = sample?.let { (p, cat) -> AlertCoordinator.resolve(p, set, cat, leadSeconds) }
     val iconPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { deps.icons.addUserIcon(it)?.let { id -> set = set.copy(defaultIconId = id) } }
     }
@@ -767,10 +777,6 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
                 OutlinedButton(onClick = { pickIcon = !pickIcon }) { Text("Choose") }
                 OutlinedButton(onClick = { iconPicker.launch(arrayOf("image/*")) }) { Text("From file") }
             }
-            // PGW icons carry the credit their licence asks for (docs/SETTINGS.md §3.3 Icon).
-            if (IconRepository.isPgwIcon(set.defaultIconId)) {
-                Help(io.autonav.alerts.core.poi.importers.PgwOv2.ICON_CREDIT)
-            }
             if (pickIcon) {
                 (deps.icons.builtinIds() + deps.icons.userIds()).chunked(6).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -794,9 +800,9 @@ private fun SetEditor(deps: PhoneDeps, initial: PoiSetEntity, onDone: () -> Unit
         // Only these five placeholders exist (DESIGN.md §7.2; AGENTS.md §3.2).
         Section("Spoken text") {
             Help("Placeholders: {category} {speed} {units} {distance} {direction}")
-            TemplateField(deps, "1st alert", set.firstTemplate, units) { set = set.copy(firstTemplate = it) }
-            TemplateField(deps, "2nd alert", set.secondTemplate, units) { set = set.copy(secondTemplate = it) }
-            TemplateField(deps, "Passing", set.passingTemplate, units) { set = set.copy(passingTemplate = it) }
+            TemplateField(deps, "1st alert", AlertKind.FIRST, set.firstTemplate, units, resolved, chime) { set = set.copy(firstTemplate = it) }
+            TemplateField(deps, "2nd alert", AlertKind.SECOND, set.secondTemplate, units, resolved, chime) { set = set.copy(secondTemplate = it) }
+            TemplateField(deps, "Passing", AlertKind.PASSING, set.passingTemplate, units, resolved, chime) { set = set.copy(passingTemplate = it) }
         }
         val error = validate(set)
         error?.let { Err(it, Modifier.padding(16.dp)) }
@@ -843,18 +849,27 @@ private fun StageEditor(
 }
 
 /**
- * The template editor (DESIGN.md §13 item 7): the text, a live preview rendered against a sample
- * 30 mph fixed camera 400 m ahead, and Test speak through the real [NavTts] so the audio route
- * can be checked. Priority 10 and POI id -1: a plain utterance, no chime, tied to no camera.
+ * The template editor (DESIGN.md §13 item 7): the text, a live preview, and Test speak through the real
+ * [NavTts] so the audio route can be checked. Both say what [kind]'s alert would say for [camera], one of the
+ * set's own cameras resolved against the edits: the field's template filled by [AlertCoordinator.alertText]
+ * (the live alerts' code) at [AlertCoordinator.stageDistanceM] with the camera's limit as the speed, spoken
+ * as the dispatcher speaks it (the stage's priority; the chime on passing when it is on). An empty set falls
+ * back to a sample 30 mph fixed camera 400 m ahead. POI id -1: tied to no real camera.
  */
 @Composable
-private fun TemplateField(deps: PhoneDeps, label: String, value: String, units: Units, onChange: (String) -> Unit) {
-    val sample = TemplateValues(category = "Fixed camera", speed = 30, speedUnit = SpeedUnit.MPH, distanceM = 400.0, direction = "ahead")
-    val rendered = AlertTemplateRenderer(units).render(value, sample)
+private fun TemplateField(
+    deps: PhoneDeps, label: String, kind: AlertKind, value: String, units: Units, camera: ResolvedPoi?, chime: Boolean,
+    onChange: (String) -> Unit,
+) {
+    val renderer = AlertTemplateRenderer(units)
+    val rendered = camera?.let {
+        val speedMps = it.alert.speedLimitMps ?: (30 * Geo.MPS_PER_MPH)
+        AlertCoordinator.alertText(renderer, value, it, AlertCoordinator.stageDistanceM(kind, it, speedMps), "ahead")
+    } ?: renderer.render(value, TemplateValues(category = "Fixed camera", speed = 30, speedUnit = SpeedUnit.MPH, distanceM = 400.0, direction = "ahead"))
     OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth())
     Row(verticalAlignment = Alignment.CenterVertically) {
         Help("“${rendered.display}”", Modifier.weight(1f))
-        TextButton(onClick = { deps.tts.speak(rendered.spoken, 10, -1, chime = false) }) { Text("Test speak") }
+        TextButton(onClick = { deps.tts.speak(rendered.spoken, kind.priority, -1, chime = chime && kind.priority >= 100, kind = kind) }) { Text("Test speak") }
     }
 }
 
@@ -881,6 +896,8 @@ fun CameraDbScreen(deps: PhoneDeps) {
     LaunchedEffect(refresh) { hasLogin = deps.settings.pgwCredentials() != null }
     val df = remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
     val sets by deps.pois.activeSets.collectAsState(initial = emptyList())
+    var cameraImportUri by remember { mutableStateOf<Uri?>(null) }
+    val cameraPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> cameraImportUri = uri }
 
     SetListHost(deps) { list ->
         Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -935,9 +952,16 @@ fun CameraDbScreen(deps: PhoneDeps) {
                 SwitchRow("Wi-Fi only", settings.pgwWifiOnly) { on -> scope.launch { deps.settings.update { it.copy(pgwWifiOnly = on) } } }
             }
             CameraSets(deps, cameraGroups(sets), list.message, onEdit = { list.editing = it }, onDelete = { list.confirmDelete = it })
+            // The same import as the POIs tab, any format and any source; the sets come here as cameras (DESIGN.md §13 item 8).
             Section("Manual import") {
-                Help("You can also download the iGO file yourself and import it on the POIs tab.")
-                OutlinedButton(onClick = { ctx.openUrl(PgwConfig.BASE + PgwConfig.CAMERAS_PATH) }) { Text("Open download page") }
+                Help("Import camera files from anywhere: OV2, iGO, KML, GPX, CSV or a zip of them. Each file becomes its own camera set.")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { cameraPicker.launch(arrayOf("*/*")) }) { Text("Import file") }
+                    OutlinedButton(onClick = { ctx.openUrl(PgwConfig.BASE + PgwConfig.CAMERAS_PATH) }) { Text("Open download page") }
+                }
+            }
+            cameraImportUri?.let { uri ->
+                ImportDialog(deps, uri, onClose = { msg -> cameraImportUri = null; list.message = msg }, source = PoiSourceType.CAMERA_FILE)
             }
         }
     }
@@ -954,7 +978,7 @@ internal data class CameraGroup(val name: String, val sets: List<PoiSetEntity>) 
  * so the OV2 download's per-speed sets share one group. Pending sites come last, then My reports. Internal for `PhoneHelpersTest`.
  */
 internal fun cameraGroups(sets: List<PoiSetEntity>): List<CameraGroup> {
-    val order = listOf(PoiSourceType.PGW, PoiSourceType.PGW_PENDING, PoiSourceType.REPORT)
+    val order = listOf(PoiSourceType.PGW, PoiSourceType.PGW_PENDING, PoiSourceType.CAMERA_FILE, PoiSourceType.REPORT)
     return sets.filter { it.source in order }
         .groupBy { it.name.substringBefore(" · ") }
         .map { (name, members) -> CameraGroup(name, members.sortedWith(compareBy({ speedOrder(it.name) }, { it.name }))) }
@@ -989,7 +1013,7 @@ private fun CameraSets(
     groups.forEach { g ->
         val open = g.name in expanded
         IconRowCard(
-            deps.icons.bitmap(g.sets.first().defaultIconId, 96).asImageBitmap(), g.name,
+            { px -> deps.icons.bitmap(g.sets.first().defaultIconId, px).asImageBitmap() }, g.name,
             "%,d cameras · %d %s".format(g.cameras, g.sets.size, if (g.sets.size == 1) "set" else "sets"),
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
             onClick = { expanded = if (open) expanded - g.name else expanded + g.name },
@@ -1177,6 +1201,12 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
             ChoiceChips(listOf(Units.IMPERIAL to "mph, miles, yards", Units.METRIC to "km/h, km, m"), s.units) { u -> set { it.copy(units = u) } }
             SwitchRow("Show speed and limit on the map", s.speedPanelOn) { v -> set { it.copy(speedPanelOn = v) } }
             SwitchRow("Satellite map in the car", s.satelliteMap) { v -> set { it.copy(satelliteMap = v) } }
+            // docs/SETTINGS.md §1.4; DESIGN.md §7.1.
+            Text("Camera icons", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+            ChoiceChips(listOf(CameraIconStyle.OURS to "AutoNavAlerts", CameraIconStyle.DOWNLOAD to "From the download"), s.cameraIcons) { v ->
+                set { it.copy(cameraIcons = v) }
+            }
+            Help("AutoNavAlerts draws every camera sharply with its limit. \"From the download\" uses the PocketGPSWorld pictures.")
         }
         // docs/SETTINGS.md §1.2. Voice silences the POI alerts only; the directions are always spoken (DESIGN.md §12.3).
         Section("Alerts") {
@@ -1259,19 +1289,12 @@ fun SettingsScreen(activity: Activity, deps: PhoneDeps) {
         }
         // Folded like Diagnostics: the car set-up manual (DESIGN.md §13 item 12).
         Fold("Connecting to a car", "Getting AutoNavAlerts on the car screen, and debugging on a head unit") { CarConnectionSection() }
-        // docs/SETTINGS.md §1.9: the build stamp (DESIGN.md §1.3) and the licences; nothing to set.
+        // docs/SETTINGS.md §1.9: the build stamp (DESIGN.md §1.3) and the licence; no icon credit (§5.2a); nothing to set.
         Section("About") {
             Text("AutoNavAlerts ${io.autonav.alerts.BuildConfig.VERSION_NAME} by Damien Dye")
             Help("Build ${io.autonav.alerts.BuildConfig.GIT_COMMIT}" + if (io.autonav.alerts.BuildConfig.DEBUG) " (debug)" else "")
             TextButton(onClick = { activity.openUrl("https://github.com/damo2929/AutoNavAlerts") }) { Text("github.com/damo2929/AutoNavAlerts") }
             Help("Apache License 2.0. AI-assisted code, written with Claude Fable and Claude Opus.")
-            var showLicence by remember { mutableStateOf(false) }
-            val licence = remember { deps.icons.pgwIconLicence() }
-            if (licence != null) {
-                Help("Camera set icons from your PocketGPSWorld download are © GerryC, 2007, used non-commercially with credit.")
-                TextButton(onClick = { showLicence = !showLicence }) { Text(if (showLicence) "Hide icon licence" else "Show icon licence") }
-                if (showLicence) Help(licence.replace("\r", ""))
-            }
         }
     }
 }

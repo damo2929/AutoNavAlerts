@@ -188,18 +188,20 @@ internal fun Btn(label: String, scope: CoroutineScope, enabled: Boolean = true, 
 internal suspend fun <T> io(block: suspend CoroutineScope.() -> T): T = withContext(Dispatchers.IO, block)
 
 /**
- * A tappable card with a 40 dp icon, a title and a subtitle line, then [trailing] (a switch, an arrow):
- * the set card and the camera-type group card (DESIGN.md §13 items 3 and 8). [modifier] is the card's own
- * (its width and outer padding); the click is added after it.
+ * A tappable card with a [LIST_ICON] square icon, a title and a subtitle line, then [trailing] (a switch, an
+ * arrow): the set card and the camera-type group card (DESIGN.md §13 items 3 and 8, §7.1 "Phone list rows").
+ * [icon] draws the icon at the pixel size asked, so it is sharp at 64 dp. [modifier] is the card's own (its
+ * width and outer padding); the click is added after it.
  */
 @Composable
 internal fun IconRowCard(
-    icon: ImageBitmap, title: String, subtitle: String, modifier: Modifier, onClick: () -> Unit,
+    icon: (sizePx: Int) -> ImageBitmap, title: String, subtitle: String, modifier: Modifier, onClick: () -> Unit,
     trailing: @Composable RowScope.() -> Unit,
 ) {
+    val px = with(androidx.compose.ui.platform.LocalDensity.current) { LIST_ICON.roundToPx() }
     Card(modifier.clickable(onClick = onClick)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(icon, null, Modifier.size(40.dp))
+            Image(icon(px), null, Modifier.size(LIST_ICON))
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(subtitle, style = MaterialTheme.typography.bodySmall)
@@ -208,6 +210,9 @@ internal fun IconRowCard(
         }
     }
 }
+
+/** The icon size in the phone's set and camera-group lists (DESIGN.md §7.1, owner 2026-10-25). */
+internal val LIST_ICON = 64.dp
 
 /** The end labels under a slider, [min] at the left and [max] at the right, with [middle] (e.g. a Reset button) between them. */
 @Composable

@@ -150,8 +150,12 @@ class CarScreenRig(imperial: Boolean = true, apiLevel: Int = CarAppApiLevels.LEV
     /** Advances the main looper's clock by [ms] (coroutine `delay`s on Main resume). */
     fun advance(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(ms, TimeUnit.MILLISECONDS)
 
-    /** Drains the main looper until [done], for work that hops to IO (DataStore, the contacts provider) and back. */
-    fun awaitUntil(timeoutMs: Long = 5_000, done: () -> Boolean) {
+    /**
+     * Drains the main looper until [done], for work that hops to IO (DataStore, the contacts provider) and back.
+     * It returns as soon as [done] holds; the 20 s limit is wall-clock, so it only matters on a loaded machine
+     * (5 s timed out three times on 2026-10-25 with the emulator and head unit running beside Gradle).
+     */
+    fun awaitUntil(timeoutMs: Long = 20_000, done: () -> Boolean) {
         val end = System.currentTimeMillis() + timeoutMs
         while (true) {
             idle()

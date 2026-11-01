@@ -59,11 +59,7 @@ class PoiRepositoryPgwImportTest {
         ))
 
     private fun sets() = runBlocking { db.poiSets().active().associateBy { it.name } }
-    private fun poisOf(setId: Long): List<PoiEntity> = runBlocking {
-        db.openHelper.readableDatabase.query("SELECT id FROM poi WHERE setId = $setId ORDER BY id").use { c ->
-            buildList { while (c.moveToNext()) add(db.pois().get(c.getLong(0))!!) }
-        }
-    }
+    private fun poisOf(setId: Long): List<PoiEntity> = runBlocking { DataFixtures.poisOf(db, setId) }
 
     @Test fun theIgoPackageGivesOneSetPerTypeFile() = runBlocking<Unit> {
         val out = repo.importPgwZip(igoZip(), "99.1")
@@ -183,8 +179,8 @@ class PoiRepositoryPgwImportTest {
         assertEquals("Temporary Average speed (SPECS) (roadworks)", specsCat.name)
         assertEquals(ZoneRole.ZONE_POINT, specsCat.zoneRole)
         assertNull(poisOf(sets.getValue("PGW average speed cameras (SPECS) · variable limit").id).single().speedLimit)
-        // The icon licence travels with the icons (§5.2a).
-        assertEquals("Made-up icon licence text", icons.pgwIconLicence())
+        // No icon licence is kept: the icons are the user's own copy (§5.2a, owner 2026-10-25).
+        assertTrue(File(context.filesDir, "icons").listFiles().orEmpty().none { it.name.contains("licence", true) })
     }
 
     @Test fun aSyncRefreshesASuppliedIconButNotOneTheUserPicked() = runBlocking<Unit> {

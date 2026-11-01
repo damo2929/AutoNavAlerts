@@ -134,7 +134,7 @@ class SpeedLimitWorker @AssistedInject constructor(
         ensureChannel(applicationContext, CHANNEL, "Speed limit download", NotificationManager.IMPORTANCE_LOW)
         val cancel = WorkManager.getInstance(applicationContext).createCancelPendingIntent(id)
         return NotificationCompat.Builder(applicationContext, CHANNEL)
-            .setSmallIcon(R.drawable.ic_poi_camera_fixed)
+            .setSmallIcon(R.drawable.ic_cam_glyph_fixed)
             .setContentTitle("Downloading speed limits (OpenStreetMap)")
             .setContentText(text)
             .setOnlyAlertOnce(true)
