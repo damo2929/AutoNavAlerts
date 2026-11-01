@@ -77,7 +77,20 @@ class RoutePreviewScreen(
             route = deps.guidance().currentRoute()
             loading = false
             invalidate()
+            checkBridges()
         }
+    }
+
+    /** The low-bridge line for the selected route (DESIGN.md §6.5 "Warned on the route preview"), or null. */
+    @Volatile private var bridgeLine: String? = null
+
+    /**
+     * Checks the route now set (the one Go uses) against the bridges that alert for the vehicle, and shows the
+     * result on its row. Run once the route is there and again after the driver picks the other route.
+     */
+    private suspend fun checkBridges() {
+        val line = routeBridgeLine(deps)
+        if (line != bridgeLine) { bridgeLine = line; invalidate() }
     }
 
     /** On screen: the watchdog and the zoom lock stand down for the SDK's route overview (§8). */
@@ -116,7 +129,7 @@ class RoutePreviewScreen(
             // One SDK route. The note says why there's no energy-efficient one when that was asked for
             // ("Fastest route (energy-efficient routing isn't available: …)", §8.3a "never a dead end").
             val note = deps.guidance().routeNote.value?.let { " · $it" }.orEmpty()
-            items.addItem(routeRow(r.seconds, r.meters, trafficText(r.delaySeverity) + note))
+            items.addItem(routeRow(r.seconds, r.meters, trafficText(r.delaySeverity) + note, second = bridgeLine))
             items.setOnSelectedListener { }
             items.setSelectedIndex(0)
         } else {
@@ -130,7 +143,9 @@ class RoutePreviewScreen(
                 // The card's width is the host's; keep the text short so it wraps less: the route's
                 // name goes on the title line beside the time, the traffic on the line below.
                 val name = if (c.efficient && choices.size > 1) "Energy-efficient" else c.label
-                items.addItem(routeRow(c.route.seconds, c.route.meters, routeTraffic(c.route), icon, title = " · $name", second = routeQueue(c.route)))
+                // The selected route's low bridges, if any, take the queue line: only its geometry is known (§6.5).
+                val second = if (i == sel) bridgeLine ?: routeQueue(c.route) else routeQueue(c.route)
+                items.addItem(routeRow(c.route.seconds, c.route.meters, routeTraffic(c.route), icon, title = " · $name", second = second))
             }
             items.setSelectedIndex(sel)
             items.setOnSelectedListener { i ->
@@ -139,6 +154,7 @@ class RoutePreviewScreen(
                         androidx.car.app.CarToast.makeText(carContext, "Couldn't switch to that route", androidx.car.app.CarToast.LENGTH_SHORT).show()
                     }
                     invalidate()
+                    checkBridges()
                 }
             }
         }
@@ -251,6 +267,35 @@ class RoutePreviewScreen(
     }
 
     companion object {
+        /**
+         * The low-bridge line for the route now set in the SDK (DESIGN.md §6.5 "Warned on the route preview"), or null
+         * with none, no vehicle height or no route: the bridges that alert for the vehicle within 30 m of the route.
+         * Shared by the preview and the reroute check in `NavSession`. Any thread; the maths runs on Default.
+         */
+        suspend fun routeBridgeLine(deps: io.autonav.alerts.car.CarDeps): String? {
+            val s = deps.settings().current()
+            val bridges = deps.pois().alertingBridges(s.vehicleHeightCm.takeIf { it > 0 }, s.bridgeMarginCm)
+            if (bridges.isEmpty()) return null
+            return withContext(kotlinx.coroutines.Dispatchers.Default) {
+                val points = deps.guidance().routePointsNow().map { io.autonav.alerts.core.geo.LatLngPoint(it.latitude, it.longitude) }
+                io.autonav.alerts.core.nav.RouteBridges.onRoute(points, bridges)?.let { bridgeLineText(it, s.units) }
+            }
+        }
+
+        /**
+         * The preview's low-bridge line (DESIGN.md §6.5): "Low bridge 6ft 3in on this route", "3 low bridges on this
+         * route, lowest 6ft 3in", or without a height when none is known. Heights in the user's [units].
+         */
+        internal fun bridgeLineText(on: io.autonav.alerts.core.nav.RouteBridges.OnRoute, units: io.autonav.alerts.core.alerts.Units): String {
+            val h = on.lowestCm?.let { io.autonav.alerts.phone.heightText(it, units) }
+            return when {
+                on.count == 1 && h != null -> "Low bridge $h on this route"
+                on.count == 1 -> "Low bridge on this route"
+                h != null -> "${on.count} low bridges on this route, lowest $h"
+                else -> "${on.count} low bridges on this route"
+            }
+        }
+
         /** The preview on screen, if any, for the debug bench's `--ez go true`. */
         @Volatile var showing: RoutePreviewScreen? = null
             private set

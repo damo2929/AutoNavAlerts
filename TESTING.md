@@ -435,6 +435,8 @@ Before testing, allow the **microphone** in the phone's Settings tab (Permission
 | LB3 | Start guidance, then press Download | "Not while navigating …"; nothing changes |
 | LB4 | Settings → Vehicle height 13 ft, safety 8 cm | Bridges tab: the heights up to 13ft 3in alert; drive at a 13ft bridge: three stages spoken as for a camera; at a 14ft bridge: marker only, nothing spoken (`alert-debug` `cache … alertable=`) |
 | LB5 | Clear the vehicle height | No bridge alerts; markers still drawn |
+| LB6 | Vehicle height above a bridge on a route (e.g. 4.2 m), route preview through it | The route row's second line: "Low bridge 13ft 6in on this route" (or "N low bridges …, lowest …"); none with no vehicle height |
+| LB7 | Guide on that route, drive off it so the SDK reroutes through another alerting bridge | Toast and one spoken line "Rerouted. Low bridge … on this route"; `debug-nav` `Guidance bridges on the new route: …`; a reroute with the same bridges says nothing |
 
 ### 6.9 Navigation from other apps
 | # | Steps | Expected |

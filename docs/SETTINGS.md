@@ -418,6 +418,8 @@ PocketGPSWorld's low bridges (subscriber data), downloaded with the same login a
 
 A bridge alerts, with the same three stages as a camera, only when it is no higher than your vehicle plus the safety height. The others show on the car map without speaking. A bridge with an unknown height alerts whenever a vehicle height is set.
 
+Google's routing can't avoid low bridges, so the car warns you instead. On the **route preview**, a route that passes one of your alerting bridges says so under the route: "Low bridge 6ft 3in on this route", or "3 low bridges on this route, lowest 6ft 3in". After a **reroute** while you drive, a new low bridge on the new route is shown and said once: "Rerouted. Low bridge 6ft 3in on this route".
+
 ## 5. Reports tab
 
 Technical detail: DESIGN.md §8.5.

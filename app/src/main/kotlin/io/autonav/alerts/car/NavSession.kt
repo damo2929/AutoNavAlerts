@@ -115,6 +115,27 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
      * returns the first screen. A navigate [intent] (§9.1) puts the preview or search over Home so
      * Back still lands on the map.
      */
+    /** The low-bridge line last shown for this guidance (DESIGN.md §6.5): a reroute speaks only when it changes. */
+    private var lastBridgeLine: String? = null
+
+    /**
+     * A reroute while guiding (DESIGN.md §6.5 "A reroute is checked too"): the new route's low bridges, by the
+     * preview's check; when they differ from what was last shown and there are some, a car toast and one spoken
+     * line (voice on and not muted), at the speech queue's ordinary priority so camera alerts go first.
+     */
+    private suspend fun checkRerouteBridges() {
+        val line = RoutePreviewScreen.routeBridgeLine(deps)
+        if (line != null && line != lastBridgeLine) {
+            val text = "Rerouted. $line"
+            deps.eventLog().record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Guidance", "bridges on the new route: $line")
+            androidx.car.app.CarToast.makeText(carContext, text, androidx.car.app.CarToast.LENGTH_LONG).show()
+            val st = deps.settings().current()
+            // The same mute as the camera alerts: the car's Mute or Voice off (§12.3).
+            if (!with(AlertCoordinator) { st.muted(System.currentTimeMillis()) }) deps.tts().speak(text, 10, BRIDGE_SPEECH_ID, false)
+        }
+        lastBridgeLine = line
+    }
+
     override fun onCreateScreen(intent: Intent): Screen {
         active = this
         deps = CarDeps.from(carContext)
@@ -235,13 +256,19 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
         // The SDK builds its ETA card when guidance starts, so the controls-off calls are repeated then
         // (DESIGN.md §8 step 6; on the bench a call made before the card existed had no effect).
         deps.guidance().guiding.onEach { g ->
+            // The route at Go was shown on the preview: taken as already shown, so only a change speaks (§6.5).
+            lastBridgeLine = if (g) RoutePreviewScreen.routeBridgeLine(deps) else null
             surface.refreshSdkControls("guiding=$g")
             delay(2_000)
             surface.refreshSdkControls("guiding=$g +2s")
         }.launchIn(lifecycleScope)
         // A new route while guiding leaves the guiding flag as it was, so nothing above runs; the SDK may drop
         // its camera then (bench 2026-11-01), so the view is put back the same way (DESIGN.md §8 "Follow watchdog").
-        deps.guidance().routeChanges.onEach { if (deps.guidance().guiding.value) surface.refreshSdkControls("route") }.launchIn(lifecycleScope)
+        deps.guidance().routeChanges.onEach {
+            if (!deps.guidance().guiding.value) return@onEach
+            surface.refreshSdkControls("route")
+            checkRerouteBridges()
+        }.launchIn(lifecycleScope)
         // Every fix: redraw markers (DESIGN.md §8.1) and update the speed panel (§8.4).
         // The same fix the engine used feeds the panel, so the dial and the engine can't diverge (§8.4).
         deps.alerts().markers.onEach { m ->
@@ -490,6 +517,8 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
     }
 
     companion object {
+        /** The speech queue's group for the reroute low-bridge line (directions are -2, limit changes -1; §12.3). */
+        private const val BRIDGE_SPEECH_ID = -3L
         /** The open car session, for the debug-build bench hook (TESTING.md §3); null when none. */
         @Volatile var active: NavSession? = null
             private set

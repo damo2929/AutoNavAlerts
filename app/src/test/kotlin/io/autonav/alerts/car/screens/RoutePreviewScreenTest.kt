@@ -200,4 +200,15 @@ class RoutePreviewScreenTest {
         assertFalse(rig.deps.guide.guiding.value)
         assertNotNull("Go is not an abandon", rig.deps.guide.destination.value)
     }
+
+    @Test fun theLowBridgeLineSaysHowManyAndTheLowest() {
+        // DESIGN.md §6.5 "Warned on the route preview".
+        val imperial = io.autonav.alerts.core.alerts.Units.IMPERIAL
+        val on = io.autonav.alerts.core.nav.RouteBridges::OnRoute
+        assertEquals("Low bridge 6ft 3in on this route", RoutePreviewScreen.bridgeLineText(on(1, 191), imperial))
+        assertEquals("3 low bridges on this route, lowest 6ft 3in", RoutePreviewScreen.bridgeLineText(on(3, 191), imperial))
+        assertEquals("Low bridge 1.91 m on this route", RoutePreviewScreen.bridgeLineText(on(1, 191), io.autonav.alerts.core.alerts.Units.METRIC))
+        assertEquals("2 low bridges on this route", RoutePreviewScreen.bridgeLineText(on(2, null), imperial))
+        assertEquals("Low bridge on this route", RoutePreviewScreen.bridgeLineText(on(1, null), imperial))
+    }
 }

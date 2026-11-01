@@ -93,6 +93,21 @@ class PoiRepository @Inject constructor(
 
     /** ACTIVE sets by id, for the icon and template resolution of §4.2 and for the backup. */
     suspend fun sets(): Map<Long, PoiSetEntity> = db.poiSets().active().associateBy { it.id }
+
+    /**
+     * The low bridges that alert for a vehicle of [vehicleCm] with [marginCm] of safety height, as points with their
+     * heights (DESIGN.md §6.5 "Warned on the route preview"): the enabled PGW_BRIDGE sets that pass `BridgeHeight.alerts`,
+     * the rule the alerts use. Empty with no vehicle height. On Dispatchers.IO.
+     */
+    suspend fun alertingBridges(vehicleCm: Int?, marginCm: Int): List<io.autonav.alerts.core.nav.RouteBridges.Bridge> = withContext(Dispatchers.IO) {
+        if (vehicleCm == null) return@withContext emptyList()
+        val heights = db.poiSets().allBySource(PoiSourceType.PGW_BRIDGE)
+            .filter { it.enabled && it.alertsEnabled }
+            .associate { it.id to io.autonav.alerts.core.poi.BridgeHeight.parseCm(it.name) }
+            .filterValues { io.autonav.alerts.core.poi.BridgeHeight.alerts(it, vehicleCm, marginCm) }
+        if (heights.isEmpty()) return@withContext emptyList()
+        db.pois().inSets(heights.keys.toList()).map { io.autonav.alerts.core.nav.RouteBridges.Bridge(it.lat, it.lon, heights[it.setId]) }
+    }
     /** Every category by id, for the resolution of §4.2. */
     suspend fun categories(): Map<Long, PoiCategoryEntity> = db.categories().all().associateBy { it.id }
 

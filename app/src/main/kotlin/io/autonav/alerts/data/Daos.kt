@@ -114,6 +114,10 @@ interface PoiDao {
     suspend fun get(id: Long): PoiEntity?
 
     /** A visible POI of a set, one with a limit first: the camera the set editor's Test speak speaks for (§13 item 7). */
+    /** Every visible POI of [setIds]: the low bridges the route preview checks (§6.5 "Warned on the route preview"). */
+    @Query("SELECT * FROM poi WHERE setId IN (:setIds) AND hiddenByReport = 0")
+    suspend fun inSets(setIds: List<Long>): List<PoiEntity>
+
     @Query("SELECT * FROM poi WHERE setId = :setId AND hiddenByReport = 0 ORDER BY speedLimit IS NULL, id LIMIT 1")
     suspend fun sampleIn(setId: Long): PoiEntity?
 
