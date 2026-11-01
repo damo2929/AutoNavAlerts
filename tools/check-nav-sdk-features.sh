@@ -46,8 +46,8 @@ if [ -n "$follow" ] && [ "$(sort <<<"$follow")" != "$(sort <<<"$known")" ]; then
   status=10
 fi
 if [ $status -eq 10 ]; then
-  echo "=> Android Auto now has incident reporting APIs. The app enables them automatically (IncidentReporting.kt);"
-  echo "   update DESIGN.md §16 #21 and test on the DHU."
+  echo "=> A watched API changed (see above). Incident reporting is not in the app (removed 2026-10-25):"
+  echo "   design it in DESIGN.md §16 #21 first, then build it and test on the DHU."
 else
   echo "=> Still phone-only. Nothing to do."
 fi
