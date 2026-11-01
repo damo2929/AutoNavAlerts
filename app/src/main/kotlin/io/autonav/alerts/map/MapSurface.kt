@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.floor
 import kotlin.math.ln
 
 /**
@@ -149,11 +150,17 @@ class MapSurface(
     /** Camera follow is on (the user hasn't panned since the last recenter). */
     private var following = true
     /**
-     * The zoom the map follows the car at: MAX_ZOOM until the user picks another (+ / − or pinch).
+     * The zoom the map follows the car at: START_ZOOM until the user picks another (+ / − or pinch).
      * Always passed to the SDK: its own follow zoom draws closer than the max-zoom cap and so
      * shows no traffic (DESIGN.md §8).
      */
-    private var followZoom: Float = MAX_ZOOM
+    private var followZoom: Float = START_ZOOM
+    /**
+     * The zoom cap (DESIGN.md §8 "Zoom cap 17.5"): [MAX_ZOOM], the road map's last zoom with traffic. Only the debug
+     * bench changes it (`--ef zoomcap 21`, owner 2026-11-01: "temp remove the limit"), to look at the map above 17.
+     */
+    var zoomCap: Float = MAX_ZOOM
+        set(v) { field = v; _map.value?.setMaxZoomPreference(v); applyView("zoomcap") }
     private var container: SurfaceContainer? = null
     /** Day or night colours for our buttons, from the car (DESIGN.md §8). */
     private var dark = true
@@ -258,7 +265,7 @@ class MapSurface(
             m.uiSettings.isCompassEnabled = false
             m.uiSettings.isMyLocationButtonEnabled = false
             setMapType(m)
-            // The road map stops drawing traffic above zoom 17 in towns (satellite keeps it), and the follow
+            // The road map stops drawing traffic from zoom 18 (satellite keeps it; 17.5 still has it, 2026-11-01), and the follow
             // camera sits at 18. Capping the zoom keeps traffic on screen on both (DESIGN.md §8).
             m.setMaxZoomPreference(MAX_ZOOM)
             // The SDK's own follow events, logged with our last camera call (DESIGN.md §8 "Follow watchdog", 2026-11-01).
@@ -448,8 +455,10 @@ class MapSurface(
     fun zoom(delta: Float) {
         val m = _map.value ?: return
         if (!following) { m.animateCamera(CameraUpdateFactory.zoomBy(delta)); return }
-        // Between 3 and the 17 cap; the new value lasts the whole session, route or no route (§8).
-        followZoom = (followZoom + delta).coerceIn(MIN_FOLLOW_ZOOM, MAX_ZOOM)
+        // Between 3 and the 17.5 cap; the new value lasts the whole session, route or no route (§8). A button step
+        // down from the cap lands on a whole level (17.5 → 17), so + and − stay on whole levels below it.
+        val stepDown = delta <= -1f && delta == floor(delta) && followZoom != floor(followZoom)
+        followZoom = (if (stepDown) floor(followZoom) + (delta + 1f) else followZoom + delta).coerceIn(MIN_FOLLOW_ZOOM, zoomCap)
         applyView("zoom")
     }
 
@@ -646,11 +655,11 @@ class MapSurface(
     /**
      * The one view with and without a route, hard set (DESIGN.md §8): while following, and not on the
      * route preview, the map's min and max zoom are both [followZoom], so the SDK's own camera can't
-     * change it; panned or on the preview the range is open (3–17). True while locked.
+     * change it; panned or on the preview the range is open (3–17.5). True while locked.
      */
     private fun applyZoomLock(m: GoogleMap, resend: Boolean): Boolean {
         val lock = following && !previewShowing
-        val range = if (lock) followZoom to followZoom else MIN_FOLLOW_ZOOM to MAX_ZOOM
+        val range = if (lock) followZoom to followZoom else MIN_FOLLOW_ZOOM to zoomCap
         if (resend || range != sentZoomRange) {
             m.setMinZoomPreference(range.first)
             m.setMaxZoomPreference(range.second)
@@ -806,14 +815,16 @@ class MapSurface(
 
     companion object {
         private const val TAG = "MapSurface"
-        /** The open end of the zoom range while panned or on the preview (§8: "3–17"). */
+        /** The open end of the zoom range while panned or on the preview (§8: "3–17.5"). */
         private const val MIN_FOLLOW_ZOOM = 3f
         /** Room left either side of the banner for the speed panel (its pill and a margin). */
         private const val SPEED_PANEL_CLEAR_DP = 140
         /** Height kept clear at the top for the host's action strip (its buttons end at 88 px on a 160 dpi DHU). */
         private const val ACTION_STRIP_CLEAR_DP = 88
-        /** Closest zoom at which the road map still draws Google traffic (found on the bench: 17.5 has none in towns, 18 none anywhere). */
-        const val MAX_ZOOM = 17f
+        /** Closest zoom at which the road map still draws Google traffic (bench, 2026-11-01: 17.5 and 17.75 have it, 18 none; DESIGN.md §8). */
+        const val MAX_ZOOM = 17.5f
+        /** The zoom the map starts at in each car session (§8; owner 2026-11-01: the cap is 17.5, the start stays 17). */
+        const val START_ZOOM = 17f
         /** Gap between the alert banner's top and the followed car (owner, 2026-10-23). */
         private const val CAR_GAP_DP = 8
         /** The padded map is never narrower than this, whatever the host reports (§8). */

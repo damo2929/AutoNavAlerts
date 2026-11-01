@@ -81,7 +81,7 @@ DESIGN.md is not documentation of the code. It is the specification the code mus
 - Over-limit slider −5% to +20%, default −0.1% (§11 step 9).
 - Alert templates use only `{category} {speed} {units} {distance} {direction}` (§7.2).
 - Media is ducked, never paused (§12.3). Mute silences speech only; cards still show.
-- Traffic layer always on; map zoom capped at 17 (§8).
+- Traffic layer always on; map zoom capped at 17.5, starting at 17 (§8; owner, 2026-11-01).
 - Speed limit always shown next to the speed: Google, then camera/zone, then OpenStreetMap (one bulk Geofabrik download, never live lookups), else "–" (§8.4, §8.4a).
 - Navigation terms accepted once and remembered. PGW swap never happens while navigating (§6.2).
 - Big data streamed from disk, never held whole in RAM (§1.3 Memory).

@@ -68,6 +68,9 @@ import java.util.Random
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez engine true  # the alert engine's snapshot to alert-debug and logcat
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --es import f.gpx  # import files/bench/f.gpx as a set (see the import branch)
  *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez follow false  # stop the map following (true: like recenter)
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --es viewport 12,88,12,120  # experiment: the SDK's layout-delegate viewport (off: remove)
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ef zoomcap 21     # lift the zoom cap for a look above 17.5 (17.5 restores it)
+ *   adb shell am broadcast -a io.autonav.alerts.BENCH --ez satellite true # like tapping the Satellite pill (false: the road map)
  *   (add -p uk.damiendye.autonav, the application ID: Android only delivers explicit broadcasts to manifest receivers)
  *   Every command lands in debug-nav.log as a `Bench` line (DESIGN.md §15.5).
  *
@@ -182,6 +185,31 @@ class BenchReceiver : BroadcastReceiver() {
                     if (v is ViewGroup && depth < 6) for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
                 }
                 session.surface.overlayRoot?.let { walk(it, 0) } ?: Log.w(TAG, "No map window")
+            }
+            intent.hasExtra("satellite") -> main.post {
+                // Like tapping the Satellite pill: the setting is written, so the map, More and the phone agree (§8).
+                val on = intent.getBooleanExtra("satellite", true)
+                session.surface.onSatelliteToggle?.invoke(on)
+                Log.i(TAG, "Satellite $on")
+            }
+            intent.hasExtra("zoomcap") -> main.post {
+                // The zoom cap for a look above it (DESIGN.md §8 "Zoom cap 17.5"); release builds keep 17.5, which puts it back.
+                session.surface.zoomCap = intent.getFloatExtra("zoomcap", io.autonav.alerts.map.MapSurface.MAX_ZOOM)
+                Log.i(TAG, "Zoom cap ${session.surface.zoomCap}")
+            }
+            intent.hasExtra("viewport") -> main.post {
+                // The layout-delegate viewport experiment (ViewportExperiment): "l,t,r,b" pixels sets it on the
+                // inner NavigationView, "off" takes it away again.
+                val arg = intent.getStringExtra("viewport").orEmpty()
+                fun find(v: View): com.google.android.libraries.navigation.NavigationView? =
+                    v as? com.google.android.libraries.navigation.NavigationView
+                        ?: (v as? ViewGroup)?.let { g -> (0 until g.childCount).firstNotNullOfOrNull { find(g.getChildAt(it)) } }
+                val inner = session.surface.overlayRoot?.let(::find) ?: run { Log.w(TAG, "Viewport: no NavigationView"); return@post }
+                if (arg == "off") { inner.setLayoutDelegate(null); Log.i(TAG, "Viewport off"); return@post }
+                val m = arg.split(",").mapNotNull { it.trim().toIntOrNull() }
+                if (m.size != 4) { Log.w(TAG, "Viewport: give l,t,r,b in pixels or off"); return@post }
+                inner.setLayoutDelegate(ViewportExperiment(m.toIntArray()))
+                Log.i(TAG, "Viewport delegate set ${m.joinToString(",")}")
             }
             intent.hasExtra("follow") -> main.post {
                 // false: like a tiny drag (the map stops following); true: like recenter.
