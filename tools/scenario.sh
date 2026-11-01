@@ -39,7 +39,9 @@ BEND_TO="-1.40246,53.14066"
 
 run() { if [ -n "$DRY" ]; then echo "+ $*" >&2; else "$@"; fi; }
 pause() { echo "… ${2:-waiting} $1 s"; [ -n "$DRY" ] || sleep "$1"; }
-bench() { echo "+ bench: $*"; run "$ADB" -e shell am broadcast -a $PKG.BENCH -p $PKG "$@"; }
+# The action keeps the code's namespace (io.autonav.alerts) while the package is the application ID: the
+# application-ID change of 2026-10-24 renamed the action here too, so no scenario reached the app until 2026-11-01.
+bench() { echo "+ bench: $*"; run "$ADB" -e shell am broadcast -a io.autonav.alerts.BENCH -p $PKG "$@"; }
 
 # drive.py in the background, logging like bench.sh does; wait_drive blocks until the lap is done.
 drive() {
