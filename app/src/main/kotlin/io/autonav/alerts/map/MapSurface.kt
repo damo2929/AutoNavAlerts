@@ -623,8 +623,11 @@ class MapSurface(
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { applyView(reason, settle) }; return }
         layoutOverlays()
         val m = _map.value ?: return
-        val padding = applyPadding(m)
-        val locked = applyZoomLock(m)
+        // Padding and the zoom lock go to the map only when they change, or on the reasons that set the map up or
+        // re-follow anyway (DESIGN.md §8, owner 2026-11-01: any camera call may end the SDK's follow).
+        val resend = reason in FOLLOW_REASONS
+        val padding = applyPadding(m, resend)
+        val locked = applyZoomLock(m, resend)
         val frame = "$padding@$followZoom${if (locked) "!" else ""}"
         val changed = frame != lastFrame
         // A camera request only with a reason: the frame changed, or the SDK's camera was moved or
@@ -645,12 +648,19 @@ class MapSurface(
      * route preview, the map's min and max zoom are both [followZoom], so the SDK's own camera can't
      * change it; panned or on the preview the range is open (3–17). True while locked.
      */
-    private fun applyZoomLock(m: GoogleMap): Boolean {
+    private fun applyZoomLock(m: GoogleMap, resend: Boolean): Boolean {
         val lock = following && !previewShowing
-        m.setMinZoomPreference(if (lock) followZoom else MIN_FOLLOW_ZOOM)
-        m.setMaxZoomPreference(if (lock) followZoom else MAX_ZOOM)
+        val range = if (lock) followZoom to followZoom else MIN_FOLLOW_ZOOM to MAX_ZOOM
+        if (resend || range != sentZoomRange) {
+            m.setMinZoomPreference(range.first)
+            m.setMaxZoomPreference(range.second)
+            sentZoomRange = range
+        }
         return lock
     }
+
+    /** The zoom range last sent to this map, so an unchanged one isn't sent again (null on a new map). */
+    private var sentZoomRange: Pair<Float, Float>? = null
 
     /** The settle re-follow (one runnable, so a second settle replaces the first's timers). */
     private val settleFollow = Runnable { _map.value?.let { mm -> if (following) follow(mm) } }
@@ -661,7 +671,7 @@ class MapSurface(
     private var lastOverlayKey: String? = null
 
     /** The map's camera padding (DESIGN.md §8 "Where the car sits"), as "l,t,r,b"; only [applyView] calls it. */
-    private fun applyPadding(m: GoogleMap): String? {
+    private fun applyPadding(m: GoogleMap, resend: Boolean): String? {
         val density = presentation?.context?.resources?.displayMetrics?.density ?: return null
         // Fixed top and bottom, so the car sits in the same spot in free drive and guidance and never moves
         // with the host's cards: centred across the map, just above the alert banner (owner, DESIGN.md §8
@@ -686,8 +696,9 @@ class MapSurface(
             val carY = top + GUIDED_CAR_FRACTION * (h - bottom - top)
             (2 * carY - (h - bottom)).toInt().coerceIn(top, h - bottom - 1)
         }
-        m.setPadding(left, padTop, right, bottom)
-        lastPadding = intArrayOf(left, padTop, right, bottom)
+        val pad = intArrayOf(left, padTop, right, bottom)
+        if (resend || !pad.contentEquals(lastPadding)) m.setPadding(left, padTop, right, bottom)
+        lastPadding = pad
         return "$left,$padTop,$right,$bottom"
     }
 
@@ -760,6 +771,8 @@ class MapSurface(
         _map.value = null
         lastOverlayKey = null
         lastFrame = null
+        lastPadding = null
+        sentZoomRange = null
         overlays = null
         navView?.let { v ->
             runCatching { v.onPause(); v.onStop(); v.onDestroy() }.onFailure { Log.w(TAG, "navView teardown", it) }
