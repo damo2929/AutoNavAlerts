@@ -29,6 +29,7 @@ import androidx.car.app.SurfaceContainer
 import io.autonav.alerts.R
 import io.autonav.alerts.car.CarDeps
 import io.autonav.alerts.core.nav.FollowWatchdog
+import io.autonav.alerts.core.nav.TapTargets
 import io.autonav.alerts.diag.EventLog
 import com.google.android.gms.maps.CameraUpdate
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -390,8 +391,13 @@ class MapSurface(
      * first, then the banner, and each tap is logged with what it hit (§8 "Map surface set-up").
      */
     override fun onClick(x: Float, y: Float) {
-        val toggle = mapTypeButton?.takeIf { it.isShown && hit(it, x, y) }
-        val button = mapButtons.firstOrNull { it.isShown && hit(it, x, y) }
+        // A tap anywhere on a button or within TAP_SLOP_DP of it counts; the nearest button wins (DESIGN.md §8 "Map buttons").
+        val targets = listOfNotNull(mapTypeButton) + mapButtons
+        val slop = TAP_SLOP_DP * (presentation?.context?.resources?.displayMetrics?.density ?: 1f)
+        val boxes = targets.mapIndexedNotNull { i, v -> if (v.isShown) TapTargets.Box(i, v.left.toFloat(), v.top.toFloat(), v.right.toFloat(), v.bottom.toFloat()) else null }
+        val picked = TapTargets.pick(x, y, boxes, slop)?.let(targets::get)
+        val toggle = picked as? MapTypeButtonView
+        val button = picked?.takeIf { it !== toggle }
         val banner = alertBanner?.takeIf { it.showing != null && hit(it, x, y) }
         val name = when {
             toggle != null -> { onSatelliteToggle?.invoke(!satellite); "satellite" }
@@ -817,6 +823,8 @@ class MapSurface(
         private const val TAG = "MapSurface"
         /** The open end of the zoom range while panned or on the preview (§8: "3–17.5"). */
         private const val MIN_FOLLOW_ZOOM = 3f
+        /** How far around a button a tap still counts for it (owner, 2026-11-01; DESIGN.md §8 "Map buttons"). */
+        private const val TAP_SLOP_DP = 16f
         /** Room left either side of the banner for the speed panel (its pill and a margin). */
         private const val SPEED_PANEL_CLEAR_DP = 140
         /** Height kept clear at the top for the host's action strip (its buttons end at 88 px on a 160 dpi DHU). */

@@ -181,7 +181,7 @@ class BenchReceiver : BroadcastReceiver() {
             intent.getBooleanExtra("views", false) -> main.post {
                 // What's in the car map window, to see what draws (and how the map renders).
                 fun walk(v: View, depth: Int) {
-                    Log.i(TAG, "  ".repeat(depth) + "${v.javaClass.name} vis=${v.visibility} hw=${v.isHardwareAccelerated} layer=${v.layerType}")
+                    Log.i(TAG, "  ".repeat(depth) + "${v.javaClass.name} vis=${v.visibility} hw=${v.isHardwareAccelerated} layer=${v.layerType} bounds=${v.left},${v.top}-${v.right},${v.bottom}")
                     if (v is ViewGroup && depth < 6) for (i in 0 until v.childCount) walk(v.getChildAt(i), depth + 1)
                 }
                 session.surface.overlayRoot?.let { walk(it, 0) } ?: Log.w(TAG, "No map window")

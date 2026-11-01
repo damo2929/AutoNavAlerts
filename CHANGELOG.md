@@ -4,6 +4,7 @@ What changed for the person using the app, by day. Each entry names the DESIGN.m
 
 ## 2026-11-01 — version 0.1.0-2026-11-01
 
+- **Easier buttons on the car map**: Satellite, + / − and recenter now react to a tap anywhere on the button, on its edge or just beside it, not only near the middle. A tap between two buttons goes to the nearer one (DESIGN §8).
 - **Zoom in half a step further**: + now goes to zoom 17.5 (it stopped at 17). Google's road map still draws traffic there; from 18 it doesn't, so the map stops at 17.5. It still starts at 17, and − from 17.5 goes back to 17 (DESIGN §8).
 - **Go waits for the route**: pressing Go before the route has finished loading, or after it failed, no longer starts navigation with no route (no turn card, the car in the middle of the map). The car screen says "The route isn't ready yet" and stays on the route preview (DESIGN §9.3).
 - **The map keeps the car in its place**: when Google's navigation camera stops following during a drive, the app now notices as soon as the car moves away from its usual spot near the bottom of the map, and puts it back within a few seconds. Before, it waited until the car had driven off the screen. A new route or a reroute during guidance also puts the camera back on the car (DESIGN §8 "Follow watchdog").
