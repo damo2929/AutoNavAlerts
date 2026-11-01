@@ -293,36 +293,52 @@ class GuidanceController @Inject constructor(
     @Volatile var debugTwoChoices = false
 
     /**
-     * Routes to [waypoint] (DESIGN.md §8.3a). With energy-efficient routes on and the Routes API
-     * answering, both the fastest and the energy-efficient route become [choices] and the
-     * energy-efficient one is set; otherwise the SDK's own route, with a [routeNote] saying why.
+     * Routes to [waypoint] (DESIGN.md §8.3a). The Routes API is asked every time, with Google's
+     * alternatives ("Alternative routes on every preview"): the fastest, the energy-efficient one when
+     * that option is on, and the alternatives become [choices], up to three, and the first shown is
+     * set. Otherwise the SDK's own route, with a [routeNote] saying why when the option is on.
      */
     private suspend fun route(nav: Navigator, waypoint: Waypoint, dest: Destination): Navigator.RouteStatus {
         _route.update { it.copy(routeNote = null, choices = emptyList()) }
         val s = settings.current()
-        if (s.evEfficientRoutes) {
-            when (val eco = askEco(dest, s.avoidTolls, lastHeading) ?: EcoRoutes.Result.Unavailable("no GPS position yet")) {
-                is EcoRoutes.Result.Routes -> {
-                    // Debug only (bench): show two rows even when Google returns one route.
-                    val same = (eco.same || eco.fastest == null) && !(BuildConfig.DEBUG && debugTwoChoices)
-                    val list = if (same) listOf(RouteChoice("Fastest and most efficient", eco.efficient, efficient = true))
-                        else listOf(RouteChoice("Fastest", eco.fastest ?: eco.efficient, efficient = false), RouteChoice("Energy-efficient (EV)", eco.efficient, efficient = true))
-                    // The energy-efficient row is selected first because the option is on (§8.3a step 3).
-                    val pick = list.indexOfFirst { it.efficient }
-                    val status = setToken(nav, waypoint, list[pick].route.token, "preview")
-                    if (status == Navigator.RouteStatus.OK) {
-                        _route.update { it.copy(choices = list, selected = pick) }
-                        Log.i(TAG, "Route choices: ${list.joinToString { "${it.label} ${it.route.seconds}s ${it.route.meters}m" }}")
-                        return status
-                    }
-                    Log.w(TAG, "The SDK refused the energy-efficient route: $status")
-                    _route.update { it.copy(routeNote = "Fastest route (the energy-efficient route couldn't be used)") }
+        val ev = s.evEfficientRoutes
+        when (val eco = askEco(dest, s.avoidTolls, lastHeading, ev, alternatives = true) ?: EcoRoutes.Result.Unavailable("no GPS position yet")) {
+            is EcoRoutes.Result.Routes -> {
+                val list = choicesOf(eco, ev)
+                // One plain route and no alternative: the SDK's own routing, as before alternatives (§8.3a).
+                if (list.size == 1 && !ev) return plainRoute(nav, waypoint, "preview")
+                // The energy-efficient row is selected first when the option is on, else Fastest (§8.3a step 3).
+                val pick = list.indexOfFirst { it.efficient }.coerceAtLeast(0)
+                val status = setToken(nav, waypoint, list[pick].route.token, "preview")
+                if (status == Navigator.RouteStatus.OK) {
+                    _route.update { it.copy(choices = list, selected = pick) }
+                    Log.i(TAG, "Route choices: ${list.joinToString { "${it.label} ${it.route.seconds}s ${it.route.meters}m" }}")
+                    return status
                 }
-                is EcoRoutes.Result.Unavailable ->
-                    _route.update { it.copy(routeNote = "Fastest route (energy-efficient routing isn't available: ${eco.reason})") }
+                Log.w(TAG, "The SDK refused the Routes API route: $status")
+                if (ev) _route.update { it.copy(routeNote = "Fastest route (the energy-efficient route couldn't be used)") }
             }
+            is EcoRoutes.Result.Unavailable ->
+                if (ev) _route.update { it.copy(routeNote = "Fastest route (energy-efficient routing isn't available: ${eco.reason})") }
+                else log("routes status=unavailable reason=${eco.reason}")
         }
         return plainRoute(nav, waypoint, "preview")
+    }
+
+    /**
+     * The preview's rows from a Routes API answer (§8.3a): Fastest (or "Fastest and most efficient"),
+     * Energy-efficient (EV) when [ev] and it differs, then Google's alternatives; three at most.
+     */
+    private fun choicesOf(eco: EcoRoutes.Result.Routes, ev: Boolean): List<RouteChoice> {
+        // Debug only (bench): show two rows even when Google returns one route.
+        val same = (eco.same || eco.fastest == null) && !(BuildConfig.DEBUG && debugTwoChoices)
+        val main = when {
+            // Without the option Google's default route came back as [efficient] (EcoRoutes.pick).
+            !ev -> listOf(RouteChoice("Fastest", eco.efficient, efficient = false))
+            same -> listOf(RouteChoice("Fastest and most efficient", eco.efficient, efficient = true))
+            else -> listOf(RouteChoice("Fastest", eco.fastest ?: eco.efficient, efficient = false), RouteChoice("Energy-efficient (EV)", eco.efficient, efficient = true))
+        }
+        return (main + eco.alternatives.mapIndexed { i, r -> RouteChoice("Alternative ${i + 1}", r, efficient = false) }).take(MAX_CHOICES)
     }
 
     /**
@@ -330,9 +346,9 @@ class GuidanceController @Inject constructor(
      * right after a restart) to [dest] with the tolls option and the car's [heading]; null with no
      * position at all. Shared by the preview and the re-ask.
      */
-    private suspend fun askEco(dest: Destination, avoidTolls: Boolean, heading: Double?): EcoRoutes.Result? {
+    private suspend fun askEco(dest: Destination, avoidTolls: Boolean, heading: Double?, ev: Boolean = true, alternatives: Boolean = false): EcoRoutes.Result? {
         val here = location.lastLocation.value ?: lastKnown() ?: return null
-        return eco.route(here.latitude, here.longitude, dest, avoidTolls, heading)
+        return eco.route(here.latitude, here.longitude, dest, avoidTolls, heading, ev, alternatives)
     }
 
     /** The SDK's own route with the tolls option; every status is logged (DESIGN.md §15.5). */
@@ -637,6 +653,8 @@ class GuidanceController @Inject constructor(
         /** The car further than this from its own route segment is off the SDK's route (§11 step 4). */
         private const val CAR_OFF_ROUTE_M = 50.0
         private const val TAG = "Guidance"
+        /** Rows in the route preview: Android Auto shows three routes on most hosts (§8.3a). */
+        private const val MAX_CHOICES = 3
         /** How much route [routePointsAhead] returns: enough for the 600 m limit lookahead. */
         private const val AHEAD_M = 1_500.0
         /** A cap on the points [routePointsAhead] returns, so a dense polyline doesn't make the lookahead slow. */

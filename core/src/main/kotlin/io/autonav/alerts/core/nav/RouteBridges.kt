@@ -9,15 +9,19 @@ import io.autonav.alerts.core.geo.LatLngLike
 /**
  * The low bridges on a route, for the route preview's warning (DESIGN.md §6.5 "Warned on the route preview", owner
  * 2026-11-01). Google's routing can't avoid them, so the preview says so before Go. A bridge counts when it lies
- * within [TOLERANCE_M] of any segment of the route. Pure; the route preview calls it off the main thread with the
+ * within [TOLERANCE_M] of any segment of the route; the distance to the first is measured along the route (owner
+ * 2026-11-01: "when there is a low bridge on route say the distance"). Pure; the route preview calls it off the main thread with the
  * SDK's route points and the bridges that alert for the vehicle.
  */
 object RouteBridges {
     /** A bridge point and its signed height in centimetres (null: unknown). */
     data class Bridge(override val lat: Double, override val lon: Double, val heightCm: Int?) : LatLngLike
 
-    /** What the preview shows: how many bridges, and the lowest known height among them (null when all are unknown). */
-    data class OnRoute(val count: Int, val lowestCm: Int?)
+    /**
+     * What the preview shows: how many bridges, the lowest known height among them (null when all are unknown), and
+     * the distance along the route from its start to the first.
+     */
+    data class OnRoute(val count: Int, val lowestCm: Int?, val firstAlongM: Double = 0.0)
 
     /** How close to the route a bridge must be to count: about the road's width and GPS slack (§6.5). */
     const val TOLERANCE_M = 30.0
@@ -30,11 +34,18 @@ object RouteBridges {
         val pad = toleranceM / 100_000.0 * 2
         val minLat = route.minOf { it.lat } - pad; val maxLat = route.maxOf { it.lat } + pad
         val minLon = route.minOf { it.lon } - pad * 2; val maxLon = route.maxOf { it.lon } + pad * 2
-        val hits = bridges.filter { b ->
-            b.lat in minLat..maxLat && b.lon in minLon..maxLon &&
-                route.zipWithNext().any { (a, c) -> Geo.distanceToSegmentM(b.lat, b.lon, a.lat, a.lon, c.lat, c.lon) <= toleranceM }
+        val cum = Geo.cumulativeM(route)
+        // Each matching bridge's distance along the route: to the start of the first segment it lies by, then along
+        // that segment to the bridge (the segment is short, so the straight line to the bridge stands for it).
+        val along = bridges.mapNotNull { b ->
+            if (b.lat !in minLat..maxLat || b.lon !in minLon..maxLon) return@mapNotNull null
+            val i = (0 until route.size - 1).firstOrNull { i ->
+                val a = route[i]; val c = route[i + 1]
+                Geo.distanceToSegmentM(b.lat, b.lon, a.lat, a.lon, c.lat, c.lon) <= toleranceM
+            } ?: return@mapNotNull null
+            b to cum[i] + Geo.distanceM(route[i].lat, route[i].lon, b.lat, b.lon).coerceAtMost(cum[i + 1] - cum[i])
         }
-        if (hits.isEmpty()) return null
-        return OnRoute(hits.size, hits.mapNotNull { it.heightCm }.minOrNull())
+        if (along.isEmpty()) return null
+        return OnRoute(along.size, along.mapNotNull { it.first.heightCm }.minOrNull(), along.minOf { it.second })
     }
 }

@@ -201,14 +201,20 @@ class RoutePreviewScreenTest {
         assertNotNull("Go is not an abandon", rig.deps.guide.destination.value)
     }
 
-    @Test fun theLowBridgeLineSaysHowManyAndTheLowest() {
-        // DESIGN.md §6.5 "Warned on the route preview".
+    @Test fun theLowBridgeLineSaysHowManyHowFarAndTheLowest() {
+        // DESIGN.md §6.5 "Warned on the route preview": count, distance along the route to the first, lowest height.
         val imperial = io.autonav.alerts.core.alerts.Units.IMPERIAL
+        val metric = io.autonav.alerts.core.alerts.Units.METRIC
         val on = io.autonav.alerts.core.nav.RouteBridges::OnRoute
-        assertEquals("Low bridge 6ft 3in on this route", RoutePreviewScreen.bridgeLineText(on(1, 191), imperial))
-        assertEquals("3 low bridges on this route, lowest 6ft 3in", RoutePreviewScreen.bridgeLineText(on(3, 191), imperial))
-        assertEquals("Low bridge 1.91 m on this route", RoutePreviewScreen.bridgeLineText(on(1, 191), io.autonav.alerts.core.alerts.Units.METRIC))
-        assertEquals("2 low bridges on this route", RoutePreviewScreen.bridgeLineText(on(2, null), imperial))
-        assertEquals("Low bridge on this route", RoutePreviewScreen.bridgeLineText(on(1, null), imperial))
+        val miles3 = 3.2 * 1609.344
+        assertEquals("Low bridge 6ft 3in in 3.2 mi", RoutePreviewScreen.bridgeLineText(on(1, 191, miles3), imperial))
+        assertEquals("3 low bridges, first in 3.2 mi, lowest 6ft 3in", RoutePreviewScreen.bridgeLineText(on(3, 191, miles3), imperial))
+        assertEquals("Low bridge 1.91 m in 850 m", RoutePreviewScreen.bridgeLineText(on(1, 191, 850.0), metric))
+        assertEquals("2 low bridges, first in 150 yd", RoutePreviewScreen.bridgeLineText(on(2, null, 140.0), imperial))
+        assertEquals("Low bridge in 5.1 km", RoutePreviewScreen.bridgeLineText(on(1, null, 5100.0), metric))
+        // Spoken on a reroute: in words.
+        assertEquals("3 low bridges, the first in 3 miles, lowest 6 feet 3 inches",
+            RoutePreviewScreen.bridgeLineText(on(3, 191, miles3), imperial, spoken = true))
+        assertEquals("Low bridge, 13 feet, in half a mile", RoutePreviewScreen.bridgeLineText(on(1, 396, 800.0), imperial, spoken = true))
     }
 }

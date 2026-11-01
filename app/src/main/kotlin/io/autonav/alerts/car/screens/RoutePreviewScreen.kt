@@ -32,6 +32,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
  * Route preview with ETA and distance, then Go (DESIGN.md §8). Uses RoutePreviewNavigationTemplate,
@@ -89,7 +90,7 @@ class RoutePreviewScreen(
      * result on its row. Run once the route is there and again after the driver picks the other route.
      */
     private suspend fun checkBridges() {
-        val line = routeBridgeLine(deps)
+        val line = routeBridges(deps)?.text
         if (line != bridgeLine) { bridgeLine = line; invalidate() }
     }
 
@@ -133,7 +134,7 @@ class RoutePreviewScreen(
             items.setOnSelectedListener { }
             items.setSelectedIndex(0)
         } else {
-            // Fastest and energy-efficient (DESIGN.md §8.3a): the driver picks; the map shows the selected one.
+            // Fastest, energy-efficient and Google's alternatives (DESIGN.md §8.3a): the driver picks; the map shows the selected one.
             // Android Auto allows no button on a route row, so the one Go names the selected route
             // and the rows say which is selected (DESIGN.md §8.3a).
             val sel = deps.guidance().selected.value.coerceIn(0, choices.size - 1)
@@ -187,12 +188,12 @@ class RoutePreviewScreen(
             .apply { second?.let { addText(it) }; icon?.let(::setImage) }.build()
     }
 
-    /** "Go", or with two routes "Go · Fastest" / "Go · Energy-efficient", so it's clear which one Go uses. */
+    /** "Go", or with several routes "Go · Fastest" / "Go · Energy-efficient" / "Go · Alternative 1", so it's clear which one Go uses. */
     private fun goTitle(): String {
         val go = carContext.getString(R.string.car_go)
         val choices = deps.guidance().choices.value
         val c = choices.getOrNull(deps.guidance().selected.value)?.takeIf { choices.size >= 2 } ?: return go
-        return "$go · " + if (c.efficient) "Energy-efficient" else "Fastest"
+        return "$go · " + if (c.efficient) "Energy-efficient" else c.label
     }
 
     /**
@@ -272,29 +273,49 @@ class RoutePreviewScreen(
          * with none, no vehicle height or no route: the bridges that alert for the vehicle within 30 m of the route.
          * Shared by the preview and the reroute check in `NavSession`. Any thread; the maths runs on Default.
          */
-        suspend fun routeBridgeLine(deps: io.autonav.alerts.car.CarDeps): String? {
+        suspend fun routeBridges(deps: io.autonav.alerts.car.CarDeps): BridgeWarning? {
             val s = deps.settings().current()
             val bridges = deps.pois().alertingBridges(s.vehicleHeightCm.takeIf { it > 0 }, s.bridgeMarginCm)
             if (bridges.isEmpty()) return null
             return withContext(kotlinx.coroutines.Dispatchers.Default) {
                 val points = deps.guidance().routePointsNow().map { io.autonav.alerts.core.geo.LatLngPoint(it.latitude, it.longitude) }
-                io.autonav.alerts.core.nav.RouteBridges.onRoute(points, bridges)?.let { bridgeLineText(it, s.units) }
+                io.autonav.alerts.core.nav.RouteBridges.onRoute(points, bridges)?.let {
+                    BridgeWarning(it.count to it.lowestCm, bridgeLineText(it, s.units), bridgeLineText(it, s.units, spoken = true))
+                }
             }
         }
 
         /**
-         * The preview's low-bridge line (DESIGN.md §6.5): "Low bridge 6ft 3in on this route", "3 low bridges on this
-         * route, lowest 6ft 3in", or without a height when none is known. Heights in the user's [units].
+         * The route's low-bridge warning: [text] for the row and toast, [spoken] in words, and [same] (count and lowest
+         * height) for the reroute check, which ignores the distance as it shrinks on the drive (DESIGN.md §6.5).
          */
-        internal fun bridgeLineText(on: io.autonav.alerts.core.nav.RouteBridges.OnRoute, units: io.autonav.alerts.core.alerts.Units): String {
-            val h = on.lowestCm?.let { io.autonav.alerts.phone.heightText(it, units) }
+        data class BridgeWarning(val same: Pair<Int, Int?>, val text: String, val spoken: String)
+
+        /**
+         * The preview's low-bridge line (DESIGN.md §6.5): "Low bridge 6ft 3in in 3.2 mi", "3 low bridges, first in
+         * 3.2 mi, lowest 6ft 3in", or without a height when none is known; in the user's [units]. [spoken] gives it in
+         * words for the reroute speech: "3 low bridges, the first in 3 miles, lowest 6 feet 3 inches".
+         */
+        internal fun bridgeLineText(
+            on: io.autonav.alerts.core.nav.RouteBridges.OnRoute, units: io.autonav.alerts.core.alerts.Units, spoken: Boolean = false,
+        ): String {
+            val imperial = units == io.autonav.alerts.core.alerts.Units.IMPERIAL
+            val h = on.lowestCm?.let { if (spoken) spokenHeight(it, imperial) else io.autonav.alerts.phone.heightText(it, units) }
+            val d = if (spoken) io.autonav.alerts.core.alerts.AlertTemplateRenderer(units).spokenDistance(on.firstAlongM)
+                else CarUi.formatDistance(on.firstAlongM.roundToInt(), imperial)
             return when {
-                on.count == 1 && h != null -> "Low bridge $h on this route"
-                on.count == 1 -> "Low bridge on this route"
-                h != null -> "${on.count} low bridges on this route, lowest $h"
-                else -> "${on.count} low bridges on this route"
+                on.count == 1 && h != null -> if (spoken) "Low bridge, $h, in $d" else "Low bridge $h in $d"
+                on.count == 1 -> "Low bridge in $d"
+                h != null -> "${on.count} low bridges, ${if (spoken) "the " else ""}first in $d, lowest $h"
+                else -> "${on.count} low bridges, ${if (spoken) "the " else ""}first in $d"
             }
         }
+
+        /** A height in words: "6 feet 3 inches", "1.91 metres". */
+        private fun spokenHeight(cm: Int, imperial: Boolean): String = if (imperial) {
+            val inches = (cm / 2.54).roundToInt()
+            "${inches / 12} feet" + if (inches % 12 > 0) " ${inches % 12} inch${if (inches % 12 > 1) "es" else ""}" else ""
+        } else "%.2f metres".format(java.util.Locale.ROOT, cm / 100.0)
 
         /** The preview on screen, if any, for the debug bench's `--ez go true`. */
         @Volatile var showing: RoutePreviewScreen? = null

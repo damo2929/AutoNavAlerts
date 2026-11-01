@@ -115,8 +115,8 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
      * returns the first screen. A navigate [intent] (§9.1) puts the preview or search over Home so
      * Back still lands on the map.
      */
-    /** The low-bridge line last shown for this guidance (DESIGN.md §6.5): a reroute speaks only when it changes. */
-    private var lastBridgeLine: String? = null
+    /** The low bridges (count, lowest) last shown for this guidance (DESIGN.md §6.5): a reroute speaks only when they change. */
+    private var lastBridges: Pair<Int, Int?>? = null
 
     /**
      * A reroute while guiding (DESIGN.md §6.5 "A reroute is checked too"): the new route's low bridges, by the
@@ -124,16 +124,15 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
      * line (voice on and not muted), at the speech queue's ordinary priority so camera alerts go first.
      */
     private suspend fun checkRerouteBridges() {
-        val line = RoutePreviewScreen.routeBridgeLine(deps)
-        if (line != null && line != lastBridgeLine) {
-            val text = "Rerouted. $line"
-            deps.eventLog().record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Guidance", "bridges on the new route: $line")
-            androidx.car.app.CarToast.makeText(carContext, text, androidx.car.app.CarToast.LENGTH_LONG).show()
+        val w = RoutePreviewScreen.routeBridges(deps)
+        if (w != null && w.same != lastBridges) {
+            deps.eventLog().record(io.autonav.alerts.diag.EventLog.Channel.NAV, "Guidance", "bridges on the new route: ${w.text}")
+            androidx.car.app.CarToast.makeText(carContext, "Rerouted. ${w.text}", androidx.car.app.CarToast.LENGTH_LONG).show()
             val st = deps.settings().current()
             // The same mute as the camera alerts: the car's Mute or Voice off (§12.3).
-            if (!with(AlertCoordinator) { st.muted(System.currentTimeMillis()) }) deps.tts().speak(text, 10, BRIDGE_SPEECH_ID, false)
+            if (!with(AlertCoordinator) { st.muted(System.currentTimeMillis()) }) deps.tts().speak("Rerouted. ${w.spoken}", 10, BRIDGE_SPEECH_ID, false)
         }
-        lastBridgeLine = line
+        lastBridges = w?.same
     }
 
     override fun onCreateScreen(intent: Intent): Screen {
@@ -257,7 +256,7 @@ class NavSession : Session(), DefaultLifecycleObserver, CarScreenHost {
         // (DESIGN.md §8 step 6; on the bench a call made before the card existed had no effect).
         deps.guidance().guiding.onEach { g ->
             // The route at Go was shown on the preview: taken as already shown, so only a change speaks (§6.5).
-            lastBridgeLine = if (g) RoutePreviewScreen.routeBridgeLine(deps) else null
+            lastBridges = if (g) RoutePreviewScreen.routeBridges(deps)?.same else null
             surface.refreshSdkControls("guiding=$g")
             delay(2_000)
             surface.refreshSdkControls("guiding=$g +2s")

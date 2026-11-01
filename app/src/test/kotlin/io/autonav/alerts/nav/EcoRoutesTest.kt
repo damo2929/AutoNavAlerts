@@ -28,6 +28,30 @@ class EcoRoutesTest {
         assertEquals("both", r.efficient.token)
     }
 
+    @Test fun googlesAlternativesComeBackFastestFirst() {
+        // DESIGN.md §8.3a "Alternative routes on every preview".
+        val r = EcoRoutes.pick(JSONObject("""{"routes":[
+            {"routeLabels":["DEFAULT_ROUTE"],"routeToken":"fast","duration":"3600s","distanceMeters":66000},
+            {"routeLabels":["DEFAULT_ROUTE_ALTERNATE"],"routeToken":"alt-slow","duration":"4200s","distanceMeters":70000},
+            {"routeLabels":["FUEL_EFFICIENT"],"routeToken":"eco","duration":"3900s","distanceMeters":61000},
+            {"routeLabels":["DEFAULT_ROUTE_ALTERNATE"],"routeToken":"alt-quick","duration":"3700s","distanceMeters":68000}]}"""))
+        r as EcoRoutes.Result.Routes
+        assertEquals("fast", r.fastest?.token)
+        assertEquals("eco", r.efficient.token)
+        assertEquals(listOf("alt-quick", "alt-slow"), r.alternatives.map { it.token })
+    }
+
+    @Test fun withoutTheEfficientOptionTheDefaultRouteLeadsAndAlternativesFollow() {
+        // No eco reference asked for: Google's default route stands in as the one route, the alternatives after it.
+        val r = EcoRoutes.pick(JSONObject("""{"routes":[
+            {"routeLabels":["DEFAULT_ROUTE"],"routeToken":"fast","duration":"3600s","distanceMeters":66000},
+            {"routeLabels":["DEFAULT_ROUTE_ALTERNATE"],"routeToken":"alt","duration":"3800s","distanceMeters":64000}]}"""))
+        r as EcoRoutes.Result.Routes
+        assertTrue(r.same)
+        assertEquals("fast", r.efficient.token)
+        assertEquals(listOf("alt"), r.alternatives.map { it.token })
+    }
+
     @Test fun trafficLevelFromTheDelay() {
         assertEquals(EcoRoutes.Traffic.LIGHT, EcoRoutes.Route("t", 3700, 1, 3600).traffic)   // +2 min
         assertEquals(EcoRoutes.Traffic.SOME, EcoRoutes.Route("t", 4200, 1, 3600).traffic)    // +10 min, 17%

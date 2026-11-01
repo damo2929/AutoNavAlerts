@@ -144,7 +144,7 @@ Its speed limits fill in the panel's limit when Google has not given one and no 
 Technical detail: DESIGN.md §8.3a.
 
 - **Avoid tolls**: on by default. Routes avoid toll roads where there is a reasonable way round. If the only way is a toll road, it is still used.
-- **Energy-efficient routes (EV)**: off by default. EV means electric vehicle. When on, the route preview offers two routes, **Fastest** and **Energy-efficient (EV)**, each with its time and distance. You pick one before **Go**. The energy-efficient one is Google's eco-friendly route for an electric car. It uses Google's Routes API on your own Maps key, billed to you like the rest. Your key needs the **Routes API** turned on: **Create a key with my Google account** does that (press it again if you made your key earlier), or turn it on yourself with the **Routes API** link in the guided steps. If it is not available, the fastest route is used and the preview says why.
+- **Energy-efficient routes (EV)**: off by default. EV means electric vehicle. When on, the route preview offers two routes, **Fastest** and **Energy-efficient (EV)**, each with its time and distance. You pick one before **Go**. The energy-efficient one is Google's eco-friendly route for an electric car. It uses Google's Routes API on your own Maps key, billed to you like the rest. Your key needs the **Routes API** turned on: **Create a key with my Google account** does that (press it again if you made your key earlier), or turn it on yourself with the **Routes API** link in the guided steps. If it is not available, the fastest route is used and the preview says why. With it on or off, the preview also lists Google's **alternative routes** (Alternative 1, 2; three rows at most) when your key has the Routes API.
 - **Avoid unpaved roads** is not offered. Google's routing for apps has no such option.
 - The same two switches are on the car under **More → Route options**. Changes apply to the next route.
 
@@ -418,7 +418,7 @@ PocketGPSWorld's low bridges (subscriber data), downloaded with the same login a
 
 A bridge alerts, with the same three stages as a camera, only when it is no higher than your vehicle plus the safety height. The others show on the car map without speaking. A bridge with an unknown height alerts whenever a vehicle height is set.
 
-Google's routing can't avoid low bridges, so the car warns you instead. On the **route preview**, a route that passes one of your alerting bridges says so under the route: "Low bridge 6ft 3in on this route", or "3 low bridges on this route, lowest 6ft 3in". After a **reroute** while you drive, a new low bridge on the new route is shown and said once: "Rerouted. Low bridge 6ft 3in on this route".
+Google's routing can't avoid low bridges, so the car warns you instead. On the **route preview**, a route that passes one of your alerting bridges says so under the route, with how many there are, how far along the route the first one is, and the lowest: "Low bridge 6ft 3in in 3.2 mi", or "3 low bridges, first in 3.2 mi, lowest 6ft 3in". After a **reroute** while you drive, a new low bridge on the new route is shown and said once: "Rerouted. Low bridge 6ft 3in in 3.2 mi".
 
 ## 5. Reports tab
 

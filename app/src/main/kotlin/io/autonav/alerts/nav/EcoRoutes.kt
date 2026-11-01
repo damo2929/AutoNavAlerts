@@ -81,8 +81,12 @@ class EcoRoutes @Inject constructor(
 
     /** The fastest and the energy-efficient route (the same one when Google says so), or why not. */
     sealed class Result {
-        /** [fastest] is null when [same] (one route carried both labels), and the preview shows one row. */
-        data class Routes(val fastest: Route?, val efficient: Route, val same: Boolean) : Result()
+        /**
+         * [fastest] is null when [same] (one route carried both labels), and the preview shows one row; without the
+         * energy-efficient option [efficient] is Google's default route. [alternatives] are Google's other routes
+         * (`DEFAULT_ROUTE_ALTERNATE`, §8.3a "Alternative routes on every preview"), fastest first.
+         */
+        data class Routes(val fastest: Route?, val efficient: Route, val same: Boolean, val alternatives: List<Route> = emptyList()) : Result()
         /** Why there is no energy-efficient route, in words the preview's route note can show. */
         data class Unavailable(val reason: String) : Result()
     }
@@ -102,7 +106,13 @@ class EcoRoutes @Inject constructor(
      * position; [avoidTolls] is the Avoid tolls setting, sent as `routeModifiers.avoidTolls`;
      * [headingDeg] is degrees true, wrapped to 0–359 for the API. Runs on `Dispatchers.IO`.
      */
-    suspend fun route(fromLat: Double, fromLon: Double, dest: Destination, avoidTolls: Boolean, headingDeg: Double? = null): Result = withContext(Dispatchers.IO) {
+    suspend fun route(
+        fromLat: Double, fromLon: Double, dest: Destination, avoidTolls: Boolean, headingDeg: Double? = null,
+        /** The energy-efficient option: the eco reference route and the electric vehicle (§8.3a); off asks for the default route only. */
+        ev: Boolean = true,
+        /** Google's alternative routes too (§8.3a "Alternative routes on every preview"); the reroute re-ask leaves them out. */
+        alternatives: Boolean = false,
+    ): Result = withContext(Dispatchers.IO) {
         val key = settings.mapsApiKey() ?: return@withContext Result.Unavailable("no Maps key")
         val destination = JSONObject().apply {
             if (dest.placeId != null) put("placeId", dest.placeId) else put("location", latLng(dest.lat, dest.lon))
@@ -116,10 +126,25 @@ class EcoRoutes @Inject constructor(
             .put("destination", destination)
             .put("travelMode", "DRIVE")
             .put("routingPreference", "TRAFFIC_AWARE_OPTIMAL")
-            .put("requestedReferenceRoutes", JSONArray().put("FUEL_EFFICIENT"))
             // Where along each route traffic is expected to be slow or jammed when you get there.
             .put("extraComputations", JSONArray().put("TRAFFIC_ON_POLYLINE"))
-            .put("routeModifiers", JSONObject().put("vehicleInfo", JSONObject().put("emissionType", "ELECTRIC")).put("avoidTolls", avoidTolls))
+            .put("routeModifiers", JSONObject().put("avoidTolls", avoidTolls).apply {
+                if (ev) put("vehicleInfo", JSONObject().put("emissionType", "ELECTRIC"))
+            })
+        if (ev) body.put("requestedReferenceRoutes", JSONArray().put("FUEL_EFFICIENT"))
+        if (alternatives) body.put("computeAlternativeRoutes", true)
+        val result = call(key, body)
+        // Google refusing alternatives with this request must never cost the energy-efficient route (§8.3a): ask once more without.
+        if (alternatives && result is Result.Unavailable && result.reason == BAD_REQUEST) {
+            Log.w(TAG, "Routes API refused alternatives; asking without")
+            body.remove("computeAlternativeRoutes")
+            return@withContext call(key, body)
+        }
+        result
+    }
+
+    /** One computeRoutes call with [body]; never throws. On IO (the caller's context). */
+    private fun call(key: String, body: JSONObject): Result {
         val req = Request.Builder().url(URL)
             .header("X-Goog-Api-Key", key)
             .header("X-Goog-FieldMask", "routes.routeToken,routes.routeLabels,routes.duration,routes.staticDuration,routes.distanceMeters," +
@@ -135,21 +160,23 @@ class EcoRoutes @Inject constructor(
                 if (!r.isSuccessful) {
                     val msg = runCatching { JSONObject(text).getJSONObject("error").optString("message") }.getOrNull()
                     Log.w(TAG, "Routes API ${r.code}: $msg")
-                    return@withContext Result.Unavailable(
+                    return Result.Unavailable(
                         // 403 is the common first-run case: the key exists but the Routes API isn't enabled on it (§8.3a Bench).
-                        if (r.code == 403) "turn on the Routes API for your Maps key in Settings" else "Routes API error ${r.code}")
+                        when (r.code) { 403 -> "turn on the Routes API for your Maps key in Settings"; 400 -> BAD_REQUEST; else -> "Routes API error ${r.code}" })
                 }
-                pick(JSONObject(text))
+                return pick(JSONObject(text))
             }
         }.getOrElse { e ->
             Log.w(TAG, "Routes API call failed: ${e.message}")
-            Result.Unavailable("no connection to the Routes API")
+            return Result.Unavailable("no connection to the Routes API")
         }
     }
 
     companion object {
         private const val TAG = "EcoRoutes"
         private const val URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
+        /** The reason for a 400 reply: the request itself was refused (shown as such, §8.3a). */
+        private const val BAD_REQUEST = "Routes API error 400"
 
         /**
          * Metres along the route to the first TRAFFIC_JAM interval, or null.
@@ -216,7 +243,10 @@ class EcoRoutes @Inject constructor(
             val efficientJson = all.firstOrNull { "FUEL_EFFICIENT" in labels(it) } ?: defaultJson
             val efficient = route(efficientJson) ?: return Result.Unavailable("no route token from Google")
             val same = efficientJson === defaultJson
-            return Result.Routes(if (same) efficient else route(defaultJson), efficient, same)
+            // Google's other routes (§8.3a "Alternative routes on every preview"), fastest first.
+            val alternatives = all.filter { it !== defaultJson && it !== efficientJson && "DEFAULT_ROUTE_ALTERNATE" in labels(it) }
+                .mapNotNull(::route).sortedBy { it.seconds }
+            return Result.Routes(if (same) efficient else route(defaultJson), efficient, same, alternatives)
         }
     }
 }
